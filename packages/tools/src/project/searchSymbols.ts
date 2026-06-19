@@ -1,46 +1,56 @@
-import { z } from 'zod';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
-import { OrbitTool, ToolContext, ToolResult } from '../types.js';
+import { z } from "zod";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
+import { OrbitTool, ToolContext, ToolResult } from "../types.js";
 
 export const SearchSymbolsInputSchema = z.object({
-  query: z.string().describe('The symbol name or part of the name to search for.'),
+  query: z
+    .string()
+    .describe("The symbol name or part of the name to search for."),
 });
 
 export type SearchSymbolsInput = z.infer<typeof SearchSymbolsInputSchema>;
 
 export interface SymbolSearchResult {
   name: string;
-  type: 'class' | 'interface' | 'function' | 'constant' | 'type';
+  type: "class" | "interface" | "function" | "constant" | "type";
   filePath: string;
   line: number;
 }
 
-export class SearchSymbolsTool implements OrbitTool<SearchSymbolsInput, SymbolSearchResult[]> {
-  name = 'search_symbols';
-  description = 'Search for symbol declarations (classes, functions, interfaces, constants) in the workspace symbol index.';
+export class SearchSymbolsTool implements OrbitTool<
+  SearchSymbolsInput,
+  SymbolSearchResult[]
+> {
+  name = "search_symbols";
+  description =
+    "Search for symbol declarations (classes, functions, interfaces, constants) in the workspace symbol index.";
   inputSchema = SearchSymbolsInputSchema;
-  risk = 'read' as const;
+  risk = "read" as const;
 
-  async execute(input: SearchSymbolsInput, ctx: ToolContext): Promise<ToolResult<SymbolSearchResult[]>> {
+  async execute(
+    input: SearchSymbolsInput,
+    ctx: ToolContext,
+  ): Promise<ToolResult<SymbolSearchResult[]>> {
     try {
-      const indexPath = join(ctx.cwd, '.orbit', 'symbols.json');
+      const indexPath = join(ctx.cwd, ".orbit", "symbols.json");
       if (!existsSync(indexPath)) {
         return {
           ok: true,
           data: [],
-          display: 'Symbol index is not yet built. Please try again in a few moments.',
+          display:
+            "Symbol index is not yet built. Please try again in a few moments.",
         };
       }
 
-      const raw = readFileSync(indexPath, 'utf8');
+      const raw = readFileSync(indexPath, "utf8");
       const index = JSON.parse(raw);
 
-      if (!index.files || typeof index.files !== 'object') {
+      if (!index.files || typeof index.files !== "object") {
         return {
           ok: true,
           data: [],
-          display: 'Symbol index format is invalid.',
+          display: "Symbol index format is invalid.",
         };
       }
 
@@ -66,10 +76,13 @@ export class SearchSymbolsTool implements OrbitTool<SearchSymbolsInput, SymbolSe
       // Sort results by similarity or name
       results.sort((a, b) => a.name.localeCompare(b.name));
 
-      const display = results.length > 0
-        ? `Found ${results.length} matching symbol(s):\n` +
-          results.map((r) => `- [${r.type}] ${r.name} in ${r.filePath}:${r.line}`).join('\n')
-        : `No symbols matching "${input.query}" found.`;
+      const display =
+        results.length > 0
+          ? `Found ${results.length} matching symbol(s):\n` +
+            results
+              .map((r) => `- [${r.type}] ${r.name} in ${r.filePath}:${r.line}`)
+              .join("\n")
+          : `No symbols matching "${input.query}" found.`;
 
       return {
         ok: true,

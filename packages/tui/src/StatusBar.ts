@@ -1,18 +1,19 @@
-import picocolors from 'picocolors';
+import picocolors from "picocolors";
 
 export class StatusBar {
   private timer: NodeJS.Timeout | null = null;
-  private message = '';
+  private message = "";
   private startTime = 0;
   private isActive = false;
   private spinnerFrame = 0;
-  private spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  private spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   private originalWrite = process.stdout.write.bind(process.stdout);
   private originalErrWrite = process.stderr.write.bind(process.stderr);
 
-  constructor() {}
+  constructor(private disabled = false) {}
 
   public start(message: string): void {
+    if (this.disabled) return;
     if (this.isActive) return;
     this.isActive = true;
     this.message = message;
@@ -40,11 +41,13 @@ export class StatusBar {
   }
 
   public update(message: string): void {
+    if (this.disabled) return;
     this.message = message;
     this.drawStatus();
   }
 
   public stop(): void {
+    if (this.disabled) return;
     if (!this.isActive) return;
     this.isActive = false;
 
@@ -68,6 +71,6 @@ export class StatusBar {
   }
 
   private clearStatus(): void {
-    this.originalWrite('\r\x1b[K');
+    this.originalWrite("\r\x1b[K");
   }
 }

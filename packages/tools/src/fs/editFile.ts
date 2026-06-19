@@ -1,7 +1,7 @@
-import { z } from 'zod';
-import { readFileSync, writeFileSync } from 'fs';
-import { resolveSafePath } from '@orbit-ai/shared';
-import { OrbitTool, ToolContext, ToolResult } from '../types.js';
+import { z } from "zod";
+import { readFileSync, writeFileSync } from "fs";
+import { resolveSafePath } from "@orbit-ai/shared";
+import { OrbitTool, ToolContext, ToolResult } from "../types.js";
 
 export const EditFileInputSchema = z.object({
   path: z.string(),
@@ -13,40 +13,147 @@ export const EditFileInputSchema = z.object({
 export type EditFileInput = z.infer<typeof EditFileInputSchema>;
 
 export class EditFileTool implements OrbitTool<EditFileInput, void> {
-  name = 'edit_file';
+  name = "edit_file";
   description =
-    'Replace oldText with newText inside a file. If replaceAll is false (default), oldText must occur exactly once in the file to prevent accidental edits.';
+    "Replace oldText with newText inside a file. If replaceAll is false (default), oldText must occur exactly once in the file to prevent accidental edits.";
   inputSchema = EditFileInputSchema;
-  risk = 'write' as const;
+  risk = "write" as const;
 
-  async execute(input: EditFileInput, ctx: ToolContext): Promise<ToolResult<void>> {
+  async execute(
+    input: EditFileInput,
+    ctx: ToolContext,
+  ): Promise<ToolResult<void>> {
     try {
       const safePath = resolveSafePath(ctx.cwd, input.path);
-      const content = readFileSync(safePath, 'utf8');
+      const originalContent = readFileSync(safePath, "utf8");
 
-      const parts = content.split(input.oldText);
-      const occurrences = parts.length - 1;
+      // Normalize line endings
+      const fileContent = originalContent.replace(/\r\n/g, "\n");
+      const oldTextNorm = input.oldText.replace(/\r\n/g, "\n");
+      const newTextNorm = input.newText.replace(/\r\n/g, "\n");
 
-      if (occurrences === 0) {
+      // 1. Exact Match
+      if (fileContent.includes(oldTextNorm)) {
+        const parts = fileContent.split(oldTextNorm);
+        if (parts.length - 1 > 1 && !input.replaceAll) {
+          return {
+            ok: false,
+            error: `Found multiple occurrences of oldText in "${input.path}". Please make it unique or enable replaceAll.`,
+          };
+        }
+        const updated = fileContent.split(oldTextNorm).join(newTextNorm);
+        const finalContent = originalContent.includes("\r\n")
+          ? updated.replace(/\n/g, "\r\n")
+          : updated;
+        writeFileSync(safePath, finalContent, "utf8");
         return {
-          ok: false,
-          error: `Could not find target content "oldText" in file "${input.path}". No replacement made. Ensure indentation and line endings match exactly.`,
+          ok: true,
+          display: `Successfully replaced content in ${input.path}`,
+        };
+      }
+
+      // If exact match fails, perform line-based cascading matches
+      const fileLines = fileContent.split("\n");
+      const oldLines = oldTextNorm.split("\n");
+      const newLines = newTextNorm.split("\n");
+
+      // 2. Whitespace-insensitive Match
+      const normOld = oldLines.map((l) => l.replace(/\s+/g, ""));
+      const normFile = fileLines.map((l) => l.replace(/\s+/g, ""));
+      const M = oldLines.length;
+      const N = fileLines.length;
+
+      let matchedIndex: number | null = null;
+      let occurrences = 0;
+
+      if (M > 0 && N >= M) {
+        for (let i = 0; i <= N - M; i++) {
+          let match = true;
+          for (let j = 0; j < M; j++) {
+            if (normFile[i + j] !== normOld[j]) {
+              match = false;
+              break;
+            }
+          }
+          if (match) {
+            occurrences++;
+            matchedIndex = i;
+          }
+        }
+      }
+
+      // 3. Indentation-corrected Match
+      if (occurrences === 1 && matchedIndex !== null) {
+        const matchedFileLines = fileLines.slice(
+          matchedIndex,
+          matchedIndex + M,
+        );
+        const adjustedNewLines = adjustIndentation(
+          newLines,
+          matchedFileLines,
+          oldLines,
+        );
+
+        fileLines.splice(matchedIndex, M, ...adjustedNewLines);
+        const updated = fileLines.join("\n");
+        const finalContent = originalContent.includes("\r\n")
+          ? updated.replace(/\n/g, "\r\n")
+          : updated;
+        writeFileSync(safePath, finalContent, "utf8");
+        return {
+          ok: true,
+          display: `Successfully replaced content in ${input.path} (indentation corrected)`,
         };
       }
 
       if (occurrences > 1 && !input.replaceAll) {
         return {
           ok: false,
-          error: `Found ${occurrences} occurrences of target content "oldText" in file "${input.path}". Provide more surrounding lines to make it unique, or set replaceAll to true.`,
+          error: `Found multiple whitespace-insensitive occurrences of oldText in "${input.path}". Please provide more surrounding lines.`,
         };
       }
 
-      const newContent = content.split(input.oldText).join(input.newText);
-      writeFileSync(safePath, newContent, 'utf8');
+      // 4. Levenshtein Fuzzy Match (similarity threshold > 80%)
+      if (M > 0 && N >= M) {
+        let bestIndex = -1;
+        let bestSim = 0;
+
+        for (let i = 0; i <= N - M; i++) {
+          let sumSim = 0;
+          for (let j = 0; j < M; j++) {
+            sumSim += lineSimilarity(fileLines[i + j], oldLines[j]);
+          }
+          const avgSim = sumSim / M;
+          if (avgSim > bestSim) {
+            bestSim = avgSim;
+            bestIndex = i;
+          }
+        }
+
+        if (bestSim >= 0.8) {
+          const matchedFileLines = fileLines.slice(bestIndex, bestIndex + M);
+          const adjustedNewLines = adjustIndentation(
+            newLines,
+            matchedFileLines,
+            oldLines,
+          );
+
+          fileLines.splice(bestIndex, M, ...adjustedNewLines);
+          const updated = fileLines.join("\n");
+          const finalContent = originalContent.includes("\r\n")
+            ? updated.replace(/\n/g, "\r\n")
+            : updated;
+          writeFileSync(safePath, finalContent, "utf8");
+          return {
+            ok: true,
+            display: `Successfully replaced content in ${input.path} (fuzzy matched with ${(bestSim * 100).toFixed(1)}% similarity)`,
+          };
+        }
+      }
 
       return {
-        ok: true,
-        display: `Successfully replaced content in ${input.path}`,
+        ok: false,
+        error: `Could not find target content "oldText" in "${input.path}", even with fuzzy matching (threshold 80%). Ensure the text matches the file contents.`,
       };
     } catch (e: any) {
       return {
@@ -55,4 +162,87 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
       };
     }
   }
+}
+
+function adjustIndentation(
+  newLines: string[],
+  matchedFileLines: string[],
+  oldLines: string[],
+): string[] {
+  let fileIndentLen = 0;
+  let oldIndentLen = 0;
+  let hasIndentation = false;
+
+  for (let j = 0; j < oldLines.length; j++) {
+    const oLine = oldLines[j];
+    const fLine = matchedFileLines[j];
+    if (oLine.trim() && fLine && fLine.trim()) {
+      const oInd = oLine.match(/^\s*/)?.[0] || "";
+      const fInd = fLine.match(/^\s*/)?.[0] || "";
+      if (oInd.length > 0 && fInd.length > 0) {
+        oldIndentLen = oInd.length;
+        fileIndentLen = fInd.length;
+        hasIndentation = true;
+        break;
+      }
+    }
+  }
+
+  if (!hasIndentation || oldIndentLen === 0) {
+    return newLines;
+  }
+
+  const scale = fileIndentLen / oldIndentLen;
+
+  let indentChar = " ";
+  for (const line of matchedFileLines) {
+    if (line.startsWith("\t")) {
+      indentChar = "\t";
+      break;
+    }
+  }
+
+  return newLines.map((line) => {
+    if (!line.trim()) return "";
+    const currentIndent = line.match(/^\s*/)?.[0] || "";
+    const newIndentLen = Math.round(currentIndent.length * scale);
+    return indentChar.repeat(newIndentLen) + line.trimStart();
+  });
+}
+
+function levenshteinDistance(s1: string, s2: string): number {
+  const m = s1.length;
+  const n = s2.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () =>
+    Array(n + 1).fill(0),
+  );
+
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (s1[i - 1] === s2[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1];
+      } else {
+        dp[i][j] = Math.min(
+          dp[i - 1][j] + 1,
+          dp[i][j - 1] + 1,
+          dp[i - 1][j - 1] + 1,
+        );
+      }
+    }
+  }
+  return dp[m][n];
+}
+
+function lineSimilarity(l1: string, l2: string): number {
+  const t1 = l1.trim();
+  const t2 = l2.trim();
+  if (!t1 && !t2) return 1.0;
+  if (!t1 || !t2) return 0.0;
+
+  const dist = levenshteinDistance(t1, t2);
+  const maxLen = Math.max(t1.length, t2.length);
+  return 1.0 - dist / maxLen;
 }

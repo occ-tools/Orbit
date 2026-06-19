@@ -1,11 +1,15 @@
-import { existsSync, writeFileSync, unlinkSync } from 'fs';
-import { resolveSafePath } from '@orbit-ai/shared';
-import { Checkpoint } from './types.js';
+import { existsSync, writeFileSync, unlinkSync } from "fs";
+import { resolveSafePath } from "@orbit-ai/shared";
+import { Checkpoint } from "./types.js";
 
 export class RollbackManager {
   constructor(private cwd: string) {}
 
-  public rollback(checkpoint: Checkpoint): { success: boolean; error?: string; restored: string[] } {
+  public rollback(checkpoint: Checkpoint): {
+    success: boolean;
+    error?: string;
+    restored: string[];
+  } {
     const restored: string[] = [];
 
     for (const backup of checkpoint.backups) {
@@ -19,7 +23,7 @@ export class RollbackManager {
         }
       } else {
         // Restore previous content
-        writeFileSync(safePath, backup.originalContent, 'utf8');
+        writeFileSync(safePath, backup.originalContent, "utf8");
         restored.push(backup.path);
       }
     }

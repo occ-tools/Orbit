@@ -1,6 +1,6 @@
-import { ToolRisk } from '@orbit-ai/shared';
+import { ToolRisk } from "@orbit-ai/shared";
 
-export type PermissionAction = 'allow' | 'ask' | 'deny';
+export type PermissionAction = "allow" | "ask" | "deny";
 
 export interface PermissionDecision {
   action: PermissionAction;

@@ -1,4 +1,8 @@
-import { ToolRisk, checkWorkspaceBoundary, normalizePath } from '@orbit-ai/shared';
+import {
+  ToolRisk,
+  checkWorkspaceBoundary,
+  normalizePath,
+} from "@orbit-ai/shared";
 
 const DANGEROUS_COMMAND_REGEXES = [
   /\brm\s+-rf\b/i,
@@ -28,17 +32,20 @@ const NETWORK_COMMAND_REGEXES = [
 ];
 
 export class RiskClassifier {
-  public static isProtectedPath(filePath: string, protectedPaths: string[]): boolean {
+  public static isProtectedPath(
+    filePath: string,
+    protectedPaths: string[],
+  ): boolean {
     const normalized = normalizePath(filePath).toLowerCase();
 
     for (const pattern of protectedPaths) {
-      const cleanPattern = pattern.replace(/\\/g, '/').toLowerCase();
+      const cleanPattern = pattern.replace(/\\/g, "/").toLowerCase();
 
       // Simple glob replacement matching
       const escaped = cleanPattern
-        .replace(/\./g, '\\.')
-        .replace(/\*\*/g, '.*')
-        .replace(/\*/g, '[^/]*');
+        .replace(/\./g, "\\.")
+        .replace(/\*\*/g, ".*")
+        .replace(/\*/g, "[^/]*");
 
       const regex = new RegExp(`^${escaped}$`);
       const regexEndsWith = new RegExp(`${escaped}$`);
@@ -46,7 +53,7 @@ export class RiskClassifier {
       if (
         regex.test(normalized) ||
         regexEndsWith.test(normalized) ||
-        normalized.includes(cleanPattern.replace(/\*/g, ''))
+        normalized.includes(cleanPattern.replace(/\*/g, ""))
       ) {
         return true;
       }
@@ -58,16 +65,16 @@ export class RiskClassifier {
   public static classifyBashCommand(command: string): ToolRisk {
     for (const regex of DANGEROUS_COMMAND_REGEXES) {
       if (regex.test(command)) {
-        return 'dangerous';
+        return "dangerous";
       }
     }
 
     for (const regex of NETWORK_COMMAND_REGEXES) {
       if (regex.test(command)) {
-        return 'network';
+        return "network";
       }
     }
 
-    return 'execute';
+    return "execute";
   }
 }

@@ -1,4 +1,4 @@
-import { OrbitTool } from './types.js';
+import { OrbitTool } from "./types.js";
 
 export class ToolRegistry {
   private tools = new Map<string, OrbitTool<any, any>>();

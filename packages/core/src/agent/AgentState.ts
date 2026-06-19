@@ -1,4 +1,4 @@
-import { OrbitMessage } from '@orbit-ai/model-providers';
+import { OrbitMessage } from "@orbit-ai/model-providers";
 
 export interface AgentState {
   sessionId: string;
@@ -10,7 +10,10 @@ export interface AgentState {
   maxAttempts: number;
 }
 
-export function createInitialState(sessionId: string, task: string): AgentState {
+export function createInitialState(
+  sessionId: string,
+  task: string,
+): AgentState {
   return {
     sessionId,
     task,

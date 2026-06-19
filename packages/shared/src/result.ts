@@ -1,4 +1,4 @@
-import { OrbitError } from './errors.js';
+import { OrbitError } from "./errors.js";
 
 export type Result<T> =
   | { ok: true; value: T }
@@ -13,7 +13,10 @@ export const Result = {
     return { ok: false, error };
   },
 
-  fromThrowable<T>(fn: () => T, mapError: (err: unknown) => OrbitError): Result<T> {
+  fromThrowable<T>(
+    fn: () => T,
+    mapError: (err: unknown) => OrbitError,
+  ): Result<T> {
     try {
       return Result.ok(fn());
     } catch (e) {
@@ -23,7 +26,7 @@ export const Result = {
 
   async fromAsyncThrowable<T>(
     fn: () => Promise<T>,
-    mapError: (err: unknown) => OrbitError
+    mapError: (err: unknown) => OrbitError,
   ): Promise<Result<T>> {
     try {
       return Result.ok(await fn());

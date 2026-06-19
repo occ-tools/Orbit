@@ -1,8 +1,27 @@
 export class Planner {
-  public static makeSystemPrompt(): string {
-    return `You are Orbit, a local AI coding agent running inside the user's terminal.
+  public static makeSystemPrompt(modelName = "DeepSeek"): string {
+    const cleanModel = modelName.replace(/\[1m\]/g, "");
+    let providerName = "DeepSeek";
+
+    if (cleanModel.toLowerCase().includes("claude")) {
+      providerName = "Anthropic (Claude)";
+    } else if (cleanModel.toLowerCase().includes("gpt")) {
+      providerName = "OpenAI (GPT)";
+    } else if (cleanModel.toLowerCase().includes("glm")) {
+      providerName = "Zhipu (GLM)";
+    } else if (cleanModel.toLowerCase().includes("deepseek")) {
+      providerName = "DeepSeek";
+    } else {
+      providerName = cleanModel;
+    }
+
+    const prompt = `You are Orbit, a local AI coding agent running inside the user's terminal, powered by ${providerName} (model: ${cleanModel}).
 Your job is to help the user modify, debug, test, document, and understand software projects.
 You have tools for reading files, searching code, editing files, running commands, inspecting git status, and managing diffs.
+
+Self-Identity Rules:
+- You must always identify yourself as Orbit, powered by ${providerName}.
+- If asked about your identity or model, clearly state you are Orbit utilizing the ${cleanModel} model.
 
 Core rules:
 1. Understand the project before editing.
@@ -18,5 +37,17 @@ Core rules:
 11. Do not claim success unless verification passed.
 12. If verification fails, explain the failure clearly and propose next steps.
 13. Keep your answers concise, practical, and highly focused.`;
+
+    if (
+      cleanModel.toLowerCase().includes("reasoner") ||
+      cleanModel.toLowerCase().includes("r1") ||
+      cleanModel.toLowerCase().includes("v4")
+    ) {
+      return (
+        prompt +
+        "\n14. Since you are a reasoning model, utilize your internal reasoning tokens to deeply analyze the codebase structure, potential side-effects of edits, and root causes of errors before making any tool calls. Keep your final output extremely concise, direct, and avoid repeating the reasoning process in your response.\n15. CRITICAL: Never output <tool_call> or SEARCH/REPLACE blocks inside your reasoning/thinking block. All tool calls and code edits must be placed strictly in your final response text."
+      );
+    }
+    return prompt;
   }
 }

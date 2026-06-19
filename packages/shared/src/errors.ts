@@ -1,19 +1,19 @@
 export type OrbitErrorCode =
-  | 'CONFIG_NOT_FOUND'
-  | 'API_KEY_MISSING'
-  | 'MODEL_PROVIDER_ERROR'
-  | 'TOOL_NOT_FOUND'
-  | 'TOOL_SCHEMA_INVALID'
-  | 'PERMISSION_DENIED'
-  | 'FILE_NOT_FOUND'
-  | 'FILE_TOO_LARGE'
-  | 'PATH_OUTSIDE_WORKSPACE'
-  | 'PROTECTED_FILE'
-  | 'COMMAND_TIMEOUT'
-  | 'COMMAND_BLOCKED'
-  | 'TEST_FAILED'
-  | 'CHECKPOINT_FAILED'
-  | 'ROLLBACK_CONFLICT';
+  | "CONFIG_NOT_FOUND"
+  | "API_KEY_MISSING"
+  | "MODEL_PROVIDER_ERROR"
+  | "TOOL_NOT_FOUND"
+  | "TOOL_SCHEMA_INVALID"
+  | "PERMISSION_DENIED"
+  | "FILE_NOT_FOUND"
+  | "FILE_TOO_LARGE"
+  | "PATH_OUTSIDE_WORKSPACE"
+  | "PROTECTED_FILE"
+  | "COMMAND_TIMEOUT"
+  | "COMMAND_BLOCKED"
+  | "TEST_FAILED"
+  | "CHECKPOINT_FAILED"
+  | "ROLLBACK_CONFLICT";
 
 export interface OrbitError {
   code: OrbitErrorCode;
@@ -30,7 +30,7 @@ export class OrbitException extends Error {
 
   constructor(error: OrbitError) {
     super(error.message);
-    this.name = 'OrbitException';
+    this.name = "OrbitException";
     this.code = error.code;
     this.recoverable = error.recoverable ?? false;
     this.suggestion = error.suggestion;
@@ -50,4 +50,4 @@ export class OrbitException extends Error {
   }
 }
 
-export type ToolRisk = 'read' | 'write' | 'execute' | 'network' | 'dangerous';
+export type ToolRisk = "read" | "write" | "execute" | "network" | "dangerous";

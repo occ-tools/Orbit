@@ -1,9 +1,9 @@
-import { z } from 'zod';
-import { readFileSync } from 'fs';
-import { execa } from 'execa';
-import glob from 'fast-glob';
-import { resolveSafePath } from '@orbit-ai/shared';
-import { OrbitTool, ToolContext, ToolResult } from '../types.js';
+import { z } from "zod";
+import { readFileSync } from "fs";
+import { execa } from "execa";
+import glob from "fast-glob";
+import { resolveSafePath } from "@orbit-ai/shared";
+import { OrbitTool, ToolContext, ToolResult } from "../types.js";
 
 export const GrepInputSchema = z.object({
   pattern: z.string(),
@@ -21,43 +21,53 @@ interface GrepMatch {
 }
 
 export class GrepTool implements OrbitTool<GrepInput, GrepMatch[]> {
-  name = 'grep';
+  name = "grep";
   description =
-    'Search for string patterns across project files. Uses ripgrep if available, falling back to a Node-based search.';
+    "Search for string patterns across project files. Uses ripgrep if available, falling back to a Node-based search.";
   inputSchema = GrepInputSchema;
-  risk = 'read' as const;
+  risk = "read" as const;
 
-  async execute(input: GrepInput, ctx: ToolContext): Promise<ToolResult<GrepMatch[]>> {
+  async execute(
+    input: GrepInput,
+    ctx: ToolContext,
+  ): Promise<ToolResult<GrepMatch[]>> {
     const max = input.maxResults || 100;
-    const searchDir = input.path ? resolveSafePath(ctx.cwd, input.path) : ctx.cwd;
+    const searchDir = input.path
+      ? resolveSafePath(ctx.cwd, input.path)
+      : ctx.cwd;
 
     try {
-      const args = ['--line-number', '--color=never', '--no-heading', input.pattern];
+      const args = [
+        "--line-number",
+        "--color=never",
+        "--no-heading",
+        input.pattern,
+      ];
       if (input.include) {
-        args.push('--glob', input.include);
+        args.push("--glob", input.include);
       }
       args.push(searchDir);
 
-      const { stdout } = await execa('rg', args);
+      const { stdout } = await execa("rg", args);
       const matches: GrepMatch[] = [];
-      const lines = stdout.split('\n');
+      const lines = stdout.split("\n");
 
       for (const line of lines) {
         if (matches.length >= max) break;
         if (!line.trim()) continue;
 
-        const parts = line.split(':');
+        const parts = line.split(":");
         if (parts.length >= 3) {
           const filePath = parts[0];
           const lineNum = parseInt(parts[1], 10);
-          const content = parts.slice(2).join(':');
+          const content = parts.slice(2).join(":");
 
           const relativePath = filePath.startsWith(ctx.cwd)
             ? filePath.substring(ctx.cwd.length + 1)
             : filePath;
 
           matches.push({
-            file: relativePath.replace(/\\/g, '/'),
+            file: relativePath.replace(/\\/g, "/"),
             line: lineNum,
             content,
           });
@@ -78,13 +88,18 @@ export class GrepTool implements OrbitTool<GrepInput, GrepMatch[]> {
     input: GrepInput,
     searchDir: string,
     cwd: string,
-    max: number
+    max: number,
   ): Promise<ToolResult<GrepMatch[]>> {
     try {
-      const globPattern = input.include || '**/*';
+      const globPattern = input.include || "**/*";
       const files = await glob(globPattern, {
         cwd: searchDir,
-        ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+        ignore: [
+          "**/node_modules/**",
+          "**/.git/**",
+          "**/dist/**",
+          "**/build/**",
+        ],
         onlyFiles: true,
         absolute: true,
       });
@@ -93,16 +108,18 @@ export class GrepTool implements OrbitTool<GrepInput, GrepMatch[]> {
 
       for (const file of files) {
         if (matches.length >= max) break;
-        const content = readFileSync(file, 'utf8');
+        const content = readFileSync(file, "utf8");
 
         if (!content.includes(input.pattern)) continue;
 
-        const lines = content.split('\n');
+        const lines = content.split("\n");
         for (let i = 0; i < lines.length; i++) {
           if (lines[i].includes(input.pattern)) {
-            const relPath = file.startsWith(cwd) ? file.substring(cwd.length + 1) : file;
+            const relPath = file.startsWith(cwd)
+              ? file.substring(cwd.length + 1)
+              : file;
             matches.push({
-              file: relPath.replace(/\\/g, '/'),
+              file: relPath.replace(/\\/g, "/"),
               line: i + 1,
               content: lines[i],
             });

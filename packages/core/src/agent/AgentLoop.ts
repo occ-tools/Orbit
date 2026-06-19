@@ -1,34 +1,42 @@
-import { OrbitConfig } from '@orbit-ai/config';
+import { OrbitConfig } from "@orbit-ai/config";
 import {
   ModelProvider,
   OrbitMessage,
   OrbitContentBlock,
   OrbitToolCall,
-} from '@orbit-ai/model-providers';
-import { PermissionEngine } from '@orbit-ai/permissions';
-import { CheckpointManager, RollbackManager } from '@orbit-ai/sandbox';
-import { ContextPackBuilder, SymbolIndexer } from '@orbit-ai/context-engine';
-import { SessionManager } from '@orbit-ai/session';
-import { toolRegistry } from '@orbit-ai/tools';
-import { StatusBar, Prompt, Renderer } from '@orbit-ai/tui';
-import { AgentState, createInitialState } from './AgentState.js';
-import { z } from 'zod';
-import { MessageBuilder } from './MessageBuilder.js';
-import { StepRunner } from './StepRunner.js';
-import { Planner } from './Planner.js';
-import { eventBus } from '../events/EventBus.js';
-import picocolors from 'picocolors';
-import path from 'path';
-import fs from 'fs';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+} from "@orbit-ai/model-providers";
+import { PermissionEngine } from "@orbit-ai/permissions";
+import { CheckpointManager, RollbackManager } from "@orbit-ai/sandbox";
+import {
+  ContextPackBuilder,
+  SymbolIndexer,
+  ContextPack,
+} from "@orbit-ai/context-engine";
+import { SessionManager, Session } from "@orbit-ai/session";
+import { toolRegistry } from "@orbit-ai/tools";
+import { StatusBar, Prompt, Renderer } from "@orbit-ai/tui";
+import { AgentState, createInitialState } from "./AgentState.js";
+import { z } from "zod";
+import { MessageBuilder } from "./MessageBuilder.js";
+import { StepRunner } from "./StepRunner.js";
+import { Planner } from "./Planner.js";
+import { eventBus } from "../events/EventBus.js";
+import picocolors from "picocolors";
+import path from "path";
+import fs from "fs";
+import { exec } from "child_process";
+import { promisify } from "util";
 const execPromise = promisify(exec);
-import { MCPClient, DynamicMCPTool } from '@orbit-ai/mcp';
+import { MCPClient, DynamicMCPTool } from "@orbit-ai/mcp";
 
 export interface UserInteraction {
   askApproval(reason: string, preview?: string): Promise<boolean>;
   showText(text: string): void;
-  showDiff(filePath: string, before: string | null, after: string): void | Promise<void>;
+  showDiff(
+    filePath: string,
+    before: string | null,
+    after: string,
+  ): void | Promise<void>;
 }
 
 export class AgentLoop {
@@ -42,8 +50,14 @@ export class AgentLoop {
   private mcpClients: MCPClient[] = [];
   private abortController: AbortController | null = null;
   private sessionCost = 0;
-  private statusBar = new StatusBar();
+  private statusBar: StatusBar;
   private gitCheckpoints: string[] = [];
+  private cachedRepoMapText = "";
+  private lastSymbolsMtime = 0;
+  private cachedContextPack: ContextPack | null = null;
+  private cachedRepoMapTextForRun: string | null = null;
+  private keepaliveTimer: NodeJS.Timeout | null = null;
+  private lastChatParams: { model: string; messages: any[]; system: string } | null = null;
 
   constructor(
     private cwd: string,
@@ -55,12 +69,42 @@ export class AgentLoop {
       modelOverride?: string;
       systemPromptOverride?: string;
       allowedTools?: string[];
-    }
+      disableStatusBar?: boolean;
+      sessionId?: string;
+    },
   ) {
+    this.statusBar = new StatusBar(!!this.options?.disableStatusBar);
     this.sessionManager = new SessionManager(cwd);
-    const session = this.sessionManager.startNewSession(provider.id, options?.modelOverride || config.models.default);
+
+    let session;
+    if (options?.sessionId) {
+      session = this.sessionManager.resumeSession(options.sessionId);
+    }
+    if (!session) {
+      session = this.sessionManager.startNewSession(
+        provider.id,
+        options?.modelOverride || config.models.default,
+      );
+    }
 
     this.state = createInitialState(session.id, task);
+
+    if (options?.sessionId) {
+      const savedHistory = this.sessionManager.getHistory();
+      if (savedHistory && savedHistory.length > 0) {
+        this.state.history = savedHistory;
+        const lastUser = [...savedHistory]
+          .reverse()
+          .find((m) => m.role === "user");
+        if (lastUser) {
+          const userText = lastUser.content
+            .map((c: any) => (c.type === "text" ? c.text : ""))
+            .join("");
+          this.state.task = userText;
+        }
+      }
+    }
+
     this.checkpointManager = new CheckpointManager(cwd, session.id);
     this.rollbackManager = new RollbackManager(cwd);
     this.permissionEngine = new PermissionEngine(config);
@@ -69,7 +113,14 @@ export class AgentLoop {
   }
 
   public async run(): Promise<void> {
-    eventBus.emitEvent('agent_start', { taskId: this.state.sessionId, task: this.state.task });
+    try {
+      eventBus.emitEvent("agent_start", {
+        taskId: this.state.sessionId,
+        task: this.state.task,
+      });
+      this.cachedContextPack = null;
+      this.cachedRepoMapTextForRun = null;
+      this.sessionManager.saveHistory(this.state.history);
 
     // Start workspace symbol indexing in the background asynchronously
     const symbolIndexer = new SymbolIndexer(this.cwd);
@@ -78,38 +129,51 @@ export class AgentLoop {
     // Initialize MCP Servers if enabled
     if (this.config.tools.mcp.enabled && this.config.mcpServers) {
       this.interaction.showText(`● Initializing MCP servers...`);
-      for (const [serverName, serverConfig] of Object.entries(this.config.mcpServers)) {
+      for (const [serverName, serverConfig] of Object.entries(
+        this.config.mcpServers,
+      )) {
         try {
           const client = new MCPClient(
             serverName,
             serverConfig.command,
             serverConfig.args || [],
-            serverConfig.env || {}
+            serverConfig.env || {},
           );
           const tools = await client.start();
           this.mcpClients.push(client);
 
           for (const toolDef of tools) {
             const configuredTool = serverConfig.tools?.[toolDef.name];
-            const risk = configuredTool?.risk || 'execute';
+            const risk = configuredTool?.risk || "execute";
 
-            const dynamicTool = new DynamicMCPTool(serverName, toolDef, risk, client);
+            const dynamicTool = new DynamicMCPTool(
+              serverName,
+              toolDef,
+              risk,
+              client,
+            );
             toolRegistry.register(dynamicTool);
-            this.interaction.showText(`  ✔ Registered MCP tool: ${dynamicTool.name} (${risk})`);
+            this.interaction.showText(
+              `  ✔ Registered MCP tool: ${dynamicTool.name} (${risk})`,
+            );
           }
         } catch (err: any) {
-          this.interaction.showText(`  ✖ Failed to start MCP server "${serverName}": ${err.message}`);
+          this.interaction.showText(
+            `  ✖ Failed to start MCP server "${serverName}": ${err.message}`,
+          );
         }
       }
     }
 
     const sigintListener = () => {
       if (this.abortController) {
-        this.interaction.showText('\n● Interrupt received. Aborting current execution...');
+        this.interaction.showText(
+          "\n● Interrupt received. Aborting current execution...",
+        );
         this.abortController.abort();
       }
     };
-    process.on('SIGINT', sigintListener);
+    process.on("SIGINT", sigintListener);
 
     const exitListener = () => {
       for (const client of this.mcpClients) {
@@ -120,32 +184,46 @@ export class AgentLoop {
         }
       }
     };
-    process.on('exit', exitListener);
+    process.on("exit", exitListener);
 
     try {
-      const initPack = await this.contextBuilder.build([]);
-      this.interaction.showText(
-        `● Workspace profiles: ${initPack.projectIndex.detectedLanguages.join(', ')} project detected.`
-      );
+      if (this.state.history.length === 0) {
+        const initPack = await this.contextBuilder.build([]);
+        this.interaction.showText(
+          `● Workspace profiles: ${initPack.projectIndex.detectedLanguages.join(", ")} project detected.`,
+        );
+        this.state.history.push({
+          id: `msg_user_init_${Date.now()}`,
+          role: "user",
+          createdAt: new Date().toISOString(),
+          content: [{ type: "text", text: this.state.task }],
+        });
+        this.sessionManager.saveHistory(this.state.history);
+      }
 
-      while (!this.state.done && this.state.attemptCount < this.state.maxAttempts) {
+      while (
+        !this.state.done &&
+        this.state.attemptCount < this.state.maxAttempts
+      ) {
         // Auto-compact dialogue history if length exceeds 20
         if (this.config.context.autoCompact && this.state.history.length > 20) {
-          this.interaction.showText('● Dialogue history is too long. Auto-compacting older history to save tokens...');
+          this.interaction.showText(
+            "● Dialogue history is too long. Auto-compacting older history to save tokens...",
+          );
           await this.autoCompactHistory();
         }
 
         if (this.sessionCost > this.config.budgetLimit) {
           this.interaction.showText(
             picocolors.red(
-              `\n✖ Budget Exceeded: The session cost has reached $${this.sessionCost.toFixed(4)}, which exceeds the limit of $${this.config.budgetLimit.toFixed(2)}.`
-            )
+              `\n✖ Budget Exceeded: The session cost has reached $${this.sessionCost.toFixed(4)}, which exceeds the limit of $${this.config.budgetLimit.toFixed(2)}.`,
+            ),
           );
           const confirm = await this.interaction.askApproval(
-            `Session cost limit reached. Do you want to increase the budget limit by $10.00 and continue?`
+            `Session cost limit reached. Do you want to increase the budget limit by $10.00 and continue?`,
           );
           if (confirm) {
-            this.config.budgetLimit += 10.00;
+            this.config.budgetLimit += 10.0;
           } else {
             this.state.done = true;
             break;
@@ -153,89 +231,153 @@ export class AgentLoop {
         }
 
         this.state.attemptCount++;
-        eventBus.emitEvent('loop_start', { attempt: this.state.attemptCount });
+        eventBus.emitEvent("loop_start", { attempt: this.state.attemptCount });
 
         // Runaway Iteration Guard
-        if (this.state.attemptCount > 1 && (this.state.attemptCount - 1) % 5 === 0) {
+        if (
+          this.state.attemptCount > 1 &&
+          (this.state.attemptCount - 1) % 5 === 0
+        ) {
           const continueExec = await this.interaction.askApproval(
-            `Agent loop has run for ${this.state.attemptCount - 1} iterations. Continue executing to prevent runaway costs?`
+            `Agent loop has run for ${this.state.attemptCount - 1} iterations. Continue executing to prevent runaway costs?`,
           );
           if (!continueExec) {
-            this.interaction.showText('● Terminated by user to prevent runaway iterations.');
+            this.interaction.showText(
+              "● Terminated by user to prevent runaway iterations.",
+            );
             this.state.done = true;
             break;
           }
         }
 
-        // Repository Tree builder (Hierarchical Summary)
-        let repoMapText = '';
-        try {
-          const indexPath = path.join(this.cwd, '.orbit', 'symbols.json');
-          if (fs.existsSync(indexPath)) {
-            const raw = fs.readFileSync(indexPath, 'utf8');
-            const index = JSON.parse(raw);
-            if (index.files && typeof index.files === 'object') {
-              const fileList = Object.keys(index.files);
-              
-              interface TreeNode {
-                name: string;
-                children: Map<string, TreeNode>;
-                isFile: boolean;
-              }
-
-              const rootNode: TreeNode = { name: '', children: new Map(), isFile: false };
-              for (const file of fileList) {
-                const parts = file.split(/[/\\]/);
-                let current = rootNode;
-                for (let i = 0; i < parts.length; i++) {
-                  const part = parts[i];
-                  if (!part) continue;
-                  const isFile = i === parts.length - 1;
-                  if (!current.children.has(part)) {
-                    current.children.set(part, { name: part, children: new Map(), isFile });
-                  }
-                  current = current.children.get(part)!;
-                }
-              }
-
-              const renderTree = (node: TreeNode, indent: string): string => {
-                let output = '';
-                const sorted = Array.from(node.children.values()).sort((a, b) => {
-                  if (a.isFile !== b.isFile) return a.isFile ? 1 : -1;
-                  return a.name.localeCompare(b.name);
-                });
-                for (const child of sorted) {
-                  if (child.isFile) {
-                    output += `${indent}- ${child.name}\n`;
-                  } else {
-                    output += `${indent}- ${child.name}/\n`;
-                    output += renderTree(child, indent + '  ');
-                  }
-                }
-                return output;
-              };
-
-              const treeStr = renderTree(rootNode, '');
-              repoMapText = `\n\nProject Directory Structure:\n${treeStr}\n\nNote: To find where a symbol (class, function, etc.) is declared or referenced, use the "search_symbols" and "find_symbol_references" tools dynamically.`;
+        // Repository Tree builder (Hierarchical Summary via PageRank Repo Map)
+        let repoMapText = "";
+        if (this.cachedRepoMapTextForRun !== null) {
+          repoMapText = this.cachedRepoMapTextForRun;
+        } else {
+          try {
+            const indexPath = path.join(this.cwd, ".orbit", "symbols.json");
+            const indexer = new SymbolIndexer(this.cwd);
+            if (!fs.existsSync(indexPath)) {
+              await indexer.index();
             }
+            if (fs.existsSync(indexPath)) {
+              const stat = fs.statSync(indexPath);
+              if (
+                stat.mtimeMs === this.lastSymbolsMtime &&
+                this.cachedRepoMapText
+              ) {
+                repoMapText = this.cachedRepoMapText;
+              } else {
+                const landmarkMap = await indexer.getRepoMapText(2048);
+                if (landmarkMap) {
+                  repoMapText = `\n\n${landmarkMap}\n\nNote: To find where a symbol (class, function, etc.) is declared or referenced, use the "search_symbols" and "find_symbol_references" tools dynamically.`;
+                  this.cachedRepoMapText = repoMapText;
+                  this.lastSymbolsMtime = stat.mtimeMs;
+                }
+              }
+            }
+          } catch {
+            // Ignore
           }
-        } catch {
-          // Ignore
+          this.cachedRepoMapTextForRun = repoMapText;
         }
 
-        const contextPack = await this.contextBuilder.build(this.state.relevantFiles);
-        const systemPrompt = (this.options?.systemPromptOverride || Planner.makeSystemPrompt()) + repoMapText;
-        const { system, messages } = MessageBuilder.build(systemPrompt, this.state, contextPack);
+        // 1. Dynamic routing selection
+        // Explore vs. Write/Repair phase detection
+        let nextModel =
+          this.options?.modelOverride || this.config.models.default;
 
+        // If it's a verification failure (Auto-Repair), it MUST be R1/Pro
+        const isRepairTurn =
+          this.state.history.length > 0 &&
+          this.state.history[this.state.history.length - 1].role === "user" &&
+          this.state.history[this.state.history.length - 1].content.some(
+            (b) =>
+              b.type === "text" && b.text.includes("[Verification Failed]"),
+          );
+
+        // Check if the user request has tool execution or is complex
+        // We route to fast model (V4-Flash) if it's not a repair turn and no write edits have occurred yet
+        const hasWrittenFiles = this.state.history.some(
+          (msg) =>
+            msg.role === "assistant" &&
+            msg.content.some(
+              (b) =>
+                b.type === "tool_call" &&
+                (b.toolCall.name === "write_file" ||
+                  b.toolCall.name === "edit_file"),
+            ),
+        );
+
+        if (
+          !this.options?.modelOverride &&
+          !isRepairTurn &&
+          !hasWrittenFiles &&
+          this.config.models.fast
+        ) {
+          nextModel = this.config.models.fast;
+        } else {
+          nextModel = this.options?.modelOverride || this.config.models.default;
+        }
+
+        const activeModel = nextModel;
+        if (!this.cachedContextPack) {
+          const mentionQuery =
+            this.state.history
+              .filter((m) => m.role === "user")
+              .map((m) =>
+                m.content
+                  .filter((b) => b.type === "text")
+                  .map((b: any) => b.text)
+                  .join("\n"),
+              )
+              .join("\n") || this.state.task;
+          this.cachedContextPack = await this.contextBuilder.build(
+            this.state.relevantFiles,
+            mentionQuery,
+          );
+        }
         let toolDefs = toolRegistry.getDefinitions();
         if (this.options?.allowedTools) {
-          toolDefs = toolDefs.filter((t) => this.options!.allowedTools!.includes(t.name));
+          toolDefs = toolDefs.filter((t) =>
+            this.options!.allowedTools!.includes(t.name),
+          );
+        }
+        toolDefs.sort((a, b) => a.name.localeCompare(b.name));
+
+        let systemPrompt =
+          (this.options?.systemPromptOverride ||
+            Planner.makeSystemPrompt(activeModel)) + repoMapText;
+        systemPrompt += generateXMLToolsPrompt(toolDefs);
+
+        const contextPack = this.cachedContextPack;
+        const { system, messages } = MessageBuilder.build(
+          systemPrompt,
+          this.state,
+          contextPack,
+        );
+
+        const isReasoner =
+          activeModel.toLowerCase().includes("reasoner") ||
+          activeModel.toLowerCase().includes("r1") ||
+          activeModel.toLowerCase().includes("v4");
+
+        this.statusBar.start(
+          `Calling ${activeModel}... | Cost: $${this.sessionCost.toFixed(4)}`,
+        );
+
+        this.abortController = new AbortController();
+
+        // 2. Dynamic thinking budget configuration
+        let thinkingBudget = 1024;
+        if (isRepairTurn) {
+          thinkingBudget = 2048;
         }
 
-        const activeModel = this.options?.modelOverride || this.config.models.default;
-        this.statusBar.start(`Calling ${activeModel}... | Cost: $${this.sessionCost.toFixed(4)}`);
-        
-        this.abortController = new AbortController();
+        this.stopKeepaliveTimer();
+        this.lastChatParams = { model: activeModel, messages, system };
+
         const stream = this.provider.chat({
           model: activeModel,
           messages,
@@ -243,81 +385,251 @@ export class AgentLoop {
           tools: toolDefs,
           stream: true,
           abortSignal: this.abortController.signal,
+          thinking: isReasoner
+            ? { enabled: true, budgetTokens: thinkingBudget }
+            : undefined,
         });
 
-        let responseText = '';
+        let responseText = "";
+        let thinkingText = "";
+        let thinkingSignature = "";
         const toolCallsToExecute: OrbitToolCall[] = [];
 
         try {
           for await (const event of stream) {
             this.statusBar.stop();
-            if (event.type === 'text_delta') {
+            if (event.type === "text_delta") {
               responseText += event.text;
-              eventBus.emitEvent('model_delta', { text: event.text });
-            } else if (event.type === 'thinking_delta') {
-              // Handle thinking delta if needed
-            } else if (event.type === 'usage') {
+              eventBus.emitEvent("model_delta", { text: event.text });
+            } else if (event.type === "thinking_delta") {
+              if (event.text) {
+                thinkingText += event.text;
+                eventBus.emitEvent("thinking_delta", { text: event.text });
+              }
+              if (event.signature) {
+                thinkingSignature = event.signature;
+              }
+            } else if (event.type === "usage") {
               this.accumulateCost(activeModel, event.usage);
-            } else if (event.type === 'tool_call') {
+            } else if (event.type === "tool_call") {
               toolCallsToExecute.push(event.toolCall);
-            } else if (event.type === 'error') {
+            } else if (event.type === "error") {
               throw event.error;
             }
           }
         } catch (chatError: any) {
-          if (chatError.name === 'AbortError' || this.abortController?.signal.aborted) {
+          if (
+            chatError.name === "AbortError" ||
+            this.abortController?.signal.aborted
+          ) {
             // Aborted, handled below
           } else {
-            this.interaction.showText(`[Error] LLM Call failed: ${chatError.message}`);
+            this.interaction.showText(
+              `[Error] LLM Call failed: ${chatError.message}`,
+            );
             this.state.done = true;
             break;
           }
         } finally {
           this.statusBar.stop();
+          this.startKeepaliveTimer();
+        }
+
+        if (toolCallsToExecute.length === 0 && responseText) {
+          const xmlToolCalls = parseXMLToolCalls(responseText);
+          if (xmlToolCalls.length > 0) {
+            toolCallsToExecute.push(...xmlToolCalls);
+          } else {
+            const srBlocks = parseSearchReplaceBlocks(responseText);
+            let idCounter = 1;
+            for (const block of srBlocks) {
+              toolCallsToExecute.push({
+                id: `sr_call_${idCounter++}_${Date.now()}`,
+                name: "edit_file",
+                arguments: JSON.stringify({
+                  path: block.filePath,
+                  oldText: block.oldText,
+                  newText: block.newText,
+                }),
+              });
+            }
+          }
         }
 
         if (this.abortController?.signal.aborted) {
           const action = await this.handleInterrupt();
-          if (action === 'continue') {
-            this.interaction.showText('● Resuming execution...');
+          if (action === "continue") {
+            this.interaction.showText("● Resuming execution...");
             this.abortController = null;
             continue;
-          } else if (action === 'rollback_exit') {
+          } else if (action === "rollback_exit") {
             await this.rollbackLastCheckpoint();
             this.state.done = true;
             process.exit(0);
           } else {
-            this.interaction.showText('● Aborted. Returning to REPL prompt.');
+            this.interaction.showText("● Aborted. Returning to REPL prompt.");
             this.state.done = true;
             break;
           }
         }
 
         const assistantBlocks: OrbitContentBlock[] = [];
+        if (thinkingText) {
+          assistantBlocks.push({
+            type: "thinking",
+            text: thinkingText,
+            ...(thinkingSignature ? { signature: thinkingSignature } : {}),
+          });
+        }
         if (responseText) {
-          assistantBlocks.push({ type: 'text', text: responseText });
+          assistantBlocks.push({ type: "text", text: responseText });
         }
         for (const tc of toolCallsToExecute) {
-          assistantBlocks.push({ type: 'tool_call', toolCall: tc });
+          assistantBlocks.push({ type: "tool_call", toolCall: tc });
         }
 
         const assistantMsg: OrbitMessage = {
           id: `msg_asst_${Date.now()}`,
-          role: 'assistant',
+          role: "assistant",
           createdAt: new Date().toISOString(),
           content: assistantBlocks,
         };
         this.state.history.push(assistantMsg);
+        this.sessionManager.saveHistory(this.state.history);
 
         if (responseText) {
           if (toolCallsToExecute.length > 0) {
             Renderer.printThought(responseText);
           } else {
-            this.interaction.showText(`\nOrbit: ${Renderer.formatMarkdown(responseText)}`);
+            this.interaction.showText(
+              `\nOrbit: ${Renderer.formatMarkdown(responseText)}`,
+            );
           }
         }
 
         if (toolCallsToExecute.length === 0) {
+          const hasEdits = this.state.history.some(
+            (msg) =>
+              msg.role === "assistant" &&
+              msg.content.some(
+                (b) =>
+                  b.type === "tool_call" &&
+                  (b.toolCall.name === "write_file" ||
+                    b.toolCall.name === "edit_file"),
+              ),
+          );
+
+          if (hasEdits && (this.config.context as any)?.autoRepair) {
+            const testTool = toolRegistry.get("run_tests");
+            if (testTool) {
+              this.interaction.showText(
+                "\n● Auto-Repair: Running project tests to verify changes...",
+              );
+              const preferredCommand = (this.config.context as any)
+                ?.testCommands?.[0];
+              const result = await testTool.execute(
+                { command: preferredCommand },
+                {
+                  cwd: this.cwd,
+                  sessionId: this.state.sessionId,
+                  abortSignal: this.abortController?.signal,
+                },
+              );
+
+              if (!result.ok) {
+                const repairAttempts = this.state.history.filter(
+                  (m) =>
+                    m.role === "user" &&
+                    m.content.some(
+                      (b) =>
+                        b.type === "text" &&
+                        b.text.includes("[Verification Failed]"),
+                    ),
+                ).length;
+
+                if (repairAttempts >= 3) {
+                  this.interaction.showText(
+                    picocolors.red(
+                      `\n✖ Auto-Repair: Max attempts (3) reached. Codebase is unstable. Rolling back all changes for safety...`,
+                    ),
+                  );
+                  await this.rollbackLastCheckpoint();
+                  this.state.done = true;
+                  break;
+                }
+
+                this.interaction.showText(
+                  picocolors.red(
+                    `✖ Tests failed! Entering auto-repair loop (Attempt ${repairAttempts + 1}/3)...`,
+                  ),
+                );
+                const rawLog = result.error || (result as any).display || "";
+                let errLog = cleanAndTruncateTestLog(rawLog);
+
+                // 3. Pre-Analysis Error Distillation via V4-Flash
+                if (this.config.models.fast) {
+                  this.interaction.showText(
+                    `● Auto-Repair: Compressing test failure logs using ${this.config.models.fast}...`,
+                  );
+                  try {
+                    const fastModel = this.config.models.fast;
+                    const distillationPrompt = `Extract and summarize the core compile error or assertion failure from the following test logs. Keep the output extremely dense and precise. Specify only:
+1. The exact file path and line number of the failure.
+2. The failing test description.
+3. The assert details (e.g. Expected X, Got Y).
+Do not include any other markdown formatting or conversational text. Output ONLY the summary:
+
+${errLog}`;
+                    const distStream = this.provider.chat({
+                      model: fastModel,
+                      messages: [
+                        {
+                          id: `msg_distill_${Date.now()}`,
+                          role: "user",
+                          createdAt: new Date().toISOString(),
+                          content: [{ type: "text", text: distillationPrompt }],
+                        },
+                      ],
+                      tools: [],
+                    });
+                    let distilledLog = "";
+                    for await (const event of distStream) {
+                      if (event.type === "text_delta") {
+                        distilledLog += event.text;
+                      }
+                    }
+                    if (distilledLog.trim()) {
+                      errLog = distilledLog.trim();
+                      this.interaction.showText(
+                        picocolors.gray(`● Compressed logs:\n${errLog}`),
+                      );
+                    }
+                  } catch {
+                    // Fallback to normal cleaned log on distillation failure
+                  }
+                }
+
+                const feedbackPrompt = `[Verification Failed] The changes made caused test failures. Test command: "${preferredCommand || "auto-detected runner"}". Output:\n\n${errLog}\n\nPlease analyze this failure log, locate the files causing assertion or compile errors, and fix the codebase so that the tests pass successfully.`;
+
+                const systemMsg: OrbitMessage = {
+                  id: `msg_validation_err_${Date.now()}`,
+                  role: "user",
+                  createdAt: new Date().toISOString(),
+                  content: [{ type: "text", text: feedbackPrompt }],
+                };
+                this.state.history.push(systemMsg);
+                this.sessionManager.saveHistory(this.state.history);
+                continue;
+              } else {
+                this.interaction.showText(
+                  picocolors.green(
+                    `✔ All tests passed successfully! Verification green.`,
+                  ),
+                );
+              }
+            }
+          }
+
           this.state.done = true;
           break;
         }
@@ -326,18 +638,24 @@ export class AgentLoop {
         for (const tc of toolCallsToExecute) {
           let argSummary = tc.arguments;
           if (argSummary.length > 80) {
-            argSummary = argSummary.substring(0, 77) + '...';
+            argSummary = argSummary.substring(0, 77) + "...";
           }
-          this.interaction.showText(`\n  ${picocolors.magenta('⬢')} Tool Run: ${picocolors.cyan(tc.name)} ${picocolors.gray(argSummary)}`);
+          this.interaction.showText(
+            `\n  ${picocolors.cyan("✦")} ${picocolors.bold(picocolors.white(tc.name))} ${picocolors.gray(argSummary)}`,
+          );
 
           const registeredTool = toolRegistry.get(tc.name);
           const declaredRisk = registeredTool?.risk;
-          const decision = this.permissionEngine.evaluate(tc.name, JSON.parse(tc.arguments), declaredRisk);
+          const decision = this.permissionEngine.evaluate(
+            tc.name,
+            JSON.parse(tc.arguments),
+            declaredRisk,
+          );
 
-          if (decision.action === 'deny') {
+          if (decision.action === "deny") {
             this.interaction.showText(`✖ Blocked: ${decision.reason}`);
             toolResultBlocks.push({
-              type: 'tool_result',
+              type: "tool_result",
               toolResult: {
                 toolCallId: tc.id,
                 name: tc.name,
@@ -349,45 +667,61 @@ export class AgentLoop {
               tc.name,
               tc,
               null,
-              decision.risk || 'read',
+              decision.risk || "read",
               decision.action,
-              'denied'
+              "denied",
             );
             continue;
           }
 
-          if (decision.action === 'ask') {
+          if (decision.action === "ask") {
             let approved = false;
             let currentArgs = tc.arguments;
             while (true) {
               const choice = await Prompt.askSelect(
                 `Confirm execution of tool "${tc.name}"? Reason: ${decision.reason}`,
                 [
-                  { value: 'approve', label: 'Approve execution' },
-                  { value: 'edit', label: 'Edit tool arguments' },
-                  { value: 'deny', label: 'Deny execution' }
-                ]
+                  { value: "approve", label: "Approve execution" },
+                  { value: "edit", label: "Edit tool arguments" },
+                  { value: "deny", label: "Deny execution" },
+                ],
               );
-              if (choice === 'approve') {
+              if (choice === "approve") {
                 approved = true;
                 break;
-              } else if (choice === 'edit') {
+              } else if (choice === "edit") {
                 let edited: string | null = null;
-                const isObjectSchema = registeredTool?.inputSchema instanceof z.ZodObject;
+                const isObjectSchema =
+                  registeredTool?.inputSchema instanceof z.ZodObject;
 
                 if (isObjectSchema) {
-                  const editChoice = await Prompt.askSelect('Choose edit mode:', [
-                    { value: 'form', label: '(Recommended) Interactive form fields editor' },
-                    { value: 'json', label: 'Raw JSON string editor' },
-                    { value: 'cancel', label: 'Cancel' }
-                  ]);
-                  if (editChoice === 'form') {
-                    edited = await this.promptSchemaGuided(registeredTool, currentArgs);
-                  } else if (editChoice === 'json') {
-                    edited = await Prompt.askText('Edit tool arguments (JSON string):', currentArgs);
+                  const editChoice = await Prompt.askSelect(
+                    "Choose edit mode:",
+                    [
+                      {
+                        value: "form",
+                        label: "(Recommended) Interactive form fields editor",
+                      },
+                      { value: "json", label: "Raw JSON string editor" },
+                      { value: "cancel", label: "Cancel" },
+                    ],
+                  );
+                  if (editChoice === "form") {
+                    edited = await this.promptSchemaGuided(
+                      registeredTool,
+                      currentArgs,
+                    );
+                  } else if (editChoice === "json") {
+                    edited = await Prompt.askText(
+                      "Edit tool arguments (JSON string):",
+                      currentArgs,
+                    );
                   }
                 } else {
-                  edited = await Prompt.askText('Edit tool arguments (JSON string):', currentArgs);
+                  edited = await Prompt.askText(
+                    "Edit tool arguments (JSON string):",
+                    currentArgs,
+                  );
                 }
 
                 if (edited === null) {
@@ -396,12 +730,17 @@ export class AgentLoop {
                 try {
                   const parsed = JSON.parse(edited);
                   if (registeredTool && registeredTool.inputSchema) {
-                    const validation = registeredTool.inputSchema.safeParse(parsed);
+                    const validation =
+                      registeredTool.inputSchema.safeParse(parsed);
                     if (!validation.success) {
-                      const errorMsgs = validation.error.errors.map(
-                        e => `${e.path.join('.') || 'root'}: ${e.message}`
-                      ).join(', ');
-                      this.interaction.showText(`✖ Schema validation failed: ${errorMsgs}`);
+                      const errorMsgs = validation.error.errors
+                        .map(
+                          (e) => `${e.path.join(".") || "root"}: ${e.message}`,
+                        )
+                        .join(", ");
+                      this.interaction.showText(
+                        `✖ Schema validation failed: ${errorMsgs}`,
+                      );
                       continue;
                     }
                   }
@@ -411,7 +750,9 @@ export class AgentLoop {
                   approved = true;
                   break;
                 } catch (err: any) {
-                  this.interaction.showText(`✖ Invalid JSON: ${err.message}. Please try again.`);
+                  this.interaction.showText(
+                    `✖ Invalid JSON: ${err.message}. Please try again.`,
+                  );
                 }
               } else {
                 break;
@@ -421,11 +762,11 @@ export class AgentLoop {
             if (!approved) {
               this.interaction.showText(`✖ Rejected by user.`);
               toolResultBlocks.push({
-                type: 'tool_result',
+                type: "tool_result",
                 toolResult: {
                   toolCallId: tc.id,
                   name: tc.name,
-                  content: 'Rejected by user',
+                  content: "Rejected by user",
                   isError: true,
                 },
               });
@@ -433,9 +774,9 @@ export class AgentLoop {
                 tc.name,
                 tc,
                 null,
-                decision.risk || 'read',
+                decision.risk || "read",
                 decision.action,
-                'denied'
+                "denied",
               );
               continue;
             }
@@ -455,29 +796,41 @@ export class AgentLoop {
           let hookResult: any = null;
 
           // Milestone 22: Git Auto-Commits with LLM Commit Messages & Pre-Commit Checks
-          if (tc.name === 'git_commit') {
+          if (tc.name === "git_commit") {
             // 1. Pre-commit verification checks (run tests if available)
-            if (contextPack.projectIndex.testCommands && contextPack.projectIndex.testCommands.length > 0) {
-              this.interaction.showText(`● Pre-commit checks: running verification tests...`);
+            if (
+              contextPack.projectIndex.testCommands &&
+              contextPack.projectIndex.testCommands.length > 0
+            ) {
+              this.interaction.showText(
+                `● Pre-commit checks: running verification tests...`,
+              );
               const testCmd = contextPack.projectIndex.testCommands[0];
               try {
                 await execPromise(testCmd, { cwd: this.cwd });
                 this.interaction.showText(`✔ Pre-commit checks passed.`);
               } catch (err: any) {
-                this.interaction.showText(picocolors.red(`✖ Pre-commit checks failed. Verification tests failed.`));
-                
+                this.interaction.showText(
+                  picocolors.red(
+                    `✖ Pre-commit checks failed. Verification tests failed.`,
+                  ),
+                );
+
                 const choice = await Prompt.askSelect(
                   `Pre-commit verification tests failed. How would you like to proceed?`,
                   [
-                    { value: 'yes', label: 'Proceed with the commit anyway' },
-                    { value: 'diagnose', label: 'Let Agent auto-repair the failures (diagnose)' },
-                    { value: 'no', label: 'Abort the commit entirely' }
-                  ]
+                    { value: "yes", label: "Proceed with the commit anyway" },
+                    {
+                      value: "diagnose",
+                      label: "Let Agent auto-repair the failures (diagnose)",
+                    },
+                    { value: "no", label: "Abort the commit entirely" },
+                  ],
                 );
 
-                if (choice === 'diagnose') {
+                if (choice === "diagnose") {
                   toolResultBlocks.push({
-                    type: 'tool_result',
+                    type: "tool_result",
                     toolResult: {
                       toolCallId: tc.id,
                       name: tc.name,
@@ -486,13 +839,14 @@ export class AgentLoop {
                     },
                   });
                   continue;
-                } else if (choice !== 'yes') {
+                } else if (choice !== "yes") {
                   toolResultBlocks.push({
-                    type: 'tool_result',
+                    type: "tool_result",
                     toolResult: {
                       toolCallId: tc.id,
                       name: tc.name,
-                      content: 'Commit aborted by user due to pre-commit test failures.',
+                      content:
+                        "Commit aborted by user due to pre-commit test failures.",
                       isError: true,
                     },
                   });
@@ -503,23 +857,30 @@ export class AgentLoop {
 
             // 2. Generate Commit Message via LLM if not provided
             if (!parsedArgs.message) {
-              this.interaction.showText(`● Git Commit: generating commit message via LLM...`);
+              this.interaction.showText(
+                `● Git Commit: generating commit message via LLM...`,
+              );
               try {
-                const { stdout } = await execPromise('git diff --cached', { cwd: this.cwd });
+                const { stdout } = await execPromise("git diff --cached", {
+                  cwd: this.cwd,
+                });
                 if (!stdout.trim()) {
-                  this.interaction.showText(`⚠ Warning: No staged changes found to commit.`);
+                  this.interaction.showText(
+                    `⚠ Warning: No staged changes found to commit.`,
+                  );
                 } else {
-                  const fastModel = this.config.models.fast || this.config.models.default;
+                  const fastModel =
+                    this.config.models.fast || this.config.models.default;
                   const stream = this.provider.chat({
                     model: fastModel,
                     messages: [
                       {
                         id: `msg_commit_${Date.now()}`,
-                        role: 'user',
+                        role: "user",
                         createdAt: new Date().toISOString(),
                         content: [
                           {
-                            type: 'text',
+                            type: "text",
                             text: `Generate a concise, high-quality conventional git commit message (e.g. feat(cli): add autocomplete) for the following git diff. Output ONLY the commit message, no formatting, no markdown, no quotes, just the text:\n\n${stdout.substring(0, 20000)}`,
                           },
                         ],
@@ -528,36 +889,53 @@ export class AgentLoop {
                     tools: [],
                   });
 
-                  let generatedMessage = '';
+                  let generatedMessage = "";
                   for await (const event of stream) {
-                    if (event.type === 'text_delta') {
+                    if (event.type === "text_delta") {
                       generatedMessage += event.text;
                     }
                   }
 
-                  generatedMessage = generatedMessage.trim().replace(/^["']|["']$/g, '');
+                  generatedMessage = generatedMessage
+                    .trim()
+                    .replace(/^["']|["']$/g, "");
                   if (generatedMessage) {
                     parsedArgs.message = generatedMessage;
                     tc.arguments = JSON.stringify(parsedArgs);
-                    this.interaction.showText(`● Generated Commit Message: "${generatedMessage}"`);
+                    this.interaction.showText(
+                      `● Generated Commit Message: "${generatedMessage}"`,
+                    );
                   }
                 }
               } catch (err: any) {
-                this.interaction.showText(`⚠ Failed to generate commit message: ${err.message}`);
+                this.interaction.showText(
+                  `⚠ Failed to generate commit message: ${err.message}`,
+                );
               }
             }
           }
 
-          if ((tc.name === 'write_file' || tc.name === 'edit_file') && targetPath) {
-            const checkpoint = await this.checkpointManager.captureBeforeState(tc.id, targetPath);
+          if (
+            (tc.name === "write_file" || tc.name === "edit_file") &&
+            targetPath
+          ) {
+            const checkpoint = await this.checkpointManager.captureBeforeState(
+              tc.id,
+              targetPath,
+            );
             beforeContent = checkpoint.backups[0].originalContent;
 
             // Run pre-edit hook if configured
             if (this.config.hooks?.preEdit) {
               this.interaction.showText(`● Running pre-edit hook...`);
-              const hookRes = await this.runHook(this.config.hooks.preEdit, targetPath);
+              const hookRes = await this.runHook(
+                this.config.hooks.preEdit,
+                targetPath,
+              );
               if (!hookRes.ok) {
-                this.interaction.showText(`✖ Pre-edit hook failed: ${hookRes.output}`);
+                this.interaction.showText(
+                  `✖ Pre-edit hook failed: ${hookRes.output}`,
+                );
                 hookResult = {
                   ok: false,
                   error: `Pre-edit hook failed: ${hookRes.output}`,
@@ -570,14 +948,16 @@ export class AgentLoop {
           }
 
           let hasGitCheckpoint = false;
-          if (tc.name === 'bash' || tc.name === 'run_tests') {
+          if (tc.name === "bash" || tc.name === "run_tests") {
             const isGit = await this.isGitRepo();
             if (isGit) {
               hasGitCheckpoint = await this.createGitCheckpoint(tc.id);
             }
           }
 
-          this.statusBar.start(`Executing tool: ${tc.name}... | Cost: $${this.sessionCost.toFixed(4)}`);
+          this.statusBar.start(
+            `Executing tool: ${tc.name}... | Cost: $${this.sessionCost.toFixed(4)}`,
+          );
           const result = skipToolExecution
             ? hookResult
             : await this.stepRunner.run(tc, this.abortController?.signal);
@@ -585,25 +965,25 @@ export class AgentLoop {
 
           if (this.abortController?.signal.aborted) {
             const action = await this.handleInterrupt();
-            if (action === 'continue') {
-              this.interaction.showText('● Resuming execution...');
+            if (action === "continue") {
+              this.interaction.showText("● Resuming execution...");
               this.abortController = null;
               toolResultBlocks.push({
-                type: 'tool_result',
+                type: "tool_result",
                 toolResult: {
                   toolCallId: tc.id,
                   name: tc.name,
-                  content: 'Interrupted by user',
+                  content: "Interrupted by user",
                   isError: true,
                 },
               });
               continue;
-            } else if (action === 'rollback_exit') {
+            } else if (action === "rollback_exit") {
               await this.rollbackLastCheckpoint();
               this.state.done = true;
               process.exit(0);
             } else {
-              this.interaction.showText('● Aborted. Returning to REPL prompt.');
+              this.interaction.showText("● Aborted. Returning to REPL prompt.");
               this.state.done = true;
               break;
             }
@@ -611,12 +991,22 @@ export class AgentLoop {
 
           let finalResult = result;
           // Run post-edit hook if tool succeeded and it's a file edit
-          if (result.ok && !skipToolExecution && (tc.name === 'write_file' || tc.name === 'edit_file') && targetPath) {
+          if (
+            result.ok &&
+            !skipToolExecution &&
+            (tc.name === "write_file" || tc.name === "edit_file") &&
+            targetPath
+          ) {
             if (this.config.hooks?.postEdit) {
               this.interaction.showText(`● Running post-edit hook...`);
-              const hookRes = await this.runHook(this.config.hooks.postEdit, targetPath);
+              const hookRes = await this.runHook(
+                this.config.hooks.postEdit,
+                targetPath,
+              );
               if (!hookRes.ok) {
-                this.interaction.showText(`✖ Post-edit hook failed: ${hookRes.output}`);
+                this.interaction.showText(
+                  `✖ Post-edit hook failed: ${hookRes.output}`,
+                );
                 finalResult = {
                   ok: false,
                   error: `Post-edit hook failed: ${hookRes.output}`,
@@ -628,36 +1018,67 @@ export class AgentLoop {
           }
 
           // Type & Lint Guard Rails check
-            if (finalResult.ok && targetPath && (tc.name === 'write_file' || tc.name === 'edit_file')) {
-            if (targetPath.endsWith('.ts') || targetPath.endsWith('.tsx') || targetPath.endsWith('.js') || targetPath.endsWith('.jsx')) {
+          if (
+            finalResult.ok &&
+            targetPath &&
+            (tc.name === "write_file" || tc.name === "edit_file")
+          ) {
+            if (
+              targetPath.endsWith(".ts") ||
+              targetPath.endsWith(".tsx") ||
+              targetPath.endsWith(".js") ||
+              targetPath.endsWith(".jsx")
+            ) {
               try {
                 let lintCmd = `npx eslint --quiet "${targetPath}"`;
-                if (fs.existsSync(path.join(this.cwd, 'biome.json')) || fs.existsSync(path.join(this.cwd, 'biome.jsonc'))) {
+                if (
+                  fs.existsSync(path.join(this.cwd, "biome.json")) ||
+                  fs.existsSync(path.join(this.cwd, "biome.jsonc"))
+                ) {
                   lintCmd = `npx @biomejs/biome lint "${targetPath}"`;
                 }
-                this.interaction.showText(`● Verifying file syntax & type safety for ${targetPath}...`);
+                this.interaction.showText(
+                  `● Verifying file syntax & type safety for ${targetPath}...`,
+                );
                 await execPromise(lintCmd, { cwd: this.cwd });
                 this.interaction.showText(`✔ Syntax verification passed.`);
               } catch (err: any) {
-                this.interaction.showText(picocolors.yellow(`⚠ Syntax/Lint validation warning for ${targetPath}:`));
-                this.interaction.showText(picocolors.red(err.stdout || err.stderr || err.message));
+                this.interaction.showText(
+                  picocolors.yellow(
+                    `⚠ Syntax/Lint validation warning for ${targetPath}:`,
+                  ),
+                );
+                this.interaction.showText(
+                  picocolors.red(err.stdout || err.stderr || err.message),
+                );
 
                 let checkPassedAfterAutoInstall = false;
-                const outputText = err.stdout || err.stderr || '';
-                
+                const outputText = err.stdout || err.stderr || "";
+
                 try {
                   const missingModules: string[] = [];
-                  const moduleMatch1 = [...outputText.matchAll(/Cannot find module '([^']+)'/g)];
+                  const moduleMatch1 = [
+                    ...outputText.matchAll(/Cannot find module '([^']+)'/g),
+                  ];
                   for (const m of moduleMatch1) {
                     if (m[1]) missingModules.push(m[1]);
                   }
-                  const moduleMatch2 = [...outputText.matchAll(/Cannot find name '([^']+)'/g)];
+                  const moduleMatch2 = [
+                    ...outputText.matchAll(/Cannot find name '([^']+)'/g),
+                  ];
                   for (const m of moduleMatch2) {
-                    if (m[1] && (m[1].toLowerCase() === m[1] || m[1].startsWith('@'))) {
+                    if (
+                      m[1] &&
+                      (m[1].toLowerCase() === m[1] || m[1].startsWith("@"))
+                    ) {
                       missingModules.push(m[1]);
                     }
                   }
-                  const typesMatch = [...outputText.matchAll(/Could not find a declaration file for module '([^']+)'/g)];
+                  const typesMatch = [
+                    ...outputText.matchAll(
+                      /Could not find a declaration file for module '([^']+)'/g,
+                    ),
+                  ];
                   for (const m of typesMatch) {
                     if (m[1]) missingModules.push(`@types/${m[1]}`);
                   }
@@ -666,32 +1087,51 @@ export class AgentLoop {
                     const uniqueModules = Array.from(new Set(missingModules));
                     let dependenciesInstalled = false;
                     for (const pkg of uniqueModules) {
-                      const installPkg = await Prompt.askApproval(`Missing dependency "${pkg}" detected. Install it automatically?`);
+                      const installPkg = await Prompt.askApproval(
+                        `Missing dependency "${pkg}" detected. Install it automatically?`,
+                      );
                       if (installPkg) {
                         this.interaction.showText(`● Installing "${pkg}"...`);
-                        const isPnpm = fs.existsSync(path.join(this.cwd, 'pnpm-lock.yaml'));
-                        const isYarn = fs.existsSync(path.join(this.cwd, 'yarn.lock'));
-                        const installCmd = isPnpm 
-                          ? `npx pnpm add -D ${pkg}` 
-                          : isYarn 
-                            ? `yarn add -D ${pkg}` 
+                        const isPnpm = fs.existsSync(
+                          path.join(this.cwd, "pnpm-lock.yaml"),
+                        );
+                        const isYarn = fs.existsSync(
+                          path.join(this.cwd, "yarn.lock"),
+                        );
+                        const installCmd = isPnpm
+                          ? `npx pnpm add -D ${pkg}`
+                          : isYarn
+                            ? `yarn add -D ${pkg}`
                             : `npm install --save-dev ${pkg}`;
-                        
+
                         try {
                           await execPromise(installCmd, { cwd: this.cwd });
-                          this.interaction.showText(`✔ Installed "${pkg}" successfully.`);
+                          this.interaction.showText(
+                            `✔ Installed "${pkg}" successfully.`,
+                          );
                           dependenciesInstalled = true;
                         } catch (installErr: any) {
-                          this.interaction.showText(picocolors.red(`✖ Failed to install "${pkg}": ${installErr.message}`));
+                          this.interaction.showText(
+                            picocolors.red(
+                              `✖ Failed to install "${pkg}": ${installErr.message}`,
+                            ),
+                          );
                         }
                       }
                     }
 
                     if (dependenciesInstalled) {
                       try {
-                        this.interaction.showText(`● Re-verifying syntax after dependency installation...`);
-                        await execPromise(`npx eslint --quiet "${targetPath}"`, { cwd: this.cwd });
-                        this.interaction.showText(`✔ Syntax verification passed after dependency installation.`);
+                        this.interaction.showText(
+                          `● Re-verifying syntax after dependency installation...`,
+                        );
+                        await execPromise(
+                          `npx eslint --quiet "${targetPath}"`,
+                          { cwd: this.cwd },
+                        );
+                        this.interaction.showText(
+                          `✔ Syntax verification passed after dependency installation.`,
+                        );
                         checkPassedAfterAutoInstall = true;
                       } catch (recheckErr: any) {
                         err = recheckErr;
@@ -706,30 +1146,44 @@ export class AgentLoop {
                 if (!checkPassedAfterAutoInstall) {
                   try {
                     const missingSymbols: string[] = [];
-                    const currentOutput = err.stdout || err.stderr || '';
-                    const match1 = [...currentOutput.matchAll(/'([^']+)' is not defined/g)];
+                    const currentOutput = err.stdout || err.stderr || "";
+                    const match1 = [
+                      ...currentOutput.matchAll(/'([^']+)' is not defined/g),
+                    ];
                     for (const m of match1) {
                       if (m[1]) missingSymbols.push(m[1]);
                     }
-                    const match2 = [...currentOutput.matchAll(/Cannot find name '([^']+)'/g)];
+                    const match2 = [
+                      ...currentOutput.matchAll(/Cannot find name '([^']+)'/g),
+                    ];
                     for (const m of match2) {
                       if (m[1]) missingSymbols.push(m[1]);
                     }
 
                     if (missingSymbols.length > 0) {
-                      const indexPath = path.join(this.cwd, '.orbit', 'symbols.json');
+                      const indexPath = path.join(
+                        this.cwd,
+                        ".orbit",
+                        "symbols.json",
+                      );
                       if (fs.existsSync(indexPath)) {
-                        const raw = fs.readFileSync(indexPath, 'utf8');
+                        const raw = fs.readFileSync(indexPath, "utf8");
                         const index = JSON.parse(raw);
-                        if (index.files && typeof index.files === 'object') {
-                          let fileContent = fs.readFileSync(targetPath, 'utf8');
-                          let newImports = '';
+                        if (index.files && typeof index.files === "object") {
+                          let fileContent = fs.readFileSync(targetPath, "utf8");
+                          let newImports = "";
                           for (const symbol of new Set(missingSymbols)) {
                             let foundFile: string | null = null;
-                            for (const [file, fileData] of Object.entries(index.files)) {
+                            for (const [file, fileData] of Object.entries(
+                              index.files,
+                            )) {
                               const data = fileData as any;
                               if (data && Array.isArray(data.symbols)) {
-                                if (data.symbols.some((s: any) => s.name === symbol)) {
+                                if (
+                                  data.symbols.some(
+                                    (s: any) => s.name === symbol,
+                                  )
+                                ) {
                                   foundFile = file;
                                   break;
                                 }
@@ -738,20 +1192,38 @@ export class AgentLoop {
 
                             if (foundFile) {
                               const targetDir = path.dirname(targetPath);
-                              const exportFileAbs = path.resolve(this.cwd, foundFile);
-                              let relPath = path.relative(targetDir, exportFileAbs);
-                              relPath = relPath.replace(/\\/g, '/');
-                              if (!relPath.startsWith('./') && !relPath.startsWith('../')) {
-                                relPath = './' + relPath;
+                              const exportFileAbs = path.resolve(
+                                this.cwd,
+                                foundFile,
+                              );
+                              let relPath = path.relative(
+                                targetDir,
+                                exportFileAbs,
+                              );
+                              relPath = relPath.replace(/\\/g, "/");
+                              if (
+                                !relPath.startsWith("./") &&
+                                !relPath.startsWith("../")
+                              ) {
+                                relPath = "./" + relPath;
                               }
-                              relPath = relPath.replace(/\.(ts|tsx|js|jsx)$/, '.js');
+                              relPath = relPath.replace(
+                                /\.(ts|tsx|js|jsx)$/,
+                                ".js",
+                              );
                               newImports += `import { ${symbol} } from '${relPath}';\n`;
                             }
                           }
 
                           if (newImports) {
-                            fs.writeFileSync(targetPath, newImports + fileContent, 'utf8');
-                            this.interaction.showText(`● Automatically resolved missing imports...`);
+                            fs.writeFileSync(
+                              targetPath,
+                              newImports + fileContent,
+                              "utf8",
+                            );
+                            this.interaction.showText(
+                              `● Automatically resolved missing imports...`,
+                            );
                             autoImported = true;
                           }
                         }
@@ -765,18 +1237,34 @@ export class AgentLoop {
                 let checkPassedAfterAutofix = false;
                 if (autoImported) {
                   try {
-                    this.interaction.showText(`● Re-verifying syntax after auto-imports injection...`);
-                    await execPromise(`npx eslint --quiet "${targetPath}"`, { cwd: this.cwd });
-                    this.interaction.showText(`✔ Syntax verification passed after auto-imports injection.`);
+                    this.interaction.showText(
+                      `● Re-verifying syntax after auto-imports injection...`,
+                    );
+                    await execPromise(`npx eslint --quiet "${targetPath}"`, {
+                      cwd: this.cwd,
+                    });
+                    this.interaction.showText(
+                      `✔ Syntax verification passed after auto-imports injection.`,
+                    );
                     checkPassedAfterAutofix = true;
                   } catch (reErr: any) {
-                    this.interaction.showText(picocolors.yellow(`⚠ Syntax/Lint validation still failed after auto-imports:`));
-                    this.interaction.showText(picocolors.red(reErr.stdout || reErr.stderr || reErr.message));
+                    this.interaction.showText(
+                      picocolors.yellow(
+                        `⚠ Syntax/Lint validation still failed after auto-imports:`,
+                      ),
+                    );
+                    this.interaction.showText(
+                      picocolors.red(
+                        reErr.stdout || reErr.stderr || reErr.message,
+                      ),
+                    );
                   }
                 }
 
                 if (!checkPassedAfterAutofix) {
-                  const autoFix = await Prompt.askApproval(`Lint/Syntax verification failed. Let Agent auto-repair the file?`);
+                  const autoFix = await Prompt.askApproval(
+                    `Lint/Syntax verification failed. Let Agent auto-repair the file?`,
+                  );
                   if (autoFix) {
                     finalResult = {
                       ok: false,
@@ -789,30 +1277,43 @@ export class AgentLoop {
           }
 
           // Phase 5: Interactive Diff Acceptance Check
-          if (finalResult.ok && targetPath && (tc.name === 'write_file' || tc.name === 'edit_file')) {
-            let afterContent = '';
+          if (
+            finalResult.ok &&
+            targetPath &&
+            (tc.name === "write_file" || tc.name === "edit_file")
+          ) {
+            let afterContent = "";
             try {
               const afterArgs = JSON.parse(tc.arguments);
-              afterContent = afterArgs.content || afterArgs.newText || '';
-              await this.interaction.showDiff(targetPath, beforeContent, afterContent);
+              afterContent = afterArgs.content || afterArgs.newText || "";
+              await this.interaction.showDiff(
+                targetPath,
+                beforeContent,
+                afterContent,
+              );
             } catch {
               // Ignored
             }
 
             let accepted = false;
-            const choice = await Prompt.askSelect(`Accept changes to ${targetPath}?`, [
-              { value: 'yes', label: 'Accept all changes' },
-              { value: 'hunks', label: 'Review and accept by hunk/block' },
-              { value: 'no', label: 'Reject and rollback all changes' }
-            ]);
+            const choice = await Prompt.askSelect(
+              `Accept changes to ${targetPath}?`,
+              [
+                { value: "yes", label: "Accept all changes" },
+                { value: "hunks", label: "Review and accept by hunk/block" },
+                { value: "no", label: "Reject and rollback all changes" },
+              ],
+            );
 
-            if (choice === 'yes') {
+            if (choice === "yes") {
               accepted = true;
-            } else if (choice === 'hunks') {
+            } else if (choice === "hunks") {
               try {
-                const linesBefore = beforeContent ? beforeContent.split('\n') : [];
-                const linesAfter = afterContent.split('\n');
-                
+                const linesBefore = beforeContent
+                  ? beforeContent.split("\n")
+                  : [];
+                const linesAfter = afterContent.split("\n");
+
                 interface Hunk {
                   startB: number;
                   endB: number;
@@ -824,40 +1325,45 @@ export class AgentLoop {
                 const hunks: Hunk[] = [];
                 let iB = 0;
                 let iA = 0;
-                
+
                 while (iB < linesBefore.length || iA < linesAfter.length) {
-                  if (iB < linesBefore.length && iA < linesAfter.length && linesBefore[iB] === linesAfter[iA]) {
+                  if (
+                    iB < linesBefore.length &&
+                    iA < linesAfter.length &&
+                    linesBefore[iB] === linesAfter[iA]
+                  ) {
                     iB++;
                     iA++;
                     continue;
                   }
-                  
+
                   const startB = iB;
                   const startA = iA;
-                  
+
                   let bestDB = -1;
                   let bestDA = -1;
                   let minSum = Infinity;
-                  
+
                   const maxLookahead = 20;
                   for (let dB = 0; dB <= maxLookahead; dB++) {
                     for (let dA = 0; dA <= maxLookahead; dA++) {
                       if (dB === 0 && dA === 0) continue;
                       const posB = iB + dB;
                       const posA = iA + dA;
-                      
-                      if (posB > linesBefore.length || posA > linesAfter.length) continue;
-                      
+
+                      if (posB > linesBefore.length || posA > linesAfter.length)
+                        continue;
+
                       const isEndB = posB === linesBefore.length;
                       const isEndA = posA === linesAfter.length;
-                      
+
                       let isMatch = false;
                       if (isEndB && isEndA) {
                         isMatch = true;
                       } else if (!isEndB && !isEndA) {
                         isMatch = linesBefore[posB] === linesAfter[posA];
                       }
-                      
+
                       if (isMatch) {
                         const sum = dB + dA;
                         if (sum < minSum) {
@@ -868,34 +1374,34 @@ export class AgentLoop {
                       }
                     }
                   }
-                  
+
                   if (bestDB !== -1 && bestDA !== -1) {
                     const linesB = linesBefore.slice(startB, startB + bestDB);
                     const linesA = linesAfter.slice(startA, startA + bestDA);
                     iB += bestDB;
                     iA += bestDA;
-                    
+
                     hunks.push({
                       startB,
                       endB: iB,
                       startA,
                       endA: iA,
                       linesB,
-                      linesA
+                      linesA,
                     });
                   } else {
                     const linesB = linesBefore.slice(startB);
                     const linesA = linesAfter.slice(startA);
                     iB = linesBefore.length;
                     iA = linesAfter.length;
-                    
+
                     hunks.push({
                       startB,
                       endB: iB,
                       startA,
                       endA: iA,
                       linesB,
-                      linesA
+                      linesA,
                     });
                   }
                 }
@@ -903,17 +1409,27 @@ export class AgentLoop {
                 if (hunks.length === 0) {
                   accepted = true;
                 } else {
-                  this.interaction.showText(`\n● Reviewing ${hunks.length} hunks in ${targetPath}:`);
+                  this.interaction.showText(
+                    `\n● Reviewing ${hunks.length} hunks in ${targetPath}:`,
+                  );
                   for (let hIdx = 0; hIdx < hunks.length; hIdx++) {
                     const hunk = hunks[hIdx];
-                    console.log(picocolors.cyan(`\n┌── Hunk #${hIdx + 1}/${hunks.length} ──────────────────────────────────`));
+                    console.log(
+                      picocolors.cyan(
+                        `\n┌── Hunk #${hIdx + 1}/${hunks.length} ──────────────────────────────────`,
+                      ),
+                    );
                     for (const line of hunk.linesB) {
                       console.log(`${picocolors.red(`- ${line}`)}`);
                     }
                     for (const line of hunk.linesA) {
                       console.log(`${picocolors.green(`+ ${line}`)}`);
                     }
-                    console.log(picocolors.cyan('└────────────────────────────────────────────────────────────'));
+                    console.log(
+                      picocolors.cyan(
+                        "└────────────────────────────────────────────────────────────",
+                      ),
+                    );
                   }
 
                   const selectedHunkIndices = await Prompt.askMultiSelect(
@@ -921,8 +1437,8 @@ export class AgentLoop {
                     hunks.map((h, idx) => ({
                       value: idx.toString(),
                       label: `Apply Hunk #${idx + 1}`,
-                      hint: `-${h.linesB.length} lines, +${h.linesA.length} lines`
-                    }))
+                      hint: `-${h.linesB.length} lines, +${h.linesA.length} lines`,
+                    })),
                   );
 
                   if (selectedHunkIndices === null) {
@@ -932,7 +1448,9 @@ export class AgentLoop {
                     let lastB = 0;
                     for (let hIdx = 0; hIdx < hunks.length; hIdx++) {
                       const hunk = hunks[hIdx];
-                      mergedLines.push(...linesBefore.slice(lastB, hunk.startB));
+                      mergedLines.push(
+                        ...linesBefore.slice(lastB, hunk.startB),
+                      );
                       if (selectedHunkIndices.includes(hIdx.toString())) {
                         mergedLines.push(...hunk.linesA);
                       } else {
@@ -941,20 +1459,36 @@ export class AgentLoop {
                       lastB = hunk.endB;
                     }
                     mergedLines.push(...linesBefore.slice(lastB));
-                    
-                    fs.writeFileSync(targetPath, mergedLines.join('\n'), 'utf8');
-                    this.interaction.showText(picocolors.green(`✔ Selected hunks merged and saved to ${targetPath}.`));
+
+                    fs.writeFileSync(
+                      targetPath,
+                      mergedLines.join("\n"),
+                      "utf8",
+                    );
+                    this.interaction.showText(
+                      picocolors.green(
+                        `✔ Selected hunks merged and saved to ${targetPath}.`,
+                      ),
+                    );
                     accepted = true;
                   }
                 }
               } catch (hunkErr: any) {
-                this.interaction.showText(picocolors.red(`✖ Hunk merge failed: ${hunkErr.message}. Accepting all instead.`));
+                this.interaction.showText(
+                  picocolors.red(
+                    `✖ Hunk merge failed: ${hunkErr.message}. Accepting all instead.`,
+                  ),
+                );
                 accepted = true;
               }
             }
 
             if (!accepted) {
-              this.interaction.showText(picocolors.yellow(`● Rejected changes. Reverting ${targetPath}...`));
+              this.interaction.showText(
+                picocolors.yellow(
+                  `● Rejected changes. Reverting ${targetPath}...`,
+                ),
+              );
               await this.rollbackLastCheckpoint();
               finalResult = {
                 ok: false,
@@ -963,41 +1497,47 @@ export class AgentLoop {
             }
           }
 
-          const status = finalResult.ok ? ('success' as const) : ('failed' as const);
+          const status = finalResult.ok
+            ? ("success" as const)
+            : ("failed" as const);
           this.sessionManager.recordToolExecution(
             tc.name,
             tc,
             finalResult,
-            decision.risk || 'read',
+            decision.risk || "read",
             decision.action,
-            status
+            status,
           );
 
           if (finalResult.ok) {
             await this.commitLastGitCheckpointSoft();
-            this.interaction.showText(`  ${picocolors.green('✔')} Success: ${picocolors.gray(finalResult.display || 'Done')}`);
+            this.interaction.showText(
+              `  ${picocolors.green("✔")} Success: ${picocolors.gray(finalResult.display || "Done")}`,
+            );
 
             if (targetPath) {
               this.addRelevantFile(targetPath, `Modified by ${tc.name}`);
             }
-            if (tc.name === 'write_file' || tc.name === 'edit_file') {
+            if (tc.name === "write_file" || tc.name === "edit_file") {
               new SymbolIndexer(this.cwd).index().catch(() => {});
             }
           } else {
             await this.rollbackLastGitCheckpoint();
-            this.interaction.showText(`  ${picocolors.red('✖')} Failed: ${picocolors.red(finalResult.error || 'Unknown error')}`);
+            this.interaction.showText(
+              `  ${picocolors.red("✖")} Failed: ${picocolors.red(finalResult.error || "Unknown error")}`,
+            );
           }
 
           toolResultBlocks.push({
-            type: 'tool_result',
+            type: "tool_result",
             toolResult: {
               toolCallId: tc.id,
               name: tc.name,
               content: finalResult.ok
-                ? typeof finalResult.data === 'string'
+                ? typeof finalResult.data === "string"
                   ? finalResult.data
                   : JSON.stringify(finalResult.data)
-                : finalResult.error || 'Unknown error',
+                : finalResult.error || "Unknown error",
               isError: !finalResult.ok,
             },
           });
@@ -1005,56 +1545,67 @@ export class AgentLoop {
 
         const toolMsg: OrbitMessage = {
           id: `msg_tool_${Date.now()}`,
-          role: 'tool',
+          role: "tool",
           createdAt: new Date().toISOString(),
           content: toolResultBlocks,
         };
         this.state.history.push(toolMsg);
         this.abortController = null;
+        this.sessionManager.saveHistory(this.state.history);
       }
 
-      if (this.state.attemptCount >= this.state.maxAttempts && !this.state.done) {
+      if (
+        this.state.attemptCount >= this.state.maxAttempts &&
+        !this.state.done
+      ) {
         this.interaction.showText(
-          `\n● Limit reached: Maximum consecutive loop iterations (${this.state.maxAttempts}) completed. Pausing loop.`
+          `\n● Limit reached: Maximum consecutive loop iterations (${this.state.maxAttempts}) completed. Pausing loop.`,
         );
       }
 
-      const sessions = this.sessionManager.getSessionStore().getEvents(this.state.sessionId);
+      const sessions = this.sessionManager
+        .getSessionStore()
+        .getEvents(this.state.sessionId);
       const modifiedFiles = sessions
-        .filter((e) => e.type === 'file_modified')
+        .filter((e) => e.type === "file_modified")
         .map((e) => e.payload.path);
 
       this.interaction.showText(`\n● Summary:`);
       this.interaction.showText(
-        `  Modified files: ${modifiedFiles.length > 0 ? Array.from(new Set(modifiedFiles)).join(', ') : 'None'}`
+        `  Modified files: ${modifiedFiles.length > 0 ? Array.from(new Set(modifiedFiles)).join(", ") : "None"}`,
       );
       this.interaction.showText(`  Verification: test run executed.`);
-      this.interaction.showText(`  Session Cost: $${this.sessionCost.toFixed(4)}`);
+      this.interaction.showText(
+        `  Session Cost: $${this.sessionCost.toFixed(4)}`,
+      );
 
       if (this.config.autoCommit && modifiedFiles.length > 0) {
         this.interaction.showText(`\n● Auto-committing changes...`);
         try {
           const uniqueFiles = Array.from(new Set(modifiedFiles));
-          const { execSync } = await import('child_process');
-          
+          const { execSync } = await import("child_process");
+
           for (const file of uniqueFiles) {
             execSync(`git add "${file}"`, { cwd: this.cwd });
           }
 
-          const diff = execSync('git diff --cached', { cwd: this.cwd }).toString().trim();
+          const diff = execSync("git diff --cached", { cwd: this.cwd })
+            .toString()
+            .trim();
           if (diff) {
-            this.interaction.showText('● Generating commit message via LLM...');
-            const fastModel = this.config.models.fast || this.config.models.default;
+            this.interaction.showText("● Generating commit message via LLM...");
+            const fastModel =
+              this.config.models.fast || this.config.models.default;
             const stream = this.provider.chat({
               model: fastModel,
               messages: [
                 {
                   id: `msg_auto_commit_${Date.now()}`,
-                  role: 'user',
+                  role: "user",
                   createdAt: new Date().toISOString(),
                   content: [
                     {
-                      type: 'text',
+                      type: "text",
                       text: `Generate a concise, high-quality conventional git commit message (e.g. feat(cli): add autocomplete) for the following git diff. Output ONLY the commit message, no formatting, no markdown, no quotes, just the text:\n\n${diff.substring(0, 20000)}`,
                     },
                   ],
@@ -1063,28 +1614,39 @@ export class AgentLoop {
               tools: [],
             });
 
-            let generatedMessage = '';
+            let generatedMessage = "";
             for await (const event of stream) {
-              if (event.type === 'text_delta') {
+              if (event.type === "text_delta") {
                 generatedMessage += event.text;
               }
             }
-            const finalMsg = generatedMessage.trim().replace(/^["']|["']$/g, '') || 'chore: auto-commit';
-            
-            this.interaction.showText(`● Committing: "${picocolors.green(finalMsg)}"`);
+            const finalMsg =
+              generatedMessage.trim().replace(/^["']|["']$/g, "") ||
+              "chore: auto-commit";
+
+            this.interaction.showText(
+              `● Committing: "${picocolors.green(finalMsg)}"`,
+            );
             const commitCmd = `git commit -m ${JSON.stringify(finalMsg)}`;
             execSync(commitCmd, { cwd: this.cwd });
-            this.interaction.showText(`${picocolors.green('✔')} Auto-commit created successfully.`);
+            this.interaction.showText(
+              `${picocolors.green("✔")} Auto-commit created successfully.`,
+            );
           } else {
-            this.interaction.showText('● No changes staged or modified. Skipping auto-commit.');
+            this.interaction.showText(
+              "● No changes staged or modified. Skipping auto-commit.",
+            );
           }
         } catch (commitErr: any) {
-          this.interaction.showText(picocolors.red(`✖ Auto-commit failed: ${commitErr.message}`));
+          this.interaction.showText(
+            picocolors.red(`✖ Auto-commit failed: ${commitErr.message}`),
+          );
         }
       }
+      this.sessionManager.saveHistory(this.state.history);
     } finally {
-      process.removeListener('SIGINT', sigintListener);
-      process.removeListener('exit', exitListener);
+      process.removeListener("SIGINT", sigintListener);
+      process.removeListener("exit", exitListener);
       if (this.mcpClients.length > 0) {
         this.interaction.showText(`\n● Stopping MCP servers...`);
         for (const client of this.mcpClients) {
@@ -1092,6 +1654,9 @@ export class AgentLoop {
         }
       }
     }
+  } finally {
+    this.stopKeepaliveTimer();
+  }
   }
 
   private addRelevantFile(path: string, reason: string) {
@@ -1100,16 +1665,27 @@ export class AgentLoop {
     }
   }
 
-  private async runHook(hookCommand: string, filePath: string): Promise<{ ok: boolean; output: string }> {
-    const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(this.cwd, filePath);
+  private async runHook(
+    hookCommand: string,
+    filePath: string,
+  ): Promise<{ ok: boolean; output: string }> {
+    const absolutePath = path.isAbsolute(filePath)
+      ? filePath
+      : path.resolve(this.cwd, filePath);
     const relativePath = path.relative(this.cwd, absolutePath);
-    const cmd = hookCommand.replace(/{file}/g, `"${relativePath.replace(/"/g, '\\"')}"`);
+    const cmd = hookCommand.replace(
+      /{file}/g,
+      `"${relativePath.replace(/"/g, '\\"')}"`,
+    );
 
     try {
       const { stdout, stderr } = await execPromise(cmd, { cwd: this.cwd });
       return { ok: true, output: (stdout + stderr).trim() };
     } catch (err: any) {
-      return { ok: false, output: (err.stdout + err.stderr || err.message).trim() };
+      return {
+        ok: false,
+        output: (err.stdout + err.stderr || err.message).trim(),
+      };
     }
   }
 
@@ -1119,6 +1695,51 @@ export class AgentLoop {
 
   public getHistory(): OrbitMessage[] {
     return this.state.history;
+  }
+
+  public resumeSession(sessionId: string): boolean {
+    const session = this.sessionManager.resumeSession(sessionId);
+    if (!session) return false;
+
+    this.state = createInitialState(
+      sessionId,
+      "REPL Interactive Shell Started",
+    );
+    const savedHistory = this.sessionManager.getHistory();
+    if (savedHistory && savedHistory.length > 0) {
+      this.state.history = savedHistory;
+      const lastUser = [...savedHistory]
+        .reverse()
+        .find((m) => m.role === "user");
+      if (lastUser) {
+        const userText = lastUser.content
+          .map((c: any) => (c.type === "text" ? c.text : ""))
+          .join("");
+        this.state.task = userText;
+      }
+    }
+
+    this.checkpointManager = new CheckpointManager(this.cwd, sessionId);
+    this.stepRunner = new StepRunner(this.cwd, sessionId);
+    this.sessionCost = 0;
+    return true;
+  }
+
+  public startNewSession(providerId: string, model: string): string {
+    const session = this.sessionManager.startNewSession(providerId, model);
+    this.state = createInitialState(
+      session.id,
+      "REPL Interactive Shell Started",
+    );
+    this.checkpointManager = new CheckpointManager(this.cwd, session.id);
+    this.stepRunner = new StepRunner(this.cwd, session.id);
+    this.sessionCost = 0;
+    this.sessionManager.saveHistory(this.state.history);
+    return session.id;
+  }
+
+  public getSessions(): Session[] {
+    return this.sessionManager.getSessionStore().listSessions();
   }
 
   public getSessionCost(): number {
@@ -1149,17 +1770,23 @@ export class AgentLoop {
     if (checkpoints.length === 0) {
       const rolledBackGit = await this.rollbackLastGitCheckpoint();
       if (rolledBackGit) {
-        this.interaction.showText('Successfully rolled back last command changes via Git.');
+        this.interaction.showText(
+          "Successfully rolled back last command changes via Git.",
+        );
       } else {
-        this.interaction.showText('No checkpoints found to rollback.');
+        this.interaction.showText("No checkpoints found to rollback.");
       }
       return;
     }
     const last = checkpoints[checkpoints.length - 1];
-    this.interaction.showText(`Rolling back last changes for tool call ${last.toolCallId}...`);
+    this.interaction.showText(
+      `Rolling back last changes for tool call ${last.toolCallId}...`,
+    );
     const res = this.rollbackManager.rollback(last);
     if (res.success) {
-      this.interaction.showText(`Successfully rolled back: ${res.restored.join(', ')}`);
+      this.interaction.showText(
+        `Successfully rolled back: ${res.restored.join(", ")}`,
+      );
     } else {
       this.interaction.showText(`Rollback failed: ${res.error}`);
     }
@@ -1167,19 +1794,42 @@ export class AgentLoop {
   }
 
   private accumulateCost(model: string, usage: any) {
-    const pricing = this.config.pricing?.[model];
-    if (!pricing) return;
+    const cleanModel = model.replace(/\[1m\]/g, "");
+    let pricing = this.config.pricing?.[cleanModel];
+    if (!pricing) {
+      for (const key of Object.keys(this.config.pricing || {})) {
+        if (key.replace(/\[1m\]/g, "") === cleanModel) {
+          pricing = this.config.pricing[key];
+          break;
+        }
+      }
+    }
+    if (!pricing) {
+      pricing = {
+        inputCostPer1M: 0.14,
+        outputCostPer1M: 0.28,
+        cacheReadCostPer1M: 0.07,
+      };
+    }
 
-    const inputCost = (usage.inputTokens / 1000000) * pricing.inputCostPer1M;
+    const uncachedInputTokens = usage.cacheReadTokens
+      ? Math.max(0, usage.inputTokens - usage.cacheReadTokens)
+      : usage.inputTokens;
+
+    const inputCost = (uncachedInputTokens / 1000000) * pricing.inputCostPer1M;
     const outputCost = (usage.outputTokens / 1000000) * pricing.outputCostPer1M;
-    const cacheReadCost = usage.cacheReadTokens && pricing.cacheReadCostPer1M
-      ? (usage.cacheReadTokens / 1000000) * pricing.cacheReadCostPer1M
-      : 0;
+    const cacheReadCost =
+      usage.cacheReadTokens && pricing.cacheReadCostPer1M
+        ? (usage.cacheReadTokens / 1000000) * pricing.cacheReadCostPer1M
+        : 0;
 
     const turnCost = inputCost + outputCost + cacheReadCost;
     this.sessionCost += turnCost;
 
-    eventBus.emitEvent('cost_update', { turnCost, sessionCost: this.sessionCost });
+    eventBus.emitEvent("cost_update", {
+      turnCost,
+      sessionCost: this.sessionCost,
+    });
   }
 
   private async autoCompactHistory(): Promise<void> {
@@ -1190,17 +1840,24 @@ export class AgentLoop {
     const discarded = history.slice(1, history.length - 10);
     const recentMsgs = history.slice(history.length - 10);
 
-    let rawText = '';
+    let rawText = "";
     for (const msg of discarded) {
-      rawText += `[${msg.role.toUpperCase()}]: ` + msg.content.map(c => {
-        if (c.type === 'text') return c.text;
-        if (c.type === 'tool_call') return `[Tool Call: ${c.toolCall?.name}]`;
-        if (c.type === 'tool_result') return `[Tool Result: ${c.toolResult?.name}]`;
-        return '';
-      }).join(' ') + '\n';
+      rawText +=
+        `[${msg.role.toUpperCase()}]: ` +
+        msg.content
+          .map((c) => {
+            if (c.type === "text") return c.text;
+            if (c.type === "tool_call")
+              return `[Tool Call: ${c.toolCall?.name}]`;
+            if (c.type === "tool_result")
+              return `[Tool Result: ${c.toolResult?.name}]`;
+            return "";
+          })
+          .join(" ") +
+        "\n";
     }
 
-    let summaryText = 'Prior dialogue history compacted.';
+    let summaryText = "Prior dialogue history compacted.";
     try {
       const fastModel = this.config.models.fast || this.config.models.default;
       const stream = this.provider.chat({
@@ -1208,11 +1865,11 @@ export class AgentLoop {
         messages: [
           {
             id: `msg_compact_${Date.now()}`,
-            role: 'user',
+            role: "user",
             createdAt: new Date().toISOString(),
             content: [
               {
-                type: 'text',
+                type: "text",
                 text: `Summarize the following dialog history of an AI coding session in a brief, concise paragraph (max 150 words). Focus on what files were modified, what tasks were accomplished, and any critical developer rules established. Do not include introductory text, just the summary:\n\n${rawText.substring(0, 15000)}`,
               },
             ],
@@ -1221,9 +1878,9 @@ export class AgentLoop {
         tools: [],
       });
 
-      let responseContent = '';
+      let responseContent = "";
       for await (const event of stream) {
-        if (event.type === 'text_delta') {
+        if (event.type === "text_delta") {
           responseContent += event.text;
         }
       }
@@ -1231,14 +1888,21 @@ export class AgentLoop {
         summaryText = responseContent.trim();
       }
     } catch (err: any) {
-      this.interaction.showText(`⚠ Auto-compactor LLM query failed: ${err.message}. Using default summary.`);
+      this.interaction.showText(
+        `⚠ Auto-compactor LLM query failed: ${err.message}. Using default summary.`,
+      );
     }
 
     const summaryMsg: OrbitMessage = {
       id: `msg_summary_${Date.now()}`,
-      role: 'system',
+      role: "system",
       createdAt: new Date().toISOString(),
-      content: [{ type: 'text', text: `Prior session history summary:\n${summaryText}` }],
+      content: [
+        {
+          type: "text",
+          text: `Prior session history summary:\n${summaryText}`,
+        },
+      ],
     };
 
     const newHistory: OrbitMessage[] = [];
@@ -1248,11 +1912,17 @@ export class AgentLoop {
     newHistory.push(summaryMsg);
     newHistory.push(...recentMsgs);
     this.state.history = newHistory;
+    this.sessionManager.saveHistory(this.state.history);
 
-    this.interaction.showText(`✔ Dialogue history auto-compacted! Compaction reduced history to ${this.state.history.length} messages.`);
+    this.interaction.showText(
+      `✔ Dialogue history auto-compacted! Compaction reduced history to ${this.state.history.length} messages.`,
+    );
   }
 
-  private async promptSchemaGuided(registeredTool: any, currentArgsStr: string): Promise<string | null> {
+  private async promptSchemaGuided(
+    registeredTool: any,
+    currentArgsStr: string,
+  ): Promise<string | null> {
     try {
       const schema = registeredTool.inputSchema;
       if (!(schema instanceof z.ZodObject)) {
@@ -1265,35 +1935,58 @@ export class AgentLoop {
 
       for (const [key, fieldSchema] of Object.entries(shape)) {
         const val = currentArgs[key];
-        const valStr = val !== undefined ? (typeof val === 'object' ? JSON.stringify(val) : String(val)) : '';
-        const description = (fieldSchema as any).description || `Parameter "${key}"`;
+        const valStr =
+          val !== undefined
+            ? typeof val === "object"
+              ? JSON.stringify(val)
+              : String(val)
+            : "";
+        const description =
+          (fieldSchema as any).description || `Parameter "${key}"`;
 
         let result: any = null;
         let unwrapped = fieldSchema;
-        while (unwrapped instanceof z.ZodOptional || unwrapped instanceof z.ZodNullable || unwrapped instanceof z.ZodEffects) {
-          unwrapped = (unwrapped as any)._def.innerType || (unwrapped as any)._def.schema;
+        while (
+          unwrapped instanceof z.ZodOptional ||
+          unwrapped instanceof z.ZodNullable ||
+          unwrapped instanceof z.ZodEffects
+        ) {
+          unwrapped =
+            (unwrapped as any)._def.innerType || (unwrapped as any)._def.schema;
         }
 
         if (unwrapped instanceof z.ZodBoolean) {
           const choice = await Prompt.askSelect(`${description} (boolean):`, [
-            { value: 'true', label: 'true' },
-            { value: 'false', label: 'false' }
+            { value: "true", label: "true" },
+            { value: "false", label: "false" },
           ]);
           if (choice === null) return null;
-          result = choice === 'true';
+          result = choice === "true";
         } else if (unwrapped instanceof z.ZodEnum) {
-          const options = (unwrapped as any)._def.values.map((v: string) => ({ value: v, label: v }));
-          const choice = await Prompt.askSelect(`${description} (select):`, options);
+          const options = (unwrapped as any)._def.values.map((v: string) => ({
+            value: v,
+            label: v,
+          }));
+          const choice = await Prompt.askSelect(
+            `${description} (select):`,
+            options,
+          );
           if (choice === null) return null;
           result = choice;
         } else {
-          const input = await Prompt.askText(`${description} (${key}):`, valStr);
+          const input = await Prompt.askText(
+            `${description} (${key}):`,
+            valStr,
+          );
           if (input === null) return null;
-          
+
           if (unwrapped instanceof z.ZodNumber) {
             const num = Number(input);
             result = isNaN(num) ? input : num;
-          } else if (unwrapped instanceof z.ZodArray || unwrapped instanceof z.ZodObject) {
+          } else if (
+            unwrapped instanceof z.ZodArray ||
+            unwrapped instanceof z.ZodObject
+          ) {
             try {
               result = JSON.parse(input);
             } catch {
@@ -1304,7 +1997,7 @@ export class AgentLoop {
           }
         }
 
-        if (result !== undefined && result !== '') {
+        if (result !== undefined && result !== "") {
           updatedArgs[key] = result;
         }
       }
@@ -1315,20 +2008,26 @@ export class AgentLoop {
     }
   }
 
-  private async handleInterrupt(): Promise<'continue' | 'abort' | 'rollback_exit'> {
+  private async handleInterrupt(): Promise<
+    "continue" | "abort" | "rollback_exit"
+  > {
     this.statusBar.stop();
-    this.interaction.showText(picocolors.yellow('\n● Execution interrupted by user.'));
-    const choice = await Prompt.askSelect('What would you like to do?', [
-      { value: 'continue', label: 'Continue execution' },
-      { value: 'abort', label: 'Abort execution and return to prompt' },
-      { value: 'rollback_exit', label: 'Rollback changes and exit' },
+    this.interaction.showText(
+      picocolors.yellow("\n● Execution interrupted by user."),
+    );
+    const choice = await Prompt.askSelect("What would you like to do?", [
+      { value: "continue", label: "Continue execution" },
+      { value: "abort", label: "Abort execution and return to prompt" },
+      { value: "rollback_exit", label: "Rollback changes and exit" },
     ]);
-    return (choice as any) || 'abort';
+    return (choice as any) || "abort";
   }
 
   private async isGitRepo(): Promise<boolean> {
     try {
-      await execPromise('git rev-parse --is-inside-work-tree', { cwd: this.cwd });
+      await execPromise("git rev-parse --is-inside-work-tree", {
+        cwd: this.cwd,
+      });
       return true;
     } catch {
       return false;
@@ -1337,16 +2036,22 @@ export class AgentLoop {
 
   private async createGitCheckpoint(toolCallId: string): Promise<boolean> {
     try {
-      const statusRes = await execPromise('git status --porcelain', { cwd: this.cwd });
+      const statusRes = await execPromise("git status --porcelain", {
+        cwd: this.cwd,
+      });
       if (!statusRes.stdout.trim()) {
         return false;
       }
 
-      await execPromise('git add -A', { cwd: this.cwd });
+      await execPromise("git add -A", { cwd: this.cwd });
       const msg = `orbit-temp-checkpoint-${toolCallId}`;
-      await execPromise(`git commit -m ${JSON.stringify(msg)} --no-verify`, { cwd: this.cwd });
-      
-      const hashRes = await execPromise('git rev-parse HEAD', { cwd: this.cwd });
+      await execPromise(`git commit -m ${JSON.stringify(msg)} --no-verify`, {
+        cwd: this.cwd,
+      });
+
+      const hashRes = await execPromise("git rev-parse HEAD", {
+        cwd: this.cwd,
+      });
       const hash = hashRes.stdout.trim();
       if (hash) {
         this.gitCheckpoints.push(hash);
@@ -1365,15 +2070,15 @@ export class AgentLoop {
       // 1. Reset to the checkpoint commit state to recover tracked changes
       await execPromise(`git reset --hard ${lastHash}`, { cwd: this.cwd });
       // 2. Clean new untracked files created by the tool execution
-      await execPromise('git clean -fd', { cwd: this.cwd });
+      await execPromise("git clean -fd", { cwd: this.cwd });
       // 3. Reset HEAD to parent commit if it exists, restoring pre-existing files to unstaged/untracked state
       try {
-        await execPromise('git rev-parse HEAD~1', { cwd: this.cwd });
-        await execPromise('git reset HEAD~1', { cwd: this.cwd });
+        await execPromise("git rev-parse HEAD~1", { cwd: this.cwd });
+        await execPromise("git reset HEAD~1", { cwd: this.cwd });
       } catch {
         // If parent commit doesn't exist (root commit), reset HEAD and index to unborn state
-        await execPromise('git update-ref -d HEAD', { cwd: this.cwd });
-        await execPromise('git rm -r --cached .', { cwd: this.cwd });
+        await execPromise("git update-ref -d HEAD", { cwd: this.cwd });
+        await execPromise("git rm -r --cached .", { cwd: this.cwd });
       }
       return true;
     } catch {
@@ -1385,14 +2090,16 @@ export class AgentLoop {
     if (this.gitCheckpoints.length === 0) return false;
     const lastHash = this.gitCheckpoints.pop();
     try {
-      const currentHashRes = await execPromise('git rev-parse HEAD', { cwd: this.cwd });
+      const currentHashRes = await execPromise("git rev-parse HEAD", {
+        cwd: this.cwd,
+      });
       if (currentHashRes.stdout.trim() === lastHash) {
         try {
-          await execPromise('git rev-parse HEAD~1', { cwd: this.cwd });
-          await execPromise('git reset --soft HEAD~1', { cwd: this.cwd });
+          await execPromise("git rev-parse HEAD~1", { cwd: this.cwd });
+          await execPromise("git reset --soft HEAD~1", { cwd: this.cwd });
         } catch {
           // If parent commit doesn't exist (root commit), reset HEAD to unborn state
-          await execPromise('git update-ref -d HEAD', { cwd: this.cwd });
+          await execPromise("git update-ref -d HEAD", { cwd: this.cwd });
         }
         return true;
       }
@@ -1401,4 +2108,239 @@ export class AgentLoop {
       return false;
     }
   }
+
+  private startKeepaliveTimer(): void {
+    this.stopKeepaliveTimer();
+
+    // Send a minimal ping request to refresh DeepSeek's prompt cache TTL (5-10 min)
+    this.keepaliveTimer = setInterval(async () => {
+      if (!this.lastChatParams) return;
+      try {
+        console.error(`[Cache Keepalive] Refreshing prompt cache TTL...`);
+        const pingStream = this.provider.chat({
+          model: this.lastChatParams.model,
+          messages: this.lastChatParams.messages,
+          system: this.lastChatParams.system,
+          stream: false,
+          maxTokens: 1,
+        });
+        
+        // Consume generator stream to trigger call
+        for await (const _ of pingStream) {
+          // No-op
+        }
+      } catch (err: any) {
+        console.error(`[Cache Keepalive Error] ${err.message}`);
+      }
+    }, 240000); // 4 minutes
+  }
+
+  private stopKeepaliveTimer(): void {
+    if (this.keepaliveTimer) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
+  }
+}
+
+function generateXMLToolsPrompt(tools: any[]): string {
+  let prompt = `\n\n### Tool Use Instructions\n`;
+  prompt += `You can execute tasks by calling tools. To call a tool, wrap it in a <tool_call> XML block with the correct parameter tags.\n`;
+  prompt += `Format:\n`;
+  prompt += `<tool_call name="tool_name">\n`;
+  prompt += `  <param_name>value</param_name>\n`;
+  prompt += `</tool_call>\n\n`;
+  prompt += `Crucial XML Rules:\n`;
+  prompt += `1. DO NOT escape special characters (like <, >, &) inside parameter tags (e.g. inside <content> or <newText>). Write them raw. The parser handles raw content.\n`;
+  prompt += `2. Ensure parameter tag names match the parameter names exactly (case-sensitive).\n`;
+  prompt += `3. You can execute multiple tool calls in a single turn.\n\n`;
+  prompt += `Available Tools:\n\n`;
+
+  for (const tool of tools) {
+    prompt += `- **${tool.name}**: ${tool.description}\n`;
+    prompt += `  Parameters:\n`;
+    const schema = tool.inputSchema as any;
+    if (schema && schema.shape) {
+      for (const [key, prop] of Object.entries(schema.shape)) {
+        const isOptional = (prop as any) instanceof z.ZodOptional;
+        let typeName = "string";
+        try {
+          typeName = (prop as any)._def.typeName
+            .replace("Zod", "")
+            .toLowerCase();
+        } catch {
+          // ignore
+        }
+        prompt += `    - \`${key}\`: (type: ${typeName}${isOptional ? ", optional" : ""})\n`;
+      }
+    }
+    prompt += `\n`;
+  }
+  return prompt;
+}
+
+function parseXMLToolCalls(text: string): OrbitToolCall[] {
+  const toolCalls: OrbitToolCall[] = [];
+  const toolCallRegex =
+    /<tool_call\s+name="([^"]+)"\s*>([\s\S]*?)<\/tool_call>/g;
+
+  let match;
+  let idCounter = 1;
+  while ((match = toolCallRegex.exec(text)) !== null) {
+    const name = match[1];
+    const innerContent = match[2];
+
+    const paramRegex = /<([a-zA-Z0-9_]+)\s*>([\s\S]*?)<\/\1\s*>/g;
+    const args: Record<string, any> = {};
+
+    let paramMatch;
+    while ((paramMatch = paramRegex.exec(innerContent)) !== null) {
+      const paramName = paramMatch[1];
+      let paramValue = paramMatch[2];
+
+      if (paramValue.startsWith("\n")) {
+        paramValue = paramValue.substring(1);
+      }
+      if (paramValue.endsWith("\n")) {
+        paramValue = paramValue.substring(0, paramValue.length - 1);
+      } else if (paramValue.endsWith("\r\n")) {
+        paramValue = paramValue.substring(0, paramValue.length - 2);
+      }
+
+      let typedValue: any = paramValue;
+      if (paramValue === "true") {
+        typedValue = true;
+      } else if (paramValue === "false") {
+        typedValue = false;
+      } else if (/^-?\d+$/.test(paramValue)) {
+        typedValue = parseInt(paramValue, 10);
+      } else if (/^-?\d+\.\d+$/.test(paramValue)) {
+        typedValue = parseFloat(paramValue);
+      } else if (
+        (paramValue.startsWith("[") && paramValue.endsWith("]")) ||
+        (paramValue.startsWith("{") && paramValue.endsWith("}"))
+      ) {
+        try {
+          typedValue = JSON.parse(paramValue);
+        } catch {
+          // Keep as string
+        }
+      }
+      args[paramName] = typedValue;
+    }
+
+    toolCalls.push({
+      id: `xml_call_${idCounter++}_${Date.now()}`,
+      name,
+      arguments: JSON.stringify(args),
+    });
+  }
+
+  return toolCalls;
+}
+
+function extractFilePathFromLine(line: string): string {
+  const winAbsMatch = line.match(/([a-zA-Z]:[\\/][^`*:"#\s]+)/);
+  if (winAbsMatch) {
+    return winAbsMatch[1];
+  }
+
+  const pathMatch = line.match(/([.\w\-+]+[\\/][^`*:"#\s]+)/);
+  if (pathMatch) {
+    return pathMatch[1];
+  }
+
+  return line.replace(/[`*:*#\-+]/g, "").trim();
+}
+
+function parseSearchReplaceBlocks(
+  text: string,
+): { filePath: string; oldText: string; newText: string }[] {
+  const blocks: { filePath: string; oldText: string; newText: string }[] = [];
+  const regex =
+    /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>>/g;
+
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const startIndex = match.index;
+    const oldText = match[1];
+    const newText = match[2];
+
+    const beforeText = text.substring(0, startIndex);
+    const lines = beforeText.split(/\r?\n/);
+    let filePath = "";
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      const extracted = extractFilePathFromLine(line);
+      if (
+        extracted &&
+        (extracted.includes("/") ||
+          extracted.includes("\\") ||
+          extracted.endsWith(".ts") ||
+          extracted.endsWith(".js") ||
+          extracted.endsWith(".txt"))
+      ) {
+        filePath = extracted;
+        break;
+      }
+    }
+
+    if (filePath) {
+      blocks.push({
+        filePath,
+        oldText,
+        newText,
+      });
+    }
+  }
+  return blocks;
+}
+
+function cleanAndTruncateTestLog(log: string): string {
+  let cleaned = log
+    .replace(/\u001b\[\d+(;\d+)*m/g, "")
+    .replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "");
+  const lines = cleaned.split(/\r?\n/);
+  const filteredLines: string[] = [];
+  let skipCount = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (
+      trimmed.startsWith("at ") &&
+      (trimmed.includes("node_modules") ||
+        trimmed.includes("node:internal") ||
+        trimmed.includes("node:events"))
+    ) {
+      skipCount++;
+      continue;
+    }
+
+    if (skipCount > 0) {
+      filteredLines.push(
+        `    ... skipped ${skipCount} internal/library stack frames ...`,
+      );
+      skipCount = 0;
+    }
+    filteredLines.push(line);
+  }
+
+  if (skipCount > 0) {
+    filteredLines.push(
+      `    ... skipped ${skipCount} internal/library stack frames ...`,
+    );
+  }
+
+  if (filteredLines.length > 200) {
+    const top = filteredLines.slice(0, 80);
+    const bottom = filteredLines.slice(filteredLines.length - 120);
+    return [
+      ...top,
+      "\n[... WARNING: Log output truncated by Orbit for Token Optimization ...]\n",
+      ...bottom,
+    ].join("\n");
+  }
+
+  return filteredLines.join("\n");
 }

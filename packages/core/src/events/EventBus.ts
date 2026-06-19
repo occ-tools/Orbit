@@ -1,4 +1,4 @@
-import { EventEmitter } from 'events';
+import { EventEmitter } from "events";
 
 export class EventBus extends EventEmitter {
   constructor() {
@@ -7,7 +7,7 @@ export class EventBus extends EventEmitter {
 
   public emitEvent(type: string, payload: any): void {
     this.emit(type, payload);
-    this.emit('*', { type, payload });
+    this.emit("*", { type, payload });
   }
 }
 

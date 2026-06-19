@@ -1,5 +1,5 @@
-import { z } from 'zod';
-import { ToolRisk } from '@orbit-ai/shared';
+import { z } from "zod";
+import { ToolRisk } from "@orbit-ai/shared";
 
 export interface ToolContext {
   cwd: string;

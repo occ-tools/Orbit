@@ -1,6 +1,6 @@
-import { z } from 'zod';
+import { z } from "zod";
 
-export type OrbitRole = 'system' | 'user' | 'assistant' | 'tool';
+export type OrbitRole = "system" | "user" | "assistant" | "tool";
 
 export interface OrbitToolCall {
   id: string;
@@ -24,10 +24,10 @@ export interface OrbitMessage {
 }
 
 export type OrbitContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'tool_call'; toolCall: OrbitToolCall }
-  | { type: 'tool_result'; toolResult: OrbitToolResult }
-  | { type: 'thinking'; text: string };
+  | { type: "text"; text: string }
+  | { type: "tool_call"; toolCall: OrbitToolCall }
+  | { type: "tool_result"; toolResult: OrbitToolResult }
+  | { type: "thinking"; text: string; signature?: string };
 
 export interface ModelCapabilities {
   streaming: boolean;
@@ -58,7 +58,7 @@ export interface ModelChatInput {
     enabled: boolean;
     budgetTokens?: number;
   };
-  responseFormat?: 'text' | 'json';
+  responseFormat?: "text" | "json";
   abortSignal?: AbortSignal;
 }
 
@@ -66,20 +66,31 @@ export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  cacheReadTokens?: number;
 }
 
 export type ModelEvent =
-  | { type: 'text_delta'; text: string }
-  | { type: 'thinking_delta'; text: string }
-  | { type: 'tool_call'; toolCall: OrbitToolCall }
-  | { type: 'usage'; usage: TokenUsage }
-  | { type: 'done' }
-  | { type: 'error'; error: any };
+  | { type: "text_delta"; text: string }
+  | { type: "thinking_delta"; text: string; signature?: string }
+  | { type: "tool_call"; toolCall: OrbitToolCall }
+  | { type: "usage"; usage: TokenUsage }
+  | { type: "done" }
+  | { type: "error"; error: any };
 
 export interface ModelProvider {
   id: string;
-  type: 'openai' | 'anthropic' | 'openai-compatible' | 'anthropic-compatible' | 'ollama';
+  type:
+    | "openai"
+    | "anthropic"
+    | "openai-compatible"
+    | "anthropic-compatible"
+    | "ollama";
   capabilities: ModelCapabilities;
   chat(input: ModelChatInput): AsyncIterable<ModelEvent>;
   countTokens?(input: ModelChatInput): Promise<number>;
+  embed?(texts: string[], options?: { model?: string }): Promise<number[][]>;
+  complete?(
+    prompt: string,
+    options?: { model?: string; maxTokens?: number; stop?: string[] },
+  ): Promise<string>;
 }

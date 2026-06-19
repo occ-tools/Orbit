@@ -1,11 +1,14 @@
-import { describe, it, expect } from 'vitest';
-import { MCPClient } from './MCPClient.js';
-import path from 'path';
-import { writeFileSync, unlinkSync } from 'fs';
+import { describe, it, expect } from "vitest";
+import { MCPClient } from "./MCPClient.js";
+import path from "path";
+import { writeFileSync, unlinkSync } from "fs";
 
-describe('MCPClient', () => {
-  it('should handshake and list/call tools from a stdio MCP server', async () => {
-    const dummyServerPath = path.resolve(process.cwd(), 'packages/mcp/src/dummy-server-test.js');
+describe("MCPClient", () => {
+  it("should handshake and list/call tools from a stdio MCP server", async () => {
+    const dummyServerPath = path.resolve(
+      process.cwd(),
+      "packages/mcp/src/dummy-server-test.js",
+    );
 
     // Create a simple dummy MCP server script
     const dummyServerCode = `
@@ -59,16 +62,16 @@ rl.on('line', (line) => {
 `;
     writeFileSync(dummyServerPath, dummyServerCode);
 
-    const client = new MCPClient('dummy-server', 'node', [dummyServerPath]);
+    const client = new MCPClient("dummy-server", "node", [dummyServerPath]);
     try {
       const tools = await client.start();
       expect(tools).toHaveLength(1);
-      expect(tools[0].name).toBe('hello');
+      expect(tools[0].name).toBe("hello");
 
-      const res = await client.callTool('hello', { name: 'Orbit' });
+      const res = await client.callTool("hello", { name: "Orbit" });
       expect(res.result?.content || res.content).toBeDefined();
       const content = res.result?.content || res.content;
-      expect(content[0].text).toBe('Hello, Orbit!');
+      expect(content[0].text).toBe("Hello, Orbit!");
     } finally {
       await client.stop();
       try {

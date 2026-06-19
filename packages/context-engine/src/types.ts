@@ -1,4 +1,4 @@
-import { ProjectIndex } from '@orbit-ai/tools';
+import { ProjectIndex } from "@orbit-ai/tools";
 
 export interface ContextPack {
   projectInstructions: string;
@@ -12,6 +12,7 @@ export interface ContextPack {
   recentChanges: string;
   currentDiff: string;
   previousErrors: string;
+  codebaseContext?: string;
   tokenBudget: {
     max: number;
     usedEstimate: number;

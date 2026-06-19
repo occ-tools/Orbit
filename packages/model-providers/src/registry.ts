@@ -1,4 +1,4 @@
-import { ModelProvider } from './types.js';
+import { ModelProvider } from "./types.js";
 
 export class ProviderRegistry {
   private providers = new Map<string, ModelProvider>();

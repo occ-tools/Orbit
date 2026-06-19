@@ -13,6 +13,7 @@
     "@orbit-ai/tools": "workspace:*",
     "@orbit-ai/model-providers": "workspace:*",
     "fast-glob": "^3.3.2",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "typescript": "^5.4.5"
   }
 }

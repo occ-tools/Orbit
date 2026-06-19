@@ -4,12 +4,147 @@ import {
   ModelEvent,
   OrbitMessage,
   OrbitContentBlock,
-} from '../types.js';
-import { zodToJsonSchema } from '../utils.js';
+} from "../types.js";
+import { zodToJsonSchema } from "../utils.js";
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  maxRetries = 3,
+): Promise<Response> {
+  let attempt = 0;
+  while (true) {
+    try {
+      const response = await fetch(url, init);
+      if (response.ok) {
+        return response;
+      }
+
+      const status = response.status;
+      const isTransient = status === 429 || (status >= 500 && status <= 504);
+      if (!isTransient || attempt >= maxRetries) {
+        return response;
+      }
+    } catch (err: any) {
+      const isAbort = err.name === "AbortError" || init.signal?.aborted;
+      if (isAbort || attempt >= maxRetries) {
+        throw err;
+      }
+    }
+
+    attempt++;
+    const delay = Math.min(
+      10000,
+      Math.pow(2, attempt) * 1000 + Math.random() * 1000,
+    );
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+}
+
+class StreamingThinkParser {
+  private buffer = "";
+  private inThinking = false;
+
+  public feed(
+    chunk: string,
+  ): Array<{ type: "text_delta" | "thinking_delta"; text: string }> {
+    this.buffer += chunk;
+    const events: Array<{
+      type: "text_delta" | "thinking_delta";
+      text: string;
+    }> = [];
+
+    while (this.buffer.length > 0) {
+      if (!this.inThinking) {
+        const index = this.buffer.indexOf("<think>");
+        if (index !== -1) {
+          if (index > 0) {
+            events.push({
+              type: "text_delta",
+              text: this.buffer.substring(0, index),
+            });
+          }
+          this.buffer = this.buffer.substring(index + 7);
+          this.inThinking = true;
+          continue;
+        }
+
+        const openBracketIdx = this.buffer.lastIndexOf("<");
+        if (openBracketIdx !== -1 && openBracketIdx >= this.buffer.length - 7) {
+          const partial = this.buffer.substring(openBracketIdx);
+          if ("<think>".startsWith(partial)) {
+            if (openBracketIdx > 0) {
+              events.push({
+                type: "text_delta",
+                text: this.buffer.substring(0, openBracketIdx),
+              });
+            }
+            this.buffer = partial;
+            break;
+          }
+        }
+
+        events.push({ type: "text_delta", text: this.buffer });
+        this.buffer = "";
+      } else {
+        const index = this.buffer.indexOf("</think>");
+        if (index !== -1) {
+          if (index > 0) {
+            events.push({
+              type: "thinking_delta",
+              text: this.buffer.substring(0, index),
+            });
+          }
+          this.buffer = this.buffer.substring(index + 8);
+          this.inThinking = false;
+          continue;
+        }
+
+        const openBracketIdx = this.buffer.lastIndexOf("<");
+        if (openBracketIdx !== -1 && openBracketIdx >= this.buffer.length - 8) {
+          const partial = this.buffer.substring(openBracketIdx);
+          if ("</think>".startsWith(partial)) {
+            if (openBracketIdx > 0) {
+              events.push({
+                type: "thinking_delta",
+                text: this.buffer.substring(0, openBracketIdx),
+              });
+            }
+            this.buffer = partial;
+            break;
+          }
+        }
+
+        events.push({ type: "thinking_delta", text: this.buffer });
+        this.buffer = "";
+      }
+    }
+
+    return events;
+  }
+
+  public flush(): Array<{
+    type: "text_delta" | "thinking_delta";
+    text: string;
+  }> {
+    const events: Array<{
+      type: "text_delta" | "thinking_delta";
+      text: string;
+    }> = [];
+    if (this.buffer.length > 0) {
+      events.push({
+        type: this.inThinking ? "thinking_delta" : "text_delta",
+        text: this.buffer,
+      });
+      this.buffer = "";
+    }
+    return events;
+  }
+}
 
 export class DeepSeekOpenAIProvider implements ModelProvider {
-  id = 'deepseek-openai';
-  type: ModelProvider['type'] = 'openai-compatible';
+  id = "deepseek-openai";
+  type: ModelProvider["type"] = "openai-compatible";
   capabilities = {
     streaming: true,
     toolCalls: true,
@@ -19,39 +154,46 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
     promptCaching: true,
   };
 
-  constructor(private apiKey?: string, private baseUrl = 'https://api.deepseek.com') {}
+  constructor(
+    private apiKey?: string,
+    private baseUrl = "https://api.deepseek.com",
+  ) {}
 
   async *chat(input: ModelChatInput): AsyncIterable<ModelEvent> {
+    const thinkParser = new StreamingThinkParser();
     const key = this.apiKey || process.env.DEEPSEEK_API_KEY;
     if (!key) {
       yield {
-        type: 'error',
+        type: "error",
         error: new Error(
-          'API key missing for deepseek-openai provider. Please set DEEPSEEK_API_KEY.'
+          "API key missing for deepseek-openai provider. Please set DEEPSEEK_API_KEY.",
         ),
       };
       return;
     }
 
+    const isOfficialDeepSeek = this.baseUrl.includes("api.deepseek.com");
+
     // Convert messages to OpenAI chat completions messages
     const openaiMessages = input.messages.map((m) => {
       // Map contents
       const content = m.content
-        .map((block) => {
-          if (block.type === 'text') {
-            return block.text;
-          }
-          return '';
-        })
-        .join('\n');
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("\n");
+
+      const reasoningContent = m.content
+        .filter((block) => block.type === "thinking")
+        .map((block) => block.text)
+        .join("\n");
 
       const toolCalls = m.content
-        .filter((b) => b.type === 'tool_call')
+        .filter((b) => b.type === "tool_call")
         .map((b) => {
           const tc = (b as any).toolCall;
           return {
             id: tc.id,
-            type: 'function' as const,
+            type: "function" as const,
             function: {
               name: tc.name,
               arguments: tc.arguments,
@@ -59,27 +201,46 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
           };
         });
 
-      const toolResult = m.content.find((b) => b.type === 'tool_result');
+      const toolResult = m.content.find((b) => b.type === "tool_result");
 
-      const role = m.role === 'tool' ? 'tool' : m.role;
+      const role = m.role === "tool" ? "tool" : m.role;
 
       const msg: any = { role };
-      if (content) {
-        msg.content = content;
+      if (role === "assistant" && reasoningContent && !isOfficialDeepSeek) {
+        // Wrap reasoning inside content with think tags for compatible providers
+        msg.content = `<think>\n${reasoningContent}\n</think>\n${content}`;
+      } else {
+        if (content) {
+          msg.content = content;
+        } else if (role === "assistant" && !toolCalls.length) {
+          msg.content = "";
+        }
+
+        if (reasoningContent && role === "assistant" && isOfficialDeepSeek) {
+          msg.reasoning_content = reasoningContent;
+        }
       }
+
       if (toolCalls.length > 0) {
         msg.tool_calls = toolCalls;
       }
-      if (role === 'tool' && toolResult) {
+      if (role === "tool" && toolResult) {
         msg.tool_call_id = (toolResult as any).toolResult.toolCallId;
       }
 
       return msg;
     });
 
+    if (input.system) {
+      openaiMessages.unshift({
+        role: "system",
+        content: input.system,
+      });
+    }
+
     const tools = input.tools?.map((t) => {
       return {
-        type: 'function' as const,
+        type: "function" as const,
         function: {
           name: t.name,
           description: t.description,
@@ -88,35 +249,62 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
       };
     });
 
+    const isReasoner =
+      input.model.toLowerCase().includes("reasoner") ||
+      input.model.toLowerCase().includes("r1") ||
+      input.model.toLowerCase().includes("v4");
+
     const body: any = {
       model: input.model,
       messages: openaiMessages,
-      temperature: input.temperature ?? 0.7,
       max_tokens: input.maxTokens,
       stream: input.stream !== false,
     };
+
+    if (input.thinking?.enabled) {
+      body.thinking = {
+        type: "enabled",
+        budget_tokens: input.thinking.budgetTokens || 1024,
+      };
+      body.temperature = 1.0;
+    } else if (isReasoner) {
+      body.temperature = 1.0;
+    } else {
+      body.temperature = input.temperature ?? 0.7;
+    }
+
+    if (body.stream) {
+      body.stream_options = { include_usage: true };
+    }
 
     if (tools && tools.length > 0) {
       body.tools = tools;
     }
 
-    if (input.responseFormat === 'json') {
-      body.response_format = { type: 'json_object' };
+    if (input.responseFormat === "json") {
+      body.response_format = { type: "json_object" };
     }
 
-    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`,
+    const response = await fetchWithRetry(
+      `${this.baseUrl}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify(body),
+        signal: input.abortSignal,
+        keepalive: true,
       },
-      body: JSON.stringify(body),
-      signal: input.abortSignal,
-    });
+    );
 
     if (!response.ok) {
       const errText = await response.text();
-      yield { type: 'error', error: new Error(`HTTP ${response.status}: ${errText}`) };
+      yield {
+        type: "error",
+        error: new Error(`HTTP ${response.status}: ${errText}`),
+      };
       return;
     }
 
@@ -124,12 +312,12 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
       const data: any = await response.json();
       const choice = data.choices?.[0];
       if (choice?.message?.content) {
-        yield { type: 'text_delta', text: choice.message.content };
+        yield { type: "text_delta", text: choice.message.content };
       }
       if (choice?.message?.tool_calls) {
         for (const tc of choice.message.tool_calls) {
           yield {
-            type: 'tool_call',
+            type: "tool_call",
             toolCall: {
               id: tc.id,
               name: tc.function.name,
@@ -139,28 +327,37 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
         }
       }
       yield {
-        type: 'usage',
+        type: "usage",
         usage: {
           inputTokens: data.usage?.prompt_tokens || 0,
           outputTokens: data.usage?.completion_tokens || 0,
+          cacheReadTokens:
+            data.usage?.prompt_tokens_details?.cached_tokens || 0,
           totalTokens: data.usage?.total_tokens || 0,
         },
       };
-      yield { type: 'done' };
+      yield { type: "done" };
       return;
     }
 
     const reader = response.body?.getReader();
     if (!reader) {
-      yield { type: 'error', error: new Error('Response body is not readable') };
+      yield {
+        type: "error",
+        error: new Error("Response body is not readable"),
+      };
       return;
     }
 
     const decoder = new TextDecoder();
-    let buffer = '';
-    const streamingTools = new Map<number, { id: string; name: string; arguments: string }>();
+    let buffer = "";
+    const streamingTools = new Map<
+      number,
+      { id: string; name: string; arguments: string }
+    >();
     let promptTokens = 0;
     let completionTokens = 0;
+    let cacheReadTokens = 0;
 
     try {
       while (true) {
@@ -168,26 +365,32 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
 
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
 
-          if (trimmed.startsWith('data: ')) {
+          if (trimmed.startsWith("data: ")) {
             const rawData = trimmed.substring(6);
-            if (rawData === '[DONE]') continue;
+            if (rawData === "[DONE]") continue;
             try {
               const parsed = JSON.parse(rawData);
               const choice = parsed.choices?.[0];
 
               if (choice?.delta?.content) {
-                yield { type: 'text_delta', text: choice.delta.content };
+                const parsedEvents = thinkParser.feed(choice.delta.content);
+                for (const ev of parsedEvents) {
+                  yield { type: ev.type, text: ev.text };
+                }
               }
 
               if (choice?.delta?.reasoning_content) {
-                yield { type: 'thinking_delta', text: choice.delta.reasoning_content };
+                yield {
+                  type: "thinking_delta",
+                  text: choice.delta.reasoning_content,
+                };
               }
 
               if (choice?.delta?.tool_calls) {
@@ -195,18 +398,24 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
                   const idx = tcDelta.index;
                   let tool = streamingTools.get(idx);
                   if (!tool) {
-                    tool = { id: '', name: '', arguments: '' };
+                    tool = { id: "", name: "", arguments: "" };
                     streamingTools.set(idx, tool);
                   }
                   if (tcDelta.id) tool.id = tcDelta.id;
                   if (tcDelta.function?.name) tool.name = tcDelta.function.name;
-                  if (tcDelta.function?.arguments) tool.arguments += tcDelta.function.arguments;
+                  if (tcDelta.function?.arguments)
+                    tool.arguments += tcDelta.function.arguments;
                 }
               }
 
               if (parsed.usage) {
                 promptTokens = parsed.usage.prompt_tokens || promptTokens;
-                completionTokens = parsed.usage.completion_tokens || completionTokens;
+                completionTokens =
+                  parsed.usage.completion_tokens || completionTokens;
+                if (parsed.usage.prompt_tokens_details?.cached_tokens) {
+                  cacheReadTokens =
+                    parsed.usage.prompt_tokens_details.cached_tokens;
+                }
               }
             } catch (e) {
               // Parse error on incomplete chunk
@@ -215,11 +424,17 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
         }
       }
 
+      // Flush any remaining characters in parser
+      const flushed = thinkParser.flush();
+      for (const ev of flushed) {
+        yield { type: ev.type, text: ev.text };
+      }
+
       // Emit finished tool calls
       for (const tool of streamingTools.values()) {
         if (tool.id && tool.name) {
           yield {
-            type: 'tool_call',
+            type: "tool_call",
             toolCall: {
               id: tool.id,
               name: tool.name,
@@ -230,16 +445,102 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
       }
 
       yield {
-        type: 'usage',
+        type: "usage",
         usage: {
           inputTokens: promptTokens,
           outputTokens: completionTokens,
+          cacheReadTokens: cacheReadTokens,
           totalTokens: promptTokens + completionTokens,
         },
       };
-      yield { type: 'done' };
+      yield { type: "done" };
     } finally {
       reader.releaseLock();
     }
+  }
+
+  async embed(
+    texts: string[],
+    options?: { model?: string },
+  ): Promise<number[][]> {
+    const key = this.apiKey || process.env.DEEPSEEK_API_KEY;
+    if (!key) {
+      throw new Error(
+        "API key missing for embedding provider. Please set DEEPSEEK_API_KEY.",
+      );
+    }
+
+    const model = options?.model || "text-embedding-3-small";
+
+    const response = await fetchWithRetry(`${this.baseUrl}/v1/embeddings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        input: texts,
+        model: model,
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(
+        `Embedding API Error HTTP ${response.status}: ${errText}`,
+      );
+    }
+
+    const data: any = await response.json();
+    if (!data.data || !Array.isArray(data.data)) {
+      throw new Error("Invalid response format from embedding API");
+    }
+
+    // Sort by index to preserve order
+    const sorted = [...data.data].sort(
+      (a: any, b: any) => (a.index ?? 0) - (b.index ?? 0),
+    );
+    return sorted.map((item: any) => item.embedding);
+  }
+
+  async complete(
+    prompt: string,
+    options?: {
+      model?: string;
+      maxTokens?: number;
+      stop?: string[];
+      abortSignal?: AbortSignal;
+    },
+  ): Promise<string> {
+    const key = this.apiKey || process.env.DEEPSEEK_API_KEY;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (key && key !== "ollama-no-key") {
+      headers["Authorization"] = `Bearer ${key}`;
+    }
+
+    const response = await fetchWithRetry(`${this.baseUrl}/v1/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: options?.model || "qwen2.5-coder:1.5b",
+        prompt: prompt,
+        max_tokens: options?.maxTokens || 64,
+        temperature: 0.0,
+        stop: options?.stop || [],
+      }),
+      signal: options?.abortSignal,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(
+        `Completion API Error HTTP ${response.status}: ${errText}`,
+      );
+    }
+
+    const data: any = await response.json();
+    return data.choices?.[0]?.text || "";
   }
 }

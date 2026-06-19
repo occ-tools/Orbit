@@ -1,5 +1,5 @@
-import { SessionStore } from './SessionStore.js';
-import { Session } from './types.js';
+import { SessionStore } from "./SessionStore.js";
+import { Session } from "./types.js";
 
 export class SessionManager {
   private store: SessionStore;
@@ -11,7 +11,7 @@ export class SessionManager {
 
   public startNewSession(provider: string, model: string): Session {
     this.currentSession = this.store.createSession(provider, model);
-    this.logEvent('session_start', { provider, model });
+    this.logEvent("session_start", { provider, model });
     return this.currentSession;
   }
 
@@ -19,7 +19,7 @@ export class SessionManager {
     const session = this.store.getSession(id);
     if (session) {
       this.currentSession = session;
-      this.logEvent('session_resume', { id });
+      this.logEvent("session_resume", { id });
     }
     return session;
   }
@@ -39,13 +39,13 @@ export class SessionManager {
     output: any,
     risk: string,
     decision: string,
-    status: 'success' | 'failed' | 'denied'
+    status: "success" | "failed" | "denied",
   ): void {
     if (!this.currentSession) return;
 
     this.store.recordToolCall({
       sessionId: this.currentSession.id,
-      id: input.id || 'tc_unknown',
+      id: input.id || "tc_unknown",
       toolName,
       inputJson: JSON.stringify(input),
       outputJson: JSON.stringify(output),
@@ -54,14 +54,14 @@ export class SessionManager {
       status,
     });
 
-    this.logEvent('tool_execution', { toolName, status });
+    this.logEvent("tool_execution", { toolName, status });
   }
 
   public recordFileModification(
     path: string,
     diff: string,
     beforeHash?: string,
-    afterHash?: string
+    afterHash?: string,
   ): void {
     if (!this.currentSession) return;
 
@@ -73,10 +73,20 @@ export class SessionManager {
       diff,
     });
 
-    this.logEvent('file_modified', { path });
+    this.logEvent("file_modified", { path });
   }
 
   public getSessionStore(): SessionStore {
     return this.store;
+  }
+
+  public saveHistory(history: any[]): void {
+    if (!this.currentSession) return;
+    this.store.saveHistory(this.currentSession.id, history);
+  }
+
+  public getHistory(): any[] {
+    if (!this.currentSession) return [];
+    return this.store.getHistory(this.currentSession.id);
   }
 }

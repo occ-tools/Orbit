@@ -1,9 +1,13 @@
-import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
-import { estimateTokenCount } from '@orbit-ai/shared';
-import { ContextPack } from './types.js';
-import { ProjectIndexer } from './ProjectIndexer.js';
-import { FileSummarizer } from './FileSummarizer.js';
+import { join } from "path";
+import { existsSync, readFileSync } from "fs";
+import { estimateTokenCount } from "@orbit-ai/shared";
+import { ConfigLoader } from "@orbit-ai/config";
+import { ContextPack } from "./types.js";
+import { ProjectIndexer } from "./ProjectIndexer.js";
+import { FileSummarizer } from "./FileSummarizer.js";
+import { SymbolIndexer, getEmbeddingProvider } from "./SymbolIndexer.js";
+import { HybridSearch } from "./HybridSearch.js";
+import { ReferencesRetriever } from "./ReferencesRetriever.js";
 
 export class ContextPackBuilder {
   private indexer: ProjectIndexer;
@@ -14,9 +18,93 @@ export class ContextPackBuilder {
     this.summarizer = new FileSummarizer(cwd);
   }
 
-  public async build(relevantFiles: Array<{ path: string; reason: string }>): Promise<ContextPack> {
+  public async build(
+    relevantFiles: Array<{ path: string; reason: string }>,
+    userQuery?: string,
+  ): Promise<ContextPack> {
     const projectIndex = await this.indexer.index();
     const projectInstructions = this.loadInstructions();
+
+    const config = ConfigLoader.loadSync(this.cwd);
+    let codebaseContext: string | undefined;
+
+    // Check if query contains @codebase
+    if (userQuery && userQuery.includes("@codebase")) {
+      const cleanQuery = userQuery.replace(/@codebase/g, "").trim();
+
+      const symbolIndexer = new SymbolIndexer(this.cwd);
+      // Run quick incremental index to make sure RAG has latest files
+      await symbolIndexer.index();
+
+      // Get Repo Map Landmark Text
+      const repoMap = await symbolIndexer.getRepoMapText(2048);
+
+      // Perform Hybrid Search
+      const hybridSearch = new HybridSearch(this.cwd);
+      let chunksText = "";
+      let referencesText = "";
+      try {
+        let provider: any = null;
+        try {
+          provider = getEmbeddingProvider(config);
+        } catch {
+          // Ignore, provider stays null
+        }
+
+        const embedFn = async (texts: string[]) => {
+          if (provider && typeof provider.embed === "function") {
+            const modelName =
+              config.models?.embedding || "text-embedding-3-small";
+            return await provider.embed(texts, { model: modelName });
+          }
+          throw new Error("No embedding provider available");
+        };
+
+        const results = await hybridSearch.search(
+          cleanQuery || "codebase search",
+          embedFn,
+          { limit: 5 },
+        );
+        if (results.length > 0) {
+          chunksText = results
+            .map((res, idx) => {
+              return (
+                `--- Search Match #${idx + 1} (Score: ${res.hybridScore.toFixed(4)}) ---\n` +
+                `${res.text}\n`
+              );
+            })
+            .join("\n");
+
+          // Symbol references graph walk RAG
+          const referencedSymbols = new Set<string>();
+          for (const res of results) {
+            if (res.metadata.symbolName) {
+              referencedSymbols.add(res.metadata.symbolName);
+            }
+          }
+
+          if (referencedSymbols.size > 0) {
+            const retriever = new ReferencesRetriever(this.cwd);
+            referencesText = await retriever.getReferencesContext(
+              Array.from(referencedSymbols)
+            );
+          }
+        } else {
+          chunksText = "(No relevant code matches found in search index.)\n";
+        }
+      } catch (e) {
+        chunksText = `(RAG retrieval failed: ${(e as Error).message})\n`;
+      }
+
+      codebaseContext =
+        `=== RAG Codebase Search Context for Query: "${cleanQuery}" ===\n` +
+        `Use the following relevant code snippets retrieved from the repository to answer questions:\n\n` +
+        `${chunksText}\n` +
+        `${referencesText}` +
+        `=== Codebase Landmark Repo Map ===\n` +
+        `${repoMap || "(No landmarks mapped.)"}\n` +
+        `================================================================`;
+    }
 
     const packedFiles = relevantFiles.map((f) => {
       const { summary, excerpt } = this.summarizer.summarize(f.path);
@@ -28,16 +116,22 @@ export class ContextPackBuilder {
       };
     });
 
-    const payload = JSON.stringify({ projectIndex, projectInstructions, packedFiles });
+    const payload = JSON.stringify({
+      projectIndex,
+      projectInstructions,
+      packedFiles,
+      codebaseContext,
+    });
     const usedEstimate = estimateTokenCount(payload);
 
     return {
       projectInstructions,
       projectIndex,
       relevantFiles: packedFiles,
-      recentChanges: '',
-      currentDiff: '',
-      previousErrors: '',
+      recentChanges: "",
+      currentDiff: "",
+      previousErrors: "",
+      codebaseContext,
       tokenBudget: {
         max: 128000,
         usedEstimate,
@@ -46,17 +140,17 @@ export class ContextPackBuilder {
   }
 
   private loadInstructions(): string {
-    const candidates = ['ORBIT.md', 'AGENTS.md', 'CLAUDE.md', 'README.md'];
+    const candidates = ["ORBIT.md", "AGENTS.md", "CLAUDE.md", "README.md"];
     for (const name of candidates) {
       const p = join(this.cwd, name);
       if (existsSync(p)) {
         try {
-          return readFileSync(p, 'utf8');
+          return readFileSync(p, "utf8");
         } catch {
           // Ignored
         }
       }
     }
-    return '';
+    return "";
   }
 }

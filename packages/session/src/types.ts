@@ -2,7 +2,7 @@ export interface Session {
   id: string;
   cwd: string;
   title: string;
-  status: 'active' | 'completed' | 'failed';
+  status: "active" | "completed" | "failed";
   createdAt: string;
   updatedAt: string;
   provider: string;
@@ -28,7 +28,7 @@ export interface ToolCallRecord {
   outputJson?: string;
   risk: string;
   permissionDecision: string;
-  status: 'pending' | 'success' | 'failed' | 'denied';
+  status: "pending" | "success" | "failed" | "denied";
   startedAt: string;
   endedAt?: string;
 }

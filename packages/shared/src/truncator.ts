@@ -1,6 +1,10 @@
 export class LogTruncator {
-  public static truncate(output: string, maxLines = 150, maxChars = 20000): string {
-    if (!output) return '';
+  public static truncate(
+    output: string,
+    maxLines = 150,
+    maxChars = 20000,
+  ): string {
+    if (!output) return "";
 
     let truncated = false;
     let result = output;
@@ -20,9 +24,9 @@ export class LogTruncator {
         ...firstPart,
         `\n... [Truncated ${lines.length - maxLines} lines of output to prevent token overflow] ...\n`,
         ...lastPart,
-      ].join('\n');
+      ].join("\n");
     } else if (truncated) {
-      result += '\n... [Truncated output due to size limit] ...';
+      result += "\n... [Truncated output due to size limit] ...";
     }
 
     return result;

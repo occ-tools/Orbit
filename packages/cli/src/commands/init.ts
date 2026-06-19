@@ -1,9 +1,9 @@
-import { writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
-import picocolors from 'picocolors';
+import { writeFileSync, existsSync } from "fs";
+import { join } from "path";
+import picocolors from "picocolors";
 
 export function runInit(cwd: string): void {
-  const target = join(cwd, 'ORBIT.md');
+  const target = join(cwd, "ORBIT.md");
   if (existsSync(target)) {
     console.log(picocolors.yellow(`ORBIT.md already exists in ${cwd}.`));
     return;
@@ -19,6 +19,8 @@ This file contains custom developer instructions and rules for the Orbit AI Codi
 - Always verify changes by running appropriate test suites.
 `;
 
-  writeFileSync(target, content, 'utf8');
-  console.log(picocolors.green(`Successfully initialized ORBIT.md at ${target}`));
+  writeFileSync(target, content, "utf8");
+  console.log(
+    picocolors.green(`Successfully initialized ORBIT.md at ${target}`),
+  );
 }

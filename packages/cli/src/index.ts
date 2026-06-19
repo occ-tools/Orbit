@@ -5,6 +5,7 @@ import { runConfig } from "./commands/config.js";
 import { runDoctor } from "./commands/doctor.js";
 import { runAgent } from "./commands/run.js";
 import { runLSPServer } from "./commands/LSPServer.js";
+import { runLogin } from "./commands/login.js";
 
 const program = new Command();
 
@@ -48,6 +49,13 @@ program
   });
 
 program
+  .command("login")
+  .description("interactively configure API keys for models")
+  .action(async () => {
+    await runLogin();
+  });
+
+program
   .command("doctor")
   .description("diagnose local environment and API configs")
   .action(() => {
@@ -62,3 +70,4 @@ program
   });
 
 program.parse(process.argv);
+

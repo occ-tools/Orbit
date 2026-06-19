@@ -1362,7 +1362,19 @@ export class AgentLoop {
     if (this.gitCheckpoints.length === 0) return false;
     const lastHash = this.gitCheckpoints.pop();
     try {
-      await execPromise(`git reset --hard ${lastHash}~1`, { cwd: this.cwd });
+      // 1. Reset to the checkpoint commit state to recover tracked changes
+      await execPromise(`git reset --hard ${lastHash}`, { cwd: this.cwd });
+      // 2. Clean new untracked files created by the tool execution
+      await execPromise('git clean -fd', { cwd: this.cwd });
+      // 3. Reset HEAD to parent commit if it exists, restoring pre-existing files to unstaged/untracked state
+      try {
+        await execPromise('git rev-parse HEAD~1', { cwd: this.cwd });
+        await execPromise('git reset HEAD~1', { cwd: this.cwd });
+      } catch {
+        // If parent commit doesn't exist (root commit), reset HEAD and index to unborn state
+        await execPromise('git update-ref -d HEAD', { cwd: this.cwd });
+        await execPromise('git rm -r --cached .', { cwd: this.cwd });
+      }
       return true;
     } catch {
       return false;
@@ -1375,7 +1387,13 @@ export class AgentLoop {
     try {
       const currentHashRes = await execPromise('git rev-parse HEAD', { cwd: this.cwd });
       if (currentHashRes.stdout.trim() === lastHash) {
-        await execPromise('git reset --soft HEAD~1', { cwd: this.cwd });
+        try {
+          await execPromise('git rev-parse HEAD~1', { cwd: this.cwd });
+          await execPromise('git reset --soft HEAD~1', { cwd: this.cwd });
+        } catch {
+          // If parent commit doesn't exist (root commit), reset HEAD to unborn state
+          await execPromise('git update-ref -d HEAD', { cwd: this.cwd });
+        }
         return true;
       }
       return false;

@@ -38,6 +38,48 @@ export class Prompt {
         prompt: promptStr,
       });
 
+      let currentSuggestion = '';
+
+      function updateSuggestion() {
+        const line = rl.line;
+        const cursor = rl.cursor;
+        currentSuggestion = '';
+
+        if (cursor === line.length && line.trim().length > 0) {
+          const [hits, lastWord] = completerFn(line);
+          if (hits.length > 0) {
+            const bestMatch = hits[0];
+            if (line.startsWith('/')) {
+              if (bestMatch.startsWith(line) && bestMatch !== line) {
+                currentSuggestion = bestMatch.substring(line.length);
+              }
+            } else if (lastWord) {
+              if (bestMatch.startsWith(lastWord) && bestMatch !== lastWord) {
+                currentSuggestion = bestMatch.substring(lastWord.length);
+              }
+            }
+          }
+        }
+
+        process.stdout.write('\x1b[K'); // clear forward
+        if (currentSuggestion) {
+          process.stdout.write(picocolors.dim(currentSuggestion));
+          readline.moveCursor(process.stdout, -currentSuggestion.length, 0);
+        }
+      }
+
+      const originalTtyWrite = (rl as any)._ttyWrite;
+      (rl as any)._ttyWrite = function(char: any, key: any) {
+        if (currentSuggestion && key && (key.name === 'tab' || key.name === 'right')) {
+          rl.write(currentSuggestion);
+          currentSuggestion = '';
+          process.stdout.write('\x1b[K');
+          return;
+        }
+        originalTtyWrite.call(rl, char, key);
+        updateSuggestion();
+      };
+
       rl.prompt();
 
       rl.on('SIGINT', () => {

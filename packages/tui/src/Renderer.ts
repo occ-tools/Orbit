@@ -3,12 +3,14 @@ import picocolors from 'picocolors';
 export class Renderer {
   public static printHeader(sessionId: string, model: string, cwd: string): void {
     const sessionShort = sessionId.substring(0, 8);
-    console.log('\n' + picocolors.bold(picocolors.magenta('  Orbit')) + picocolors.gray(' • Local AI Programming Shell'));
-    console.log(picocolors.gray('  ' + '─'.repeat(60)));
-    console.log(`  ${picocolors.cyan('Session')} : ${picocolors.green(sessionShort)}  ${picocolors.gray('|')}  ${picocolors.cyan('Model')} : ${picocolors.yellow(model)}`);
-    console.log(`  ${picocolors.cyan('Path')}    : ${picocolors.gray(cwd)}`);
-    console.log(picocolors.gray('  ' + '─'.repeat(60)));
-    console.log(`  ${picocolors.gray('Type')} ${picocolors.white('/help')} ${picocolors.gray('to list commands, or type a task to start.')}\n`);
+    const line = picocolors.gray('─'.repeat(60));
+    console.log('\n  ' + picocolors.bold(picocolors.magenta('⚡ Orbit AI Coding REPL')) + picocolors.gray(' (v0.1.0)'));
+    console.log('  ' + line);
+    console.log(`  🤖 ${picocolors.cyan('Model')}   : ${picocolors.yellow(model)}`);
+    console.log(`  🔑 ${picocolors.cyan('Session')} : ${picocolors.green(sessionShort)}`);
+    console.log(`  📁 ${picocolors.cyan('Path')}    : ${picocolors.gray(cwd)}`);
+    console.log('  ' + line);
+    console.log(`  ${picocolors.gray('Type')} ${picocolors.bold(picocolors.white('/help'))} ${picocolors.gray('to list commands, or type a task to start.')}\n`);
   }
 
   public static printStatus(label: string, value: string): void {

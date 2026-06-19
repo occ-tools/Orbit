@@ -5,7 +5,7 @@ export const DEFAULT_CONFIG: OrbitConfig = {
   editor: 'notepad.exe',
   autoCommit: false,
   provider: {
-    default: 'deepseek-anthropic',
+    default: 'deepseek-openai',
   },
   models: {
     default: 'deepseek-v4-pro[1m]',

@@ -5,7 +5,7 @@ describe('ConfigLoader tests', () => {
   it('should load default configuration when no local or global files exist', () => {
     const config = ConfigLoader.loadSync(process.cwd());
     expect(config.name).toBe('orbit-project');
-    expect(config.provider.default).toBe('deepseek-anthropic');
+    expect(config.provider.default).toBe('deepseek-openai');
     expect(config.models.default).toBe('deepseek-v4-pro[1m]');
   });
 

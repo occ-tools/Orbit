@@ -3,7 +3,9 @@ import picocolors from 'picocolors';
 export class Renderer {
   public static printHeader(sessionId: string, model: string, cwd: string): void {
     const sessionShort = sessionId.substring(0, 8);
-    const line = picocolors.gray('─'.repeat(60));
+    const columns = process.stdout.columns || 80;
+    const width = Math.min(100, Math.max(40, columns - 4));
+    const line = picocolors.gray('─'.repeat(width));
     console.log('\n  ' + picocolors.bold(picocolors.magenta('⚡ Orbit AI Coding REPL')) + picocolors.gray(' (v0.1.0)'));
     console.log('  ' + line);
     console.log(`  🤖 ${picocolors.cyan('Model')}   : ${picocolors.yellow(model)}`);

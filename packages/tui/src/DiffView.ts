@@ -105,7 +105,12 @@ export class DiffView {
 
   public static render(filePath: string, before: string | null, after: string): string {
     const output: string[] = [];
-    output.push(picocolors.gray(`┌── Diff: ${picocolors.bold(picocolors.cyan(filePath))} ────────────────────────────────────`));
+    const columns = process.stdout.columns || 80;
+    const width = Math.min(100, Math.max(40, columns - 4));
+    const headerPrefix = '── Diff: ';
+    const headerLength = headerPrefix.length + filePath.length + 1; // plus space
+    const remaining = Math.max(5, width - 2 - headerLength);
+    output.push(picocolors.gray('┌' + headerPrefix + picocolors.bold(picocolors.cyan(filePath)) + ' ' + '─'.repeat(remaining)));
 
     if (before === null) {
       const linesAfter = after.split('\n');
@@ -192,7 +197,7 @@ export class DiffView {
       }
     }
 
-    output.push(picocolors.gray('└────────────────────────────────────────────────────────────'));
+    output.push(picocolors.gray('└' + '─'.repeat(width - 2)));
     return output.join('\n');
   }
 }

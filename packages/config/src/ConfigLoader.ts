@@ -111,11 +111,26 @@ export class ConfigLoader {
     for (const key of Object.keys(finalConfig.providers)) {
       const provider = finalConfig.providers[key];
       if (!provider.apiKey && provider.apiKeyEnv) {
-        let keyVal = process.env[provider.apiKeyEnv];
-        if (!keyVal) {
-          keyVal = credsManager.getSecret(provider.apiKeyEnv) || undefined;
-        }
-        provider.apiKey = keyVal;
+        let cachedKey: string | undefined = undefined;
+        let resolved = false;
+        Object.defineProperty(provider, "apiKey", {
+          get() {
+            if (resolved) return cachedKey;
+            let keyVal = process.env[provider.apiKeyEnv!];
+            if (!keyVal) {
+              keyVal = credsManager.getSecret(provider.apiKeyEnv!) || undefined;
+            }
+            cachedKey = keyVal;
+            resolved = true;
+            return cachedKey;
+          },
+          set(val) {
+            cachedKey = val;
+            resolved = true;
+          },
+          configurable: true,
+          enumerable: true,
+        });
       }
     }
 

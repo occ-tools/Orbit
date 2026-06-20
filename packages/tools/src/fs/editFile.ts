@@ -213,27 +213,32 @@ function adjustIndentation(
 function levenshteinDistance(s1: string, s2: string): number {
   const m = s1.length;
   const n = s2.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () =>
-    Array(n + 1).fill(0),
-  );
+  if (m === 0) return n;
+  if (n === 0) return m;
 
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  let prevRow = Array(n + 1);
+  let currRow = Array(n + 1);
+
+  for (let j = 0; j <= n; j++) prevRow[j] = j;
 
   for (let i = 1; i <= m; i++) {
+    currRow[0] = i;
     for (let j = 1; j <= n; j++) {
       if (s1[i - 1] === s2[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1];
+        currRow[j] = prevRow[j - 1];
       } else {
-        dp[i][j] = Math.min(
-          dp[i - 1][j] + 1,
-          dp[i][j - 1] + 1,
-          dp[i - 1][j - 1] + 1,
+        currRow[j] = Math.min(
+          prevRow[j] + 1,      // Deletion
+          currRow[j - 1] + 1,  // Insertion
+          prevRow[j - 1] + 1   // Substitution
         );
       }
     }
+    const temp = prevRow;
+    prevRow = currRow;
+    currRow = temp;
   }
-  return dp[m][n];
+  return prevRow[n];
 }
 
 function lineSimilarity(l1: string, l2: string): number {
@@ -242,7 +247,12 @@ function lineSimilarity(l1: string, l2: string): number {
   if (!t1 && !t2) return 1.0;
   if (!t1 || !t2) return 0.0;
 
-  const dist = levenshteinDistance(t1, t2);
   const maxLen = Math.max(t1.length, t2.length);
+  // Math Pruning: If difference in lengths is > 20% of maxLen, similarity is guaranteed to be < 80%
+  if (Math.abs(t1.length - t2.length) > 0.2 * maxLen) {
+    return 0.0;
+  }
+
+  const dist = levenshteinDistance(t1, t2);
   return 1.0 - dist / maxLen;
 }

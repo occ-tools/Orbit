@@ -37,6 +37,7 @@ export class JSVectorStore implements VectorStore {
   private documents: Document[] = [];
   private dbPath: string;
   private header: DBHeader | null = null;
+  private loaded = false;
 
   constructor(
     private cwd: string,
@@ -150,6 +151,8 @@ export class JSVectorStore implements VectorStore {
   }
 
   public async load(): Promise<void> {
+    if (this.loaded) return;
+    this.loaded = true;
     if (!existsSync(this.dbPath)) {
       this.documents = [];
       this.header = null;
@@ -185,6 +188,7 @@ export class JSVectorStore implements VectorStore {
   public async clear(): Promise<void> {
     this.documents = [];
     this.header = null;
+    this.loaded = false;
     if (existsSync(this.dbPath)) {
       try {
         await fsPromises.unlink(this.dbPath);

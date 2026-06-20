@@ -254,30 +254,56 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
       input.model.toLowerCase().includes("r1") ||
       input.model.toLowerCase().includes("v4");
 
+    const isOpenAIReasoner =
+      this.id === "openai" &&
+      (input.model.toLowerCase().startsWith("o1") ||
+        input.model.toLowerCase().startsWith("o3"));
+
     const body: any = {
       model: input.model,
       messages: openaiMessages,
-      max_tokens: input.maxTokens,
       stream: input.stream !== false,
     };
 
+    if (isOpenAIReasoner) {
+      body.max_completion_tokens = input.maxTokens;
+      if (input.thinking?.enabled) {
+        const budget = input.thinking.budgetTokens || 1024;
+        body.reasoning_effort = budget > 1500 ? "high" : budget > 500 ? "medium" : "low";
+      }
+    } else {
+      body.max_tokens = input.maxTokens;
+    }
+
     if (input.thinking?.enabled) {
-      body.thinking = {
-        type: "enabled",
-        budget_tokens: input.thinking.budgetTokens || 1024,
-      };
+      if (!isOpenAIReasoner && !isOfficialDeepSeek) {
+        body.thinking = {
+          type: "enabled",
+          budget_tokens: input.thinking.budgetTokens || 1024,
+        };
+      }
       body.temperature = 1.0;
     } else if (isReasoner) {
       body.temperature = 1.0;
     } else {
-      body.temperature = input.temperature ?? 0.7;
+      if (isOpenAIReasoner) {
+        // o1/o3-mini only support temperature 1.0 (or default)
+      } else {
+        body.temperature = input.temperature ?? 0.7;
+      }
     }
 
     if (body.stream) {
       body.stream_options = { include_usage: true };
     }
 
-    if (tools && tools.length > 0) {
+    const supportsNativeTools = !(
+      (isOfficialDeepSeek && input.model.toLowerCase().includes("reasoner")) ||
+      input.model.toLowerCase().includes("o1-preview") ||
+      input.model.toLowerCase().includes("o1-mini")
+    );
+
+    if (tools && tools.length > 0 && supportsNativeTools) {
       body.tools = tools;
     }
 

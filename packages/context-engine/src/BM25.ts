@@ -83,6 +83,7 @@ export class BM25Store {
   private df: Record<string, number> = {};
   private avgdl: number = 0;
   private dbPath: string;
+  private loaded = false;
 
   constructor(private cwd: string) {
     const branchName = getGitBranch(cwd);
@@ -230,6 +231,8 @@ export class BM25Store {
   }
 
   public async load(): Promise<void> {
+    if (this.loaded) return;
+    this.loaded = true;
     if (!existsSync(this.dbPath)) {
       this.docs = {};
       this.df = {};
@@ -253,6 +256,7 @@ export class BM25Store {
     this.docs = {};
     this.df = {};
     this.avgdl = 0;
+    this.loaded = false;
     if (existsSync(this.dbPath)) {
       try {
         await fsPromises.unlink(this.dbPath);

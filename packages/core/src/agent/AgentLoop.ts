@@ -51,7 +51,7 @@ export class AgentLoop {
   private abortController: AbortController | null = null;
   private sessionCost = 0;
   private statusBar: StatusBar;
-  private gitCheckpoints: string[] = [];
+  private gitCheckpoints: Array<{ hash: string; isTemporary: boolean }> = [];
   private cachedRepoMapText = "";
   private lastSymbolsMtime = 0;
   private cachedContextPack: ContextPack | null = null;
@@ -2036,25 +2036,40 @@ ${errLog}`;
 
   private async createGitCheckpoint(toolCallId: string): Promise<boolean> {
     try {
+      const isGit = await this.isGitRepo();
+      if (!isGit) return false;
+
       const statusRes = await execPromise("git status --porcelain", {
         cwd: this.cwd,
       });
-      if (!statusRes.stdout.trim()) {
-        return false;
-      }
+      const hasUnstaged = !!statusRes.stdout.trim();
 
-      await execPromise("git add -A", { cwd: this.cwd });
-      const msg = `orbit-temp-checkpoint-${toolCallId}`;
-      await execPromise(`git commit -m ${JSON.stringify(msg)} --no-verify`, {
-        cwd: this.cwd,
-      });
+      if (hasUnstaged) {
+        await execPromise("git add -A", { cwd: this.cwd });
+        const msg = `orbit-temp-checkpoint-${toolCallId}`;
+        await execPromise(`git commit -m ${JSON.stringify(msg)} --no-verify`, {
+          cwd: this.cwd,
+        });
 
-      const hashRes = await execPromise("git rev-parse HEAD", {
-        cwd: this.cwd,
-      });
-      const hash = hashRes.stdout.trim();
-      if (hash) {
-        this.gitCheckpoints.push(hash);
+        const hashRes = await execPromise("git rev-parse HEAD", {
+          cwd: this.cwd,
+        });
+        const hash = hashRes.stdout.trim();
+        if (hash) {
+          this.gitCheckpoints.push({ hash, isTemporary: true });
+          return true;
+        }
+      } else {
+        let hash = "unborn";
+        try {
+          const hashRes = await execPromise("git rev-parse HEAD", {
+            cwd: this.cwd,
+          });
+          hash = hashRes.stdout.trim();
+        } catch {
+          // Unborn repository (no commits yet)
+        }
+        this.gitCheckpoints.push({ hash, isTemporary: false });
         return true;
       }
       return false;
@@ -2065,20 +2080,32 @@ ${errLog}`;
 
   private async rollbackLastGitCheckpoint(): Promise<boolean> {
     if (this.gitCheckpoints.length === 0) return false;
-    const lastHash = this.gitCheckpoints.pop();
+    const checkpoint = this.gitCheckpoints.pop();
+    if (!checkpoint) return false;
+
     try {
-      // 1. Reset to the checkpoint commit state to recover tracked changes
-      await execPromise(`git reset --hard ${lastHash}`, { cwd: this.cwd });
-      // 2. Clean new untracked files created by the tool execution
-      await execPromise("git clean -fd", { cwd: this.cwd });
-      // 3. Reset HEAD to parent commit if it exists, restoring pre-existing files to unstaged/untracked state
-      try {
-        await execPromise("git rev-parse HEAD~1", { cwd: this.cwd });
-        await execPromise("git reset HEAD~1", { cwd: this.cwd });
-      } catch {
-        // If parent commit doesn't exist (root commit), reset HEAD and index to unborn state
-        await execPromise("git update-ref -d HEAD", { cwd: this.cwd });
-        await execPromise("git rm -r --cached .", { cwd: this.cwd });
+      if (checkpoint.isTemporary) {
+        // 1. Reset to the checkpoint commit state to recover tracked changes
+        await execPromise(`git reset --hard ${checkpoint.hash}`, { cwd: this.cwd });
+        // 2. Clean new untracked files created by the tool execution
+        await execPromise("git clean -fd", { cwd: this.cwd });
+        // 3. Reset HEAD to parent commit if it exists, restoring pre-existing files to unstaged/untracked state
+        try {
+          await execPromise("git rev-parse HEAD~1", { cwd: this.cwd });
+          await execPromise("git reset HEAD~1", { cwd: this.cwd });
+        } catch {
+          // If parent commit doesn't exist (root commit), reset HEAD and index to unborn state
+          await execPromise("git update-ref -d HEAD", { cwd: this.cwd });
+          await execPromise("git rm -r --cached .", { cwd: this.cwd });
+        }
+      } else {
+        if (checkpoint.hash === "unborn") {
+          await execPromise("git rm -rf . --ignore-unmatch", { cwd: this.cwd });
+          await execPromise("git clean -fd", { cwd: this.cwd });
+        } else {
+          await execPromise(`git reset --hard ${checkpoint.hash}`, { cwd: this.cwd });
+          await execPromise("git clean -fd", { cwd: this.cwd });
+        }
       }
       return true;
     } catch {
@@ -2088,12 +2115,18 @@ ${errLog}`;
 
   private async commitLastGitCheckpointSoft(): Promise<boolean> {
     if (this.gitCheckpoints.length === 0) return false;
-    const lastHash = this.gitCheckpoints.pop();
+    const checkpoint = this.gitCheckpoints.pop();
+    if (!checkpoint) return false;
+
+    if (!checkpoint.isTemporary) {
+      return true;
+    }
+
     try {
       const currentHashRes = await execPromise("git rev-parse HEAD", {
         cwd: this.cwd,
       });
-      if (currentHashRes.stdout.trim() === lastHash) {
+      if (currentHashRes.stdout.trim() === checkpoint.hash) {
         try {
           await execPromise("git rev-parse HEAD~1", { cwd: this.cwd });
           await execPromise("git reset --soft HEAD~1", { cwd: this.cwd });

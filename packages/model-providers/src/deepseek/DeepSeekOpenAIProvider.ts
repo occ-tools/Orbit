@@ -365,10 +365,13 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
+        let lineStart = 0;
+        while (true) {
+          const idx = buffer.indexOf("\n", lineStart);
+          if (idx === -1) break;
+          const line = buffer.substring(lineStart, idx);
+          lineStart = idx + 1;
 
-        for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
 
@@ -422,6 +425,7 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
             }
           }
         }
+        buffer = buffer.substring(lineStart);
       }
 
       // Flush any remaining characters in parser

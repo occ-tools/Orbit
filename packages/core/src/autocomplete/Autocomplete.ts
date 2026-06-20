@@ -94,8 +94,23 @@ function getPathCommentHeader(windowId: string, cwd: string): string {
 
 export class AutocompleteEngine {
   private activeRequests = new Map<string, AbortController>();
+  private providerCache = new Map<string, any>();
 
   constructor(private cwd: string = process.cwd()) {}
+
+  private getCachedProvider(providerId: string, config: any) {
+    const providerConfig = config.providers?.[providerId];
+    const key = JSON.stringify({
+      providerId,
+      apiKey: providerConfig?.apiKey || (providerConfig?.apiKeyEnv ? process.env[providerConfig.apiKeyEnv] : undefined),
+      baseUrl: providerConfig?.baseUrl,
+      type: providerConfig?.type
+    });
+    if (!this.providerCache.has(key)) {
+      this.providerCache.set(key, getAutocompleteProvider(providerId, config));
+    }
+    return this.providerCache.get(key);
+  }
 
   /**
    * Generates local FIM code autocomplete suggestions.
@@ -123,7 +138,7 @@ export class AutocompleteEngine {
     const modelName = config.autocomplete.model || "qwen2.5-coder:1.5b";
 
     try {
-      const provider = getAutocompleteProvider(providerId, config);
+      const provider = this.getCachedProvider(providerId, config);
       if (typeof provider.complete !== "function") {
         return "";
       }

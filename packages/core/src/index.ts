@@ -7,3 +7,5 @@ export * from "./agent/Orchestrator.js";
 export * from "./events/EventBus.js";
 export * from "./events/EventSchema.js";
 export * from "./autocomplete/Autocomplete.js";
+export * from "./verification/VerificationContractManager.js";
+

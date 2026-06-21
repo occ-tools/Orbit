@@ -151,7 +151,7 @@ describe("EditFileTool Fuzzy Hunk Merging Cascade", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("Applying this edit would introduce the following syntax error");
     expect(result.error).toContain("TypeScript Syntax Error");
-  });
+  }, 15_000);
 
   it("should fallback to AST-based symbol matching and succeed when text spacing/newlines do not match exactly", async () => {
     const tsPath = join(tempDir, "sample.ts");

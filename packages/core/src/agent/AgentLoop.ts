@@ -29,6 +29,7 @@ import { promisify } from "util";
 const execPromise = promisify(exec);
 import { MCPClient, DynamicMCPTool } from "@orbit-ai/mcp";
 import { resolveSafePath } from "@orbit-ai/shared";
+import { VerificationContractManager } from "../verification/VerificationContractManager.js";
 
 export interface UserInteraction {
   askApproval(reason: string, preview?: string): Promise<boolean>;
@@ -48,6 +49,7 @@ export class AgentLoop {
   private permissionEngine: PermissionEngine;
   private contextBuilder: ContextPackBuilder;
   private stepRunner: StepRunner;
+  private verificationManager: VerificationContractManager;
   private mcpClients: MCPClient[] = [];
   private abortController: AbortController | null = null;
   private sessionCost = 0;
@@ -118,6 +120,11 @@ export class AgentLoop {
     this.permissionEngine = new PermissionEngine(config);
     this.contextBuilder = new ContextPackBuilder(cwd);
     this.stepRunner = new StepRunner(cwd, session.id);
+    this.verificationManager = new VerificationContractManager(
+      cwd,
+      session.id,
+      this.checkpointManager,
+    );
   }
 
   public abort(): void {
@@ -439,6 +446,14 @@ export class AgentLoop {
           this.stopKeepaliveTimer();
           this.lastChatParams = { model: activeModel, messages, system };
 
+          eventBus.emitEvent("model_request", {
+            model: activeModel,
+            messages: messages.map((m: any) => ({
+              role: m.role,
+              content: m.content,
+            })),
+          });
+
           const stream = this.provider.chat({
             model: activeModel,
             messages,
@@ -454,6 +469,7 @@ export class AgentLoop {
           let responseText = "";
           let thinkingText = "";
           let thinkingSignature = "";
+          let finalUsage: any = undefined;
           const toolCallsToExecute: OrbitToolCall[] = [];
 
           try {
@@ -472,6 +488,7 @@ export class AgentLoop {
                 }
               } else if (event.type === "usage") {
                 this.accumulateCost(activeModel, event.usage);
+                finalUsage = event.usage;
               } else if (event.type === "tool_call") {
                 toolCallsToExecute.push(event.toolCall);
               } else if (event.type === "error") {
@@ -516,6 +533,21 @@ export class AgentLoop {
               }
             }
           }
+
+          eventBus.emitEvent("model_response", {
+            model: activeModel,
+            text: responseText || undefined,
+            reasoning_content: thinkingText || undefined,
+            usage: finalUsage
+              ? {
+                  inputTokens: finalUsage.inputTokens,
+                  outputTokens: finalUsage.outputTokens,
+                  cacheReadTokens: finalUsage.cacheReadTokens,
+                  cacheWriteTokens: finalUsage.cacheWriteTokens,
+                }
+              : undefined,
+            toolCalls: toolCallsToExecute.length > 0 ? toolCallsToExecute : undefined,
+          });
 
           if (this.abortController?.signal.aborted) {
             const action = await this.handleInterrupt();
@@ -576,28 +608,17 @@ export class AgentLoop {
                   (b) =>
                     b.type === "tool_call" &&
                     (b.toolCall.name === "write_file" ||
-                      b.toolCall.name === "edit_file"),
+                      b.toolCall.name === "edit_file" ||
+                      b.toolCall.name === "replace_file_content" ||
+                      b.toolCall.name === "multi_replace_file_content"),
                 ),
             );
 
-            if (hasEdits && (this.config.context as any)?.autoRepair) {
-              const testTool = toolRegistry.get("run_tests");
-              if (testTool) {
-                this.interaction.showText(
-                  "\n● Auto-Repair: Running project tests to verify changes...",
-                );
-                const preferredCommand = (this.config.context as any)
-                  ?.testCommands?.[0];
-                const result = await testTool.execute(
-                  { command: preferredCommand },
-                  {
-                    cwd: this.cwd,
-                    sessionId: this.state.sessionId,
-                    abortSignal: this.abortController?.signal,
-                  },
-                );
-
-                if (!result.ok) {
+            if (hasEdits) {
+              if (this.verificationManager.hasContract()) {
+                this.interaction.showText("\n● Verification: Running contract verification checks...");
+                const verifyResult = await this.verificationManager.runVerification();
+                if (!verifyResult.success) {
                   const repairAttempts = this.state.history.filter(
                     (m) =>
                       m.role === "user" &&
@@ -608,10 +629,10 @@ export class AgentLoop {
                       ),
                   ).length;
 
-                  if (repairAttempts >= 3) {
+                  if (repairAttempts >= 3 || !(this.config.context as any)?.autoRepair) {
                     this.interaction.showText(
                       picocolors.red(
-                        `\n✖ Auto-Repair: Max attempts (3) reached. Codebase is unstable. Rolling back all changes for safety...`,
+                        `\n✖ Verification Failed: Workspace violates contract. Rolling back all changes for safety...`,
                       ),
                     );
                     await this.rollbackLastCheckpoint();
@@ -621,58 +642,11 @@ export class AgentLoop {
 
                   this.interaction.showText(
                     picocolors.red(
-                      `✖ Tests failed! Entering auto-repair loop (Attempt ${repairAttempts + 1}/3)...`,
+                      `✖ Verification failed! Entering auto-repair loop (Attempt ${repairAttempts + 1}/3)...`,
                     ),
                   );
-                  const rawLog = result.error || (result as any).display || "";
-                  let errLog = cleanAndTruncateTestLog(rawLog);
 
-                  // 3. Pre-Analysis Error Distillation via V4-Flash
-                  if (this.config.models.fast) {
-                    this.interaction.showText(
-                      `● Auto-Repair: Compressing test failure logs using ${this.config.models.fast}...`,
-                    );
-                    try {
-                      const fastModel = this.config.models.fast;
-                      const distillationPrompt = `Extract and summarize the core compile error or assertion failure from the following test logs. Keep the output extremely dense and precise. Specify only:
-1. The exact file path and line number of the failure.
-2. The failing test description.
-3. The assert details (e.g. Expected X, Got Y).
-Do not include any other markdown formatting or conversational text. Output ONLY the summary:
-
-${errLog}`;
-                      const distStream = this.provider.chat({
-                        model: fastModel,
-                        messages: [
-                          {
-                            id: `msg_distill_${Date.now()}`,
-                            role: "user",
-                            createdAt: new Date().toISOString(),
-                            content: [
-                              { type: "text", text: distillationPrompt },
-                            ],
-                          },
-                        ],
-                        tools: [],
-                      });
-                      let distilledLog = "";
-                      for await (const event of distStream) {
-                        if (event.type === "text_delta") {
-                          distilledLog += event.text;
-                        }
-                      }
-                      if (distilledLog.trim()) {
-                        errLog = distilledLog.trim();
-                        this.interaction.showText(
-                          picocolors.gray(`● Compressed logs:\n${errLog}`),
-                        );
-                      }
-                    } catch {
-                      // Fallback to normal cleaned log on distillation failure
-                    }
-                  }
-
-                  const feedbackPrompt = `[Verification Failed] The changes made caused test failures. Test command: "${preferredCommand || "auto-detected runner"}". Output:\n\n${errLog}\n\nPlease analyze this failure log, locate the files causing assertion or compile errors, and fix the codebase so that the tests pass successfully.`;
+                  const feedbackPrompt = `[Verification Failed] The changes made failed the verification contract. Details:\n\n${verifyResult.error}\n\nPlease analyze this failure, fix the codebase, and ensure it passes the verification contract.`;
 
                   const systemMsg: OrbitMessage = {
                     id: `msg_validation_err_${Date.now()}`,
@@ -686,9 +660,120 @@ ${errLog}`;
                 } else {
                   this.interaction.showText(
                     picocolors.green(
-                      `✔ All tests passed successfully! Verification green.`,
+                      `✔ Verification contract passed successfully.`,
                     ),
                   );
+                }
+              } else if ((this.config.context as any)?.autoRepair) {
+                const testTool = toolRegistry.get("run_tests");
+                if (testTool) {
+                  this.interaction.showText(
+                    "\n● Auto-Repair: Running project tests to verify changes...",
+                  );
+                  const preferredCommand = (this.config.context as any)
+                    ?.testCommands?.[0];
+                  const result = await testTool.execute(
+                    { command: preferredCommand },
+                    {
+                      cwd: this.cwd,
+                      sessionId: this.state.sessionId,
+                      abortSignal: this.abortController?.signal,
+                    },
+                  );
+
+                  if (!result.ok) {
+                    const repairAttempts = this.state.history.filter(
+                      (m) =>
+                        m.role === "user" &&
+                        m.content.some(
+                          (b) =>
+                            b.type === "text" &&
+                            b.text.includes("[Verification Failed]"),
+                        ),
+                    ).length;
+
+                    if (repairAttempts >= 3) {
+                      this.interaction.showText(
+                        picocolors.red(
+                          `\n✖ Auto-Repair: Max attempts (3) reached. Codebase is unstable. Rolling back all changes for safety...`,
+                        ),
+                      );
+                      await this.rollbackLastCheckpoint();
+                      this.state.done = true;
+                      break;
+                    }
+
+                    this.interaction.showText(
+                      picocolors.red(
+                        `✖ Tests failed! Entering auto-repair loop (Attempt ${repairAttempts + 1}/3)...`,
+                      ),
+                    );
+                    const rawLog = result.error || (result as any).display || "";
+                    let errLog = cleanAndTruncateTestLog(rawLog);
+
+                    // 3. Pre-Analysis Error Distillation via V4-Flash
+                    if (this.config.models.fast) {
+                      this.interaction.showText(
+                        `● Auto-Repair: Compressing test failure logs using ${this.config.models.fast}...`,
+                      );
+                      try {
+                        const fastModel = this.config.models.fast;
+                        const distillationPrompt = `Extract and summarize the core compile error or assertion failure from the following test logs. Keep the output extremely dense and precise. Specify only:
+1. The exact file path and line number of the failure.
+2. The failing test description.
+3. The assert details (e.g. Expected X, Got Y).
+Do not include any other markdown formatting or conversational text. Output ONLY the summary:
+
+${errLog}`;
+                        const distStream = this.provider.chat({
+                          model: fastModel,
+                          messages: [
+                            {
+                              id: `msg_distill_${Date.now()}`,
+                              role: "user",
+                              createdAt: new Date().toISOString(),
+                              content: [
+                                { type: "text", text: distillationPrompt },
+                              ],
+                            },
+                          ],
+                          tools: [],
+                        });
+                        let distilledLog = "";
+                        for await (const event of distStream) {
+                          if (event.type === "text_delta") {
+                            distilledLog += event.text;
+                          }
+                        }
+                        if (distilledLog.trim()) {
+                          errLog = distilledLog.trim();
+                          this.interaction.showText(
+                            picocolors.gray(`● Compressed logs:\n${errLog}`),
+                          );
+                        }
+                      } catch {
+                        // Fallback to normal cleaned log on distillation failure
+                      }
+                    }
+
+                    const feedbackPrompt = `[Verification Failed] The changes made caused test failures. Test command: "${preferredCommand || "auto-detected runner"}". Output:\n\n${errLog}\n\nPlease analyze this failure log, locate the files causing assertion or compile errors, and fix the codebase so that the tests pass successfully.`;
+
+                    const systemMsg: OrbitMessage = {
+                      id: `msg_validation_err_${Date.now()}`,
+                      role: "user",
+                      createdAt: new Date().toISOString(),
+                      content: [{ type: "text", text: feedbackPrompt }],
+                    };
+                    this.state.history.push(systemMsg);
+                    this.sessionManager.saveHistory(this.state.history);
+                    continue;
+                  } else {
+                    this.interaction.showText(
+                      picocolors.green(
+                        `✔ All tests passed successfully! Verification green.`,
+                      ),
+                    );
+                  }
                 }
               }
             }
@@ -710,6 +795,13 @@ ${errLog}`;
             const registeredTool = toolRegistry.get(tc.name);
             const declaredRisk = registeredTool?.risk;
             const evalArgs = JSON.parse(tc.arguments);
+
+            eventBus.emitEvent("tool_proposal", {
+              toolCallId: tc.id,
+              toolName: tc.name,
+              arguments: evalArgs,
+            });
+
             let decision = this.permissionEngine.evaluate(
               tc.name,
               evalArgs,
@@ -746,6 +838,16 @@ ${errLog}`;
 
             if (decision.action === "deny") {
               this.interaction.showText(`✖ Blocked: ${decision.reason}`);
+              eventBus.emitEvent("tool_approval", {
+                toolCallId: tc.id,
+                approved: false,
+                reason: `Blocked by safety policy: ${decision.reason}`,
+              });
+              eventBus.emitEvent("tool_result", {
+                toolCallId: tc.id,
+                toolName: tc.name,
+                error: `Blocked by safety policy: ${decision.reason}`,
+              });
               toolResultBlocks.push({
                 type: "tool_result",
                 toolResult: {
@@ -854,6 +956,16 @@ ${errLog}`;
 
               if (!approved) {
                 this.interaction.showText(`✖ Rejected by user.`);
+                eventBus.emitEvent("tool_approval", {
+                  toolCallId: tc.id,
+                  approved: false,
+                  reason: "Rejected by user",
+                });
+                eventBus.emitEvent("tool_result", {
+                  toolCallId: tc.id,
+                  toolName: tc.name,
+                  error: "Rejected by user",
+                });
                 toolResultBlocks.push({
                   type: "tool_result",
                   toolResult: {
@@ -872,7 +984,19 @@ ${errLog}`;
                   "denied",
                 );
                 continue;
+              } else {
+                eventBus.emitEvent("tool_approval", {
+                  toolCallId: tc.id,
+                  approved: true,
+                  reason: "Approved by user",
+                });
               }
+            } else {
+              eventBus.emitEvent("tool_approval", {
+                toolCallId: tc.id,
+                approved: true,
+                reason: "Auto-approved by policy",
+              });
             }
 
             let beforeContent: string | null = null;
@@ -926,6 +1050,11 @@ ${errLog}`;
                   );
 
                   if (choice === "diagnose") {
+                    eventBus.emitEvent("tool_result", {
+                      toolCallId: tc.id,
+                      toolName: tc.name,
+                      error: `Commit aborted. Verification tests failed: ${err.stdout || err.stderr || err.message}`,
+                    });
                     toolResultBlocks.push({
                       type: "tool_result",
                       toolResult: {
@@ -937,6 +1066,11 @@ ${errLog}`;
                     });
                     continue;
                   } else if (choice !== "yes") {
+                    eventBus.emitEvent("tool_result", {
+                      toolCallId: tc.id,
+                      toolName: tc.name,
+                      error: "Commit aborted by user due to pre-commit test failures.",
+                    });
                     toolResultBlocks.push({
                       type: "tool_result",
                       toolResult: {
@@ -1026,6 +1160,12 @@ ${errLog}`;
                 );
               beforeContent = checkpoint.backups[0].originalContent;
 
+              eventBus.emitEvent("checkpoint_created", {
+                checkpointId: checkpoint.id,
+                timestamp: checkpoint.timestamp,
+                message: `Before executing ${tc.name} on ${targetPath}`,
+              });
+
               // Run pre-edit hook if configured
               if (this.config.hooks?.preEdit) {
                 this.interaction.showText(`● Running pre-edit hook...`);
@@ -1069,6 +1209,11 @@ ${errLog}`;
               if (action === "continue") {
                 this.interaction.showText("● Resuming execution...");
                 this.abortController = null;
+                eventBus.emitEvent("tool_result", {
+                  toolCallId: tc.id,
+                  toolName: tc.name,
+                  error: "Interrupted by user",
+                });
                 toolResultBlocks.push({
                   type: "tool_result",
                   toolResult: {
@@ -1711,6 +1856,13 @@ ${errLog}`;
                 `  ${picocolors.red("✖")} Failed: ${picocolors.red(finalResult.error || "Unknown error")}`,
               );
             }
+
+            eventBus.emitEvent("tool_result", {
+              toolCallId: tc.id,
+              toolName: tc.name,
+              result: finalResult.ok ? finalResult.data : undefined,
+              error: finalResult.ok ? undefined : finalResult.error || "Unknown error",
+            });
 
             toolResultBlocks.push({
               type: "tool_result",

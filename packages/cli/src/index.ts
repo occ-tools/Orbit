@@ -72,4 +72,26 @@ program
     await runLSPServer(process.cwd());
   });
 
+program
+  .command("exec")
+  .description("run a task in non-interactive mode and stream events as JSONL")
+  .argument("<prompt>", "the task prompt to execute")
+  .option("--provider <provider>", "specify model provider")
+  .option("--model <model>", "specify model name")
+  .option("--jsonl", "output event logs in JSONL format")
+  .action(async (prompt, options) => {
+    const cwd = process.cwd();
+    const overrides: any = {};
+    if (options.provider) {
+      overrides.provider = { default: options.provider };
+    }
+    if (options.model) {
+      overrides.models = { default: options.model };
+    }
+    await runAgent(cwd, prompt, overrides, false, {
+      nonInteractive: true,
+      jsonl: !!options.jsonl,
+    });
+  });
+
 program.parse(process.argv);

@@ -4,6 +4,9 @@ import { AgentLoop, UserInteraction } from "./AgentLoop.js";
 import { eventBus } from "../events/EventBus.js";
 import fs from "fs";
 import path from "path";
+import { WorktreeManager } from "@orbit-ai/sandbox";
+import { execSync } from "child_process";
+import { generateId } from "@orbit-ai/shared";
 
 export class Orchestrator {
   private currentLoop: AgentLoop | null = null;
@@ -113,34 +116,80 @@ Your final response MUST present the detailed plan clearly.`,
           ? `Implement the changes outlined in the plan.\nPlan:\n${planText}`
           : `Fix the issues reported by the Reviewer Agent.\nFeedback:\n${feedback}\n\nOriginal Plan:\n${planText}`;
 
-      const coderLoop = new AgentLoop(
-        this.cwd,
-        this.config,
-        this.provider,
-        coderPrompt,
-        this.interaction,
-        {
-          modelOverride: this.config.models.coder,
-          systemPromptOverride: `You are the Orbit Coder Agent.
+      let coderCwd = this.cwd;
+      let worktreeSession: any = undefined;
+      const wm = new WorktreeManager(this.cwd);
+      let isGit = false;
+      try {
+        isGit = wm.isGitRepo();
+      } catch {}
+
+      if (isGit) {
+        try {
+          const wtSessionId = `${generateId("wt").slice(0, 8)}-${attempt}`;
+          worktreeSession = wm.createWorktree(wtSessionId);
+          coderCwd = worktreeSession.path;
+          this.interaction.showText(`  ● Running Coder Agent in isolated git worktree: ${coderCwd}`);
+        } catch (err: any) {
+          this.interaction.showText(`  ⚠️ Failed to create worktree: ${err.message}. Falling back to main workspace.`);
+          coderCwd = this.cwd;
+          worktreeSession = undefined;
+        }
+      }
+
+      let runSuccess = false;
+      try {
+        if (this.aborted) return;
+
+        const coderLoop = new AgentLoop(
+          coderCwd,
+          this.config,
+          this.provider,
+          coderPrompt,
+          this.interaction,
+          {
+            modelOverride: this.config.models.coder,
+            systemPromptOverride: `You are the Orbit Coder Agent.
 Your job is to read files and make precise edits to code files according to the plan.
 You do NOT have bash command execution or testing capabilities. Focus entirely on modifying the codebase correctly.`,
-          allowedTools: [
-            "read_file",
-            "write_file",
-            "edit_file",
-            "list_files",
-            "glob",
-            "grep",
-            "git_status",
-            "git_diff",
-          ],
-        },
-      );
-      if (this.aborted) return;
-      this.currentLoop = coderLoop;
-      await coderLoop.run();
-      this.currentLoop = null;
-      if (this.aborted) return;
+            allowedTools: [
+              "read_file",
+              "write_file",
+              "edit_file",
+              "list_files",
+              "glob",
+              "grep",
+              "git_status",
+              "git_diff",
+            ],
+          },
+        );
+
+        this.currentLoop = coderLoop;
+        await coderLoop.run();
+        runSuccess = true;
+      } finally {
+        this.currentLoop = null;
+
+        if (worktreeSession) {
+          if (this.aborted || !runSuccess) {
+            // Cleanup without merging on abort or error
+            try {
+              execSync(`git worktree remove --force "${worktreeSession.path}"`, { cwd: this.cwd, stdio: "ignore" });
+              execSync(`git branch -D "${worktreeSession.branchName}"`, { cwd: this.cwd, stdio: "ignore" });
+            } catch {}
+          } else {
+            // Merge and cleanup on success
+            this.interaction.showText(`  ● Committing and merging Coder changes back to main workspace...`);
+            const mergeRes = wm.mergeAndCleanup(worktreeSession);
+            if (mergeRes.success) {
+              this.interaction.showText(`  ✔ Merged successfully.`);
+            } else {
+              this.interaction.showText(`  ✖ Merge conflict or failure occurred: ${mergeRes.conflictFiles?.join(", ") || "unknown"}`);
+            }
+          }
+        }
+      }
 
       this.interaction.showText(
         `\n[Phase 3: Review (Attempt ${attempt}/${maxAttempts})] Initializing Reviewer Agent...`,

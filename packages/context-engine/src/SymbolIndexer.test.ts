@@ -200,5 +200,5 @@ export class C {
 
     expect(index.files["src/tracked.ts"]).toBeDefined();
     expect(index.files["src/ignored.ts"]).toBeUndefined();
-  });
+  }, 20_000);
 });

@@ -27,10 +27,11 @@ export class StepRunner {
     const timeoutController = new AbortController();
 
     // Wire up parent abort signal if it exists
+    const onAbort = () => {
+      timeoutController.abort();
+    };
     if (abortSignal) {
-      abortSignal.addEventListener("abort", () => {
-        timeoutController.abort();
-      });
+      abortSignal.addEventListener("abort", onAbort);
     }
 
     const timeoutId = setTimeout(() => {
@@ -70,6 +71,9 @@ export class StepRunner {
       };
     } finally {
       clearTimeout(timeoutId);
+      if (abortSignal) {
+        abortSignal.removeEventListener("abort", onAbort);
+      }
     }
   }
 }

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { readFileSync, writeFileSync } from "fs";
 import { resolveSafePath } from "@orbit-ai/shared";
 import { OrbitTool, ToolContext, ToolResult } from "../types.js";
+import type ts from "typescript";
 
 export const EditFileInputSchema = z.object({
   path: z.string(),
@@ -42,10 +43,8 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
           };
         }
         const updated = fileContent.split(oldTextNorm).join(newTextNorm);
-        const finalContent = originalContent.includes("\r\n")
-          ? updated.replace(/\n/g, "\r\n")
-          : updated;
-        writeFileSync(safePath, finalContent, "utf8");
+        const writeError = await this.checkAndWrite(input.path, safePath, updated, originalContent);
+        if (writeError) return writeError;
         return {
           ok: true,
           display: `Successfully replaced content in ${input.path}`,
@@ -96,10 +95,8 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
 
         fileLines.splice(matchedIndex, M, ...adjustedNewLines);
         const updated = fileLines.join("\n");
-        const finalContent = originalContent.includes("\r\n")
-          ? updated.replace(/\n/g, "\r\n")
-          : updated;
-        writeFileSync(safePath, finalContent, "utf8");
+        const writeError = await this.checkAndWrite(input.path, safePath, updated, originalContent);
+        if (writeError) return writeError;
         return {
           ok: true,
           display: `Successfully replaced content in ${input.path} (indentation corrected)`,
@@ -140,10 +137,8 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
 
           fileLines.splice(bestIndex, M, ...adjustedNewLines);
           const updated = fileLines.join("\n");
-          const finalContent = originalContent.includes("\r\n")
-            ? updated.replace(/\n/g, "\r\n")
-            : updated;
-          writeFileSync(safePath, finalContent, "utf8");
+          const writeError = await this.checkAndWrite(input.path, safePath, updated, originalContent);
+          if (writeError) return writeError;
           return {
             ok: true,
             display: `Successfully replaced content in ${input.path} (fuzzy matched with ${(bestSim * 100).toFixed(1)}% similarity)`,
@@ -151,9 +146,20 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
         }
       }
 
+      // 5. AST-based Match Fallback
+      const astUpdated = await astMatchAndReplace(input.path, fileContent, oldTextNorm, newTextNorm);
+      if (astUpdated) {
+        const writeError = await this.checkAndWrite(input.path, safePath, astUpdated, originalContent);
+        if (writeError) return writeError;
+        return {
+          ok: true,
+          display: `Successfully replaced content in ${input.path} (using AST-based match fallback)`,
+        };
+      }
+
       return {
         ok: false,
-        error: `Could not find target content "oldText" in "${input.path}", even with fuzzy matching (threshold 80%). Ensure the text matches the file contents.`,
+        error: `Could not find target content "oldText" in "${input.path}", even with fuzzy matching (threshold 80%) or AST symbol matching. Ensure the text matches the file contents.`,
       };
     } catch (e: any) {
       return {
@@ -162,6 +168,93 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
       };
     }
   }
+
+  private async checkAndWrite(
+    filePath: string,
+    safePath: string,
+    updated: string,
+    originalContent: string
+  ): Promise<ToolResult<void> | null> {
+    const syntaxError = await verifySyntax(filePath, updated);
+    if (syntaxError) {
+      return {
+        ok: false,
+        error: `Applying this edit would introduce the following syntax error(s). Please correct your replacement block:\n${syntaxError}`,
+      };
+    }
+    const finalContent = originalContent.includes("\r\n")
+      ? updated.replace(/\n/g, "\r\n")
+      : updated;
+    writeFileSync(safePath, finalContent, "utf8");
+    return null;
+  }
+}
+
+async function verifySyntax(filePath: string, content: string): Promise<string | null> {
+  const ext = filePath.split(".").pop()?.toLowerCase();
+  if (ext === "json") {
+    try {
+      JSON.parse(content);
+      return null;
+    } catch (e: any) {
+      return `JSON Syntax Error: ${e.message}`;
+    }
+  }
+
+  if (ext === "js" || ext === "mjs" || ext === "cjs") {
+    try {
+      const vmModule = await import("vm");
+      const vm = vmModule.default || vmModule;
+      new vm.Script(content);
+      return null;
+    } catch (e: any) {
+      return `JavaScript Syntax Error: ${e.message}`;
+    }
+  }
+
+  if (ext === "ts" || ext === "tsx") {
+    try {
+      const tsModule = await import("typescript");
+      const ts = tsModule.default || tsModule;
+      const sourceFile = ts.createSourceFile(
+        filePath,
+        content,
+        ts.ScriptTarget.Latest,
+        true
+      );
+      const diagnostics = (sourceFile as any).parseDiagnostics || [];
+      if (diagnostics.length > 0) {
+        const errors = diagnostics.map((d: any) => {
+          const { line, character } = sourceFile.getLineAndCharacterOfPosition(d.start);
+          const message = typeof d.messageText === "string" ? d.messageText : d.messageText.messageText;
+          return `Line ${line + 1}, Char ${character + 1}: ${message}`;
+        });
+        return `TypeScript Syntax Error:\n${errors.join("\n")}`;
+      }
+      return null;
+    } catch {
+      // Gracefully fall back if typescript package can't be resolved at runtime
+      return null;
+    }
+  }
+
+  if (ext === "py") {
+    try {
+      const cp = await import("child_process");
+      const result = cp.spawnSync("python", ["-c", "import sys; compile(sys.stdin.read(), 'file.py', 'exec')"], {
+        input: content,
+        encoding: "utf8",
+      });
+      if (result.status !== 0) {
+        return `Python Syntax Error:\n${result.stderr || result.stdout}`;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
 function adjustIndentation(
@@ -255,4 +348,244 @@ function lineSimilarity(l1: string, l2: string): number {
 
   const dist = levenshteinDistance(t1, t2);
   return 1.0 - dist / maxLen;
+}
+
+async function astMatchAndReplace(
+  filePath: string,
+  fileContent: string,
+  oldText: string,
+  newText: string,
+): Promise<string | null> {
+  const ext = filePath.split(".").pop()?.toLowerCase();
+  if (ext !== "ts" && ext !== "tsx" && ext !== "js" && ext !== "jsx" && ext !== "py") {
+    return null;
+  }
+
+  if (ext === "py") {
+    try {
+      const cp = await import("child_process");
+      const pythonScript = `
+import ast
+import sys
+
+def run():
+    try:
+        file_content = sys.argv[1]
+        old_text = sys.argv[2]
+        new_text = sys.argv[3]
+        
+        file_tree = ast.parse(file_content)
+        old_tree = ast.parse(old_text)
+        
+        def find_named_decls(tree):
+            decls = {}
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    decls[node.name] = node
+            return decls
+            
+        old_decls = find_named_decls(old_tree)
+        if not old_decls:
+            # Try wrapping in class
+            wrapped_lines = []
+            for l in old_text.splitlines():
+                wrapped_lines.append("    " + l)
+            wrapped_tree = ast.parse("class Dummy:\\n" + "\\n".join(wrapped_lines))
+            old_decls = find_named_decls(wrapped_tree)
+            
+        if not old_decls:
+            sys.exit(1)
+            
+        primary_name = list(old_decls.keys())[0]
+        file_decls = find_named_decls(file_tree)
+        
+        if primary_name in file_decls:
+            target_node = file_decls[primary_name]
+            lines = file_content.splitlines(keepends=True)
+            start_line = target_node.lineno - 1
+            end_line = target_node.end_lineno
+            
+            # Preserve original indentation
+            start_indent = ""
+            if start_line < len(lines):
+                line_str = lines[start_line]
+                start_indent = line_str[:len(line_str) - len(line_str.lstrip())]
+                
+            indented_new = []
+            for l in new_text.splitlines(keepends=True):
+                indented_new.append(start_indent + l)
+            
+            new_lines = lines[:start_line] + ["".join(indented_new)] + lines[end_line:]
+            sys.stdout.write("".join(new_lines))
+            sys.exit(0)
+    except Exception as e:
+        sys.exit(2)
+
+if __name__ == "__main__":
+    run()
+`;
+      const result = cp.spawnSync("python", ["-c", pythonScript, fileContent, oldText, newText], {
+        encoding: "utf8",
+      });
+      if (result.status === 0 && result.stdout) {
+        return result.stdout;
+      }
+    } catch {
+      // Fallback
+    }
+    return null;
+  }
+
+  try {
+    const tsModule = await import("typescript");
+    const ts = tsModule.default || tsModule;
+
+    // Parse file content
+    const sourceFile = ts.createSourceFile(
+      filePath,
+      fileContent,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+
+    // Parse oldText
+    const oldSourceFile = ts.createSourceFile(
+      "oldText.ts",
+      oldText,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+
+    const bindParents = (node: ts.Node, parent?: ts.Node) => {
+      if (parent) {
+        (node as any).parent = parent;
+      }
+      ts.forEachChild(node, (child) => bindParents(child, node));
+    };
+
+    bindParents(sourceFile);
+    bindParents(oldSourceFile);
+
+    interface DeclInfo {
+      name: string;
+      kind: ts.SyntaxKind;
+      node: ts.Node;
+    }
+
+    const getDeclarations = (node: ts.Node): DeclInfo[] => {
+      const decls: DeclInfo[] = [];
+      const visit = (n: ts.Node) => {
+        if (
+          (ts.isClassDeclaration(n) ||
+            ts.isInterfaceDeclaration(n) ||
+            ts.isFunctionDeclaration(n) ||
+            ts.isMethodDeclaration(n) ||
+            ts.isTypeAliasDeclaration(n) ||
+            ts.isEnumDeclaration(n) ||
+            ts.isModuleDeclaration(n)) &&
+          n.name &&
+          ts.isIdentifier(n.name)
+        ) {
+          decls.push({ name: n.name.text, kind: n.kind, node: n });
+        } else if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) {
+          decls.push({ name: n.name.text, kind: n.kind, node: n });
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(node);
+      return decls;
+    };
+
+    const getSymbolPath = (node: ts.Node): string => {
+      const pathParts: string[] = [];
+      let current: ts.Node | undefined = node;
+      while (current) {
+        if (
+          (ts.isClassDeclaration(current) ||
+            ts.isInterfaceDeclaration(current) ||
+            ts.isModuleDeclaration(current) ||
+            ts.isMethodDeclaration(current) ||
+            ts.isFunctionDeclaration(current)) &&
+          current.name &&
+          ts.isIdentifier(current.name)
+        ) {
+          pathParts.unshift(current.name.text);
+        }
+        current = current.parent;
+      }
+      return pathParts.join(".");
+    };
+
+    let oldDecls = getDeclarations(oldSourceFile);
+    let isWrapped = false;
+    if (oldDecls.length === 0) {
+      const wrappedOldSourceFile = ts.createSourceFile(
+        "oldText.ts",
+        `class Dummy {\n${oldText}\n}`,
+        ts.ScriptTarget.Latest,
+        true,
+      );
+      oldDecls = getDeclarations(wrappedOldSourceFile);
+      bindParents(wrappedOldSourceFile);
+      isWrapped = true;
+    }
+    if (oldDecls.length === 0) {
+      return null;
+    }
+
+    const primary = isWrapped
+      ? oldDecls.find((d) => !(d.name === "Dummy" && d.kind === ts.SyntaxKind.ClassDeclaration))
+      : oldDecls[0];
+
+    if (!primary) {
+      return null;
+    }
+
+    const fileDecls = getDeclarations(sourceFile);
+
+    // Find nodes matching name and kind
+    const candidates = fileDecls.filter(
+      (d) => d.name === primary.name && d.kind === primary.kind,
+    );
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    let bestMatch: ts.Node | null = null;
+    if (candidates.length === 1) {
+      bestMatch = candidates[0].node;
+    } else {
+      // If multiple candidates exist, match parent symbol paths
+      const primaryPath = getSymbolPath(primary.node);
+      const filtered = candidates.filter((c) => {
+        const candidatePath = getSymbolPath(c.node);
+        return candidatePath.endsWith(primaryPath);
+      });
+      if (filtered.length === 1) {
+        bestMatch = filtered[0].node;
+      }
+    }
+
+    if (bestMatch) {
+      const start = bestMatch.getStart(sourceFile);
+      const end = bestMatch.getEnd();
+
+      const prefix = fileContent.substring(0, start);
+      const suffix = fileContent.substring(end);
+
+      // Re-indent newText relative to oldText and target indentation
+      const newLines = newText.split("\n");
+      const oldLines = oldText.split("\n");
+      const matchedNodeText = fileContent.substring(start, end);
+      const matchedLines = matchedNodeText.split("\n");
+
+      const adjusted = adjustIndentation(newLines, matchedLines, oldLines);
+      return prefix + adjusted.join("\n") + suffix;
+    }
+  } catch {
+    // Fall back
+  }
+
+  return null;
 }

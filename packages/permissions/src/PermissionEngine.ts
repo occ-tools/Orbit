@@ -18,13 +18,28 @@ export class PermissionEngine {
     let targetPath: string | undefined;
     let cmdString: string | undefined;
 
-    if (
-      toolName === "read_file" ||
-      toolName === "write_file" ||
-      toolName === "edit_file"
-    ) {
-      targetPath = args.path;
-      risk = toolName === "read_file" ? "read" : "write";
+    const readTools = new Set([
+      "read_file",
+      "list_files",
+      "glob",
+      "grep",
+      "inspect_project",
+      "detect_project",
+      "search_symbols",
+      "find_symbol_references",
+      "git_status",
+      "git_diff",
+    ]);
+    const writeTools = new Set([
+      "write_file",
+      "edit_file",
+      "replace_file_content",
+      "multi_replace_file_content",
+    ]);
+
+    if (readTools.has(toolName) || writeTools.has(toolName)) {
+      targetPath = args.path || args.TargetFile || args.filePath || args.file;
+      risk = readTools.has(toolName) ? "read" : "write";
     } else if (toolName === "bash") {
       cmdString = args.command;
       risk = RiskClassifier.classifyBashCommand(cmdString || "");

@@ -1,5 +1,5 @@
 import { join } from "path";
-import { existsSync, readFileSync } from "fs";
+import { promises as fsPromises } from "fs";
 import { estimateTokenCount } from "@orbit-ai/shared";
 import { ConfigLoader } from "@orbit-ai/config";
 import { ContextPack } from "./types.js";
@@ -19,102 +19,116 @@ export class ContextPackBuilder {
   }
 
   public async build(
-    relevantFiles: Array<{ path: string; reason: string }>,
+    relevantFiles: Array<{ path: string; reason: string; readOnly?: boolean }>,
     userQuery?: string,
   ): Promise<ContextPack> {
-    const projectIndex = await this.indexer.index();
-    const projectInstructions = this.loadInstructions();
-
-    const config = ConfigLoader.loadSync(this.cwd);
-    let codebaseContext: string | undefined;
+    const projectIndexPromise = this.indexer.index();
+    const projectInstructionsPromise = this.loadInstructions();
 
     // Check if query contains @codebase
+    let codebaseContextPromise: Promise<string | undefined> =
+      Promise.resolve(undefined);
     if (userQuery && userQuery.includes("@codebase")) {
+      const config = ConfigLoader.loadSync(this.cwd);
       const cleanQuery = userQuery.replace(/@codebase/g, "").trim();
 
-      const symbolIndexer = new SymbolIndexer(this.cwd);
-      // Run quick incremental index to make sure RAG has latest files
-      await symbolIndexer.index();
+      codebaseContextPromise = (async () => {
+        const symbolIndexer = new SymbolIndexer(this.cwd);
+        // Run quick incremental index to make sure RAG has latest files
+        await symbolIndexer.index();
 
-      // Get Repo Map Landmark Text
-      const repoMap = await symbolIndexer.getRepoMapText(2048);
+        // Get Repo Map Landmark Text
+        const repoMap = await symbolIndexer.getRepoMapText(2048);
 
-      // Perform Hybrid Search
-      const hybridSearch = new HybridSearch(this.cwd);
-      let chunksText = "";
-      let referencesText = "";
-      try {
-        let provider: any = null;
+        // Perform Hybrid Search
+        const hybridSearch = new HybridSearch(this.cwd);
+        let chunksText = "";
+        let referencesText = "";
         try {
-          provider = getEmbeddingProvider(config);
-        } catch {
-          // Ignore, provider stays null
-        }
-
-        const embedFn = async (texts: string[]) => {
-          if (provider && typeof provider.embed === "function") {
-            const modelName =
-              config.models?.embedding || "text-embedding-3-small";
-            return await provider.embed(texts, { model: modelName });
+          let provider: any = null;
+          try {
+            provider = getEmbeddingProvider(config);
+          } catch {
+            // Ignore, provider stays null
           }
-          throw new Error("No embedding provider available");
-        };
 
-        const results = await hybridSearch.search(
-          cleanQuery || "codebase search",
-          embedFn,
-          { limit: 5 },
-        );
-        if (results.length > 0) {
-          chunksText = results
-            .map((res, idx) => {
-              return (
-                `--- Search Match #${idx + 1} (Score: ${res.hybridScore.toFixed(4)}) ---\n` +
-                `${res.text}\n`
-              );
-            })
-            .join("\n");
-
-          // Symbol references graph walk RAG
-          const referencedSymbols = new Set<string>();
-          for (const res of results) {
-            if (res.metadata.symbolName) {
-              referencedSymbols.add(res.metadata.symbolName);
+          const embedFn = async (texts: string[]) => {
+            if (provider && typeof provider.embed === "function") {
+              const modelName =
+                config.models?.embedding || "text-embedding-3-small";
+              return await provider.embed(texts, { model: modelName });
             }
-          }
+            throw new Error("No embedding provider available");
+          };
 
-          if (referencedSymbols.size > 0) {
-            const retriever = new ReferencesRetriever(this.cwd);
-            referencesText = await retriever.getReferencesContext(
-              Array.from(referencedSymbols)
-            );
+          const results = await hybridSearch.search(
+            cleanQuery || "codebase search",
+            embedFn,
+            { limit: 5 },
+          );
+          if (results.length > 0) {
+            chunksText = results
+              .map((res, idx) => {
+                return (
+                  `--- Search Match #${idx + 1} (Score: ${res.hybridScore.toFixed(4)}) ---\n` +
+                  `${res.text}\n`
+                );
+              })
+              .join("\n");
+
+            // Symbol references graph walk RAG
+            const referencedSymbols = new Set<string>();
+            for (const res of results) {
+              if (res.metadata.symbolName) {
+                referencedSymbols.add(res.metadata.symbolName);
+              }
+            }
+
+            if (referencedSymbols.size > 0) {
+              const retriever = new ReferencesRetriever(this.cwd);
+              referencesText = await retriever.getReferencesContext(
+                Array.from(referencedSymbols),
+              );
+            }
+          } else {
+            chunksText = "(No relevant code matches found in search index.)\n";
           }
-        } else {
-          chunksText = "(No relevant code matches found in search index.)\n";
+        } catch (e) {
+          chunksText = `(RAG retrieval failed: ${(e as Error).message})\n`;
         }
-      } catch (e) {
-        chunksText = `(RAG retrieval failed: ${(e as Error).message})\n`;
-      }
 
-      codebaseContext =
-        `=== RAG Codebase Search Context for Query: "${cleanQuery}" ===\n` +
-        `Use the following relevant code snippets retrieved from the repository to answer questions:\n\n` +
-        `${chunksText}\n` +
-        `${referencesText}` +
-        `=== Codebase Landmark Repo Map ===\n` +
-        `${repoMap || "(No landmarks mapped.)"}\n` +
-        `================================================================`;
+        return (
+          `=== RAG Codebase Search Context for Query: "${cleanQuery}" ===\n` +
+          `Use the following relevant code snippets retrieved from the repository to answer questions:\n\n` +
+          `${chunksText}\n` +
+          `${referencesText}` +
+          `=== Codebase Landmark Repo Map ===\n` +
+          `${repoMap || "(No landmarks mapped.)"}\n` +
+          `================================================================`
+        );
+      })();
     }
 
-    const packedFiles = relevantFiles.map((f) => {
-      const { summary, excerpt } = this.summarizer.summarize(f.path);
-      return {
-        path: f.path,
-        reason: f.reason,
-        summary,
-        excerpt,
-      };
-    });
+    const packedFilesPromise = Promise.all(
+      relevantFiles.map(async (f) => {
+        const { summary, excerpt } = await this.summarizer.summarize(f.path);
+        return {
+          path: f.path,
+          reason: f.reason,
+          summary,
+          excerpt,
+          readOnly: f.readOnly,
+        };
+      }),
+    );
+
+    const [projectIndex, projectInstructions, codebaseContext, packedFiles] =
+      await Promise.all([
+        projectIndexPromise,
+        projectInstructionsPromise,
+        codebaseContextPromise,
+        packedFilesPromise,
+      ]);
 
     const payload = JSON.stringify({
       projectIndex,
@@ -139,16 +153,24 @@ export class ContextPackBuilder {
     };
   }
 
-  private loadInstructions(): string {
-    const candidates = ["ORBIT.md", "AGENTS.md", "CLAUDE.md", "README.md"];
+  private async loadInstructions(): Promise<string> {
+    const candidates = [
+      "ORBIT.md",
+      ".agents/AGENTS.md",
+      "AGENTS.md",
+      "CLAUDE.md",
+      "RUNE.md",
+      ".cursorrules",
+      ".copilotrules",
+      "README.md",
+    ];
     for (const name of candidates) {
-      const p = join(this.cwd, name);
-      if (existsSync(p)) {
-        try {
-          return readFileSync(p, "utf8");
-        } catch {
-          // Ignored
-        }
+      const p = join(this.cwd, ...name.split("/"));
+      try {
+        const content = await fsPromises.readFile(p, "utf8");
+        return content;
+      } catch {
+        // Ignored
       }
     }
     return "";

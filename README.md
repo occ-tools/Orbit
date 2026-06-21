@@ -6,19 +6,19 @@
 
 ## ✨ Features
 
-- **🚀 DeepSeek-First & Prompt Cache Keep-Alives**: 
+- **🚀 DeepSeek-First & Prompt Cache Keep-Alives**:
   Configured to minimize token cost and latency. Orbit runs background async pings to refresh DeepSeek's Prompt Cache TTL (5-10 minutes), slashing secondary prompt latency by up to 90%.
-- **🔍 References-Aware Cross-File RAG**: 
+- **🔍 References-Aware Cross-File RAG**:
   Locates AST symbols across the repository and retrieves their calling sites (including 3 lines of context above and below), providing reasoning models with accurate structural usage examples during refactorings.
-- **🗺️ Graded PageRank Landmark Maps**: 
+- **🗺️ Graded PageRank Landmark Maps**:
   Constructs token-efficient project repository maps using PageRank weights computed from AST imports/exports. Automatically grades output detail levels (`detailed` -> `outline` -> `simple`) to maximize codebase resolution within your LLM token budget.
-- **⚡ Real-Time LSP Autocomplete Server**: 
+- **⚡ Real-Time LSP Autocomplete Server**:
   Features a built-in JSON-RPC LSP Server (`orbit lsp`) with connection caching and tab-specific `AbortController` debouncing. Automatically cancels obsolete completions during high-frequency typing on a per-tab basis.
-- **🔒 Sandboxed Subprocess Timeouts**: 
+- **🔒 Sandboxed Subprocess Timeouts**:
   Enforces a hard limit of 45 seconds for shell executions and test runs, executing subprocesses in isolated process groups to clean up orphans immediately upon timeouts or user interrupts.
-- **💾 Auto-Healing Vector Indexing & Atomic Writes**: 
+- **💾 Auto-Healing Vector Indexing & Atomic Writes**:
   Dynamically adapts to changes in embedding models or dimensions, automatically clearing and reindexing the database. All vector store and symbols indexes are written atomically (`.tmp` -> rename) to avoid race conditions.
-- **🛡️ Sandbox & Permissions Manager**: 
+- **🛡️ Sandbox & Permissions Manager**:
   Protects sensitive files (e.g., `.env`, credentials), intercepts bash executions for user approvals, and maintains git checkpoints for automatic rollbacks when modifications are rejected.
 
 ---
@@ -96,7 +96,7 @@ orbit "Refactor VectorStore load" --yes
 
 ## 🔌 Editor LSP Autocomplete Setup
 
-Orbit exposes a standard Language Server Protocol (LSP) interface on `orbit lsp`. 
+Orbit exposes a standard Language Server Protocol (LSP) interface on `orbit lsp`.
 
 ### VS Code
 
@@ -105,6 +105,63 @@ Compile and load the VS Code extension located under [editors/vscode](file:///c:
 ### Neovim / Helix / Emacs
 
 Configure your editor's LSP client to spawn `orbit lsp` as a completion language server. The server expects JSON-RPC input on `stdin` and writes JSON-RPC outputs to `stdout`.
+
+## ⌨️ Custom Slash Commands
+
+Create reusable prompt workflows as Markdown files:
+
+- Project commands: `.orbit/commands/*.md`
+- User commands: `~/.orbit/commands/*.md`
+
+Example `.orbit/commands/review.md`:
+
+```markdown
+---
+description: Review a target for correctness, security, and missing tests
+argumentHint: <path-or-scope>
+---
+
+Review $ARGUMENTS. Prioritize concrete bugs, security issues, regressions, and missing verification.
+```
+
+Run it with:
+
+```bash
+/review packages/core
+```
+
+Templates support `$ARGUMENTS`, `{{args}}`, and positional placeholders `$1` through `$9`. Project commands override user commands, while built-in Orbit commands cannot be shadowed.
+
+## ↩️ Persistent Time Travel
+
+Orbit persists file checkpoints under `.orbit/checkpoints/` so recovery survives process restarts:
+
+```text
+/timeline        List available checkpoints
+/rewind          Select a checkpoint interactively
+/rewind <id|n>   Rewind to a checkpoint by ID or timeline index
+/rollback        Roll back the latest checkpoint
+```
+
+Rewinding applies checkpoints newest-first and consumes restored checkpoints, keeping the timeline consistent.
+
+## 🖱️ Mouse Scrollback
+
+The fullscreen TUI supports mouse-wheel and trackpad scrolling through chat history. It keeps the current viewport stable while new model output arrives and shows a new-output indicator until you return to the bottom.
+
+Keyboard alternatives:
+
+- `PageUp` / `PageDown`: scroll by page
+- `Ctrl+Home`: jump to the oldest available history
+- `End`: return to live output
+
+Configure mouse behavior in `orbit.config.yaml` or `~/.orbit/config.yaml`:
+
+```yaml
+tui:
+  mouse: true
+  scrollSpeed: 50 # 1-100
+```
 
 Example configuration snippet for Neovim (`nvim-lspconfig` compatible):
 

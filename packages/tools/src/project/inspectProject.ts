@@ -24,6 +24,7 @@ export class InspectProjectTool implements OrbitTool<any, string> {
         ],
         onlyFiles: false,
         dot: false,
+        suppressErrors: true,
       });
 
       const treeLines: string[] = [];

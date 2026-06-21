@@ -4,42 +4,9 @@ import {
   ModelEvent,
   OrbitMessage,
   OrbitContentBlock,
+  ModelCapabilities,
 } from "../types.js";
-import { zodToJsonSchema } from "../utils.js";
-
-async function fetchWithRetry(
-  url: string,
-  init: RequestInit,
-  maxRetries = 3,
-): Promise<Response> {
-  let attempt = 0;
-  while (true) {
-    try {
-      const response = await fetch(url, init);
-      if (response.ok) {
-        return response;
-      }
-
-      const status = response.status;
-      const isTransient = status === 429 || (status >= 500 && status <= 504);
-      if (!isTransient || attempt >= maxRetries) {
-        return response;
-      }
-    } catch (err: any) {
-      const isAbort = err.name === "AbortError" || init.signal?.aborted;
-      if (isAbort || attempt >= maxRetries) {
-        throw err;
-      }
-    }
-
-    attempt++;
-    const delay = Math.min(
-      10000,
-      Math.pow(2, attempt) * 1000 + Math.random() * 1000,
-    );
-    await new Promise((resolve) => setTimeout(resolve, delay));
-  }
-}
+import { zodToJsonSchema, fetchWithRetry } from "../utils.js";
 
 class StreamingThinkParser {
   private buffer = "";
@@ -157,7 +124,55 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
   constructor(
     private apiKey?: string,
     private baseUrl = "https://api.deepseek.com",
-  ) {}
+  ) {
+    this.preheat();
+  }
+
+  private preheat() {
+    try {
+      if (this.baseUrl && typeof fetch === "function") {
+        fetch(this.baseUrl, { method: "HEAD" }).catch(() => {});
+      }
+    } catch {
+      // Ignored
+    }
+  }
+
+  private getEndpointUrl(path: string): string {
+    const base = this.baseUrl.endsWith("/") ? this.baseUrl.slice(0, -1) : this.baseUrl;
+    if (base.endsWith("/v1") && path.startsWith("/v1/")) {
+      return `${base}${path.substring(3)}`;
+    }
+    return `${base}${path}`;
+  }
+
+  public getModelCapabilities(model: string): ModelCapabilities {
+    const lowercase = model.toLowerCase();
+    const isReasoner =
+      lowercase.includes("reasoner") ||
+      lowercase.includes("r1") ||
+      lowercase.includes("v4");
+
+    const isOpenAIReasoner =
+      this.id === "openai" &&
+      (lowercase.startsWith("o1") || lowercase.startsWith("o3"));
+
+    const isOfficialDeepSeek = this.baseUrl.includes("api.deepseek.com");
+    const supportsNativeTools = !(
+      (isOfficialDeepSeek && isReasoner) ||
+      lowercase.includes("o1-preview") ||
+      lowercase.includes("o1-mini")
+    );
+
+    return {
+      streaming: !isOpenAIReasoner,
+      toolCalls: supportsNativeTools,
+      jsonMode: !isReasoner,
+      thinking: isReasoner || isOpenAIReasoner,
+      vision: lowercase.includes("vision") || lowercase.includes("gpt-4o") || lowercase.includes("claude-3"),
+      promptCaching: true,
+    };
+  }
 
   async *chat(input: ModelChatInput): AsyncIterable<ModelEvent> {
     const thinkParser = new StreamingThinkParser();
@@ -175,7 +190,21 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
     const isOfficialDeepSeek = this.baseUrl.includes("api.deepseek.com");
 
     // Convert messages to OpenAI chat completions messages
-    const openaiMessages = input.messages.map((m) => {
+    const openaiMessages = input.messages.flatMap((m) => {
+      if (m.role === "tool") {
+        const toolResults = m.content.filter((b) => b.type === "tool_result");
+        if (toolResults.length > 0) {
+          return toolResults.map((tr) => {
+            const trData = (tr as any).toolResult;
+            return {
+              role: "tool" as const,
+              tool_call_id: trData.toolCallId,
+              content: typeof trData.content === "string" ? trData.content : JSON.stringify(trData.content),
+            };
+          });
+        }
+      }
+
       // Map contents
       const content = m.content
         .filter((block) => block.type === "text")
@@ -201,8 +230,6 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
           };
         });
 
-      const toolResult = m.content.find((b) => b.type === "tool_result");
-
       const role = m.role === "tool" ? "tool" : m.role;
 
       const msg: any = { role };
@@ -210,9 +237,13 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
         // Wrap reasoning inside content with think tags for compatible providers
         msg.content = `<think>\n${reasoningContent}\n</think>\n${content}`;
       } else {
-        if (content) {
+        if (role === "tool") {
+          msg.content = content || "";
+        } else if (content) {
           msg.content = content;
-        } else if (role === "assistant" && !toolCalls.length) {
+        } else if (role === "assistant") {
+          msg.content = null;
+        } else {
           msg.content = "";
         }
 
@@ -224,11 +255,8 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
       if (toolCalls.length > 0) {
         msg.tool_calls = toolCalls;
       }
-      if (role === "tool" && toolResult) {
-        msg.tool_call_id = (toolResult as any).toolResult.toolCallId;
-      }
 
-      return msg;
+      return [msg];
     });
 
     if (input.system) {
@@ -249,15 +277,9 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
       };
     });
 
-    const isReasoner =
-      input.model.toLowerCase().includes("reasoner") ||
-      input.model.toLowerCase().includes("r1") ||
-      input.model.toLowerCase().includes("v4");
-
-    const isOpenAIReasoner =
-      this.id === "openai" &&
-      (input.model.toLowerCase().startsWith("o1") ||
-        input.model.toLowerCase().startsWith("o3"));
+    const capabilities = this.getModelCapabilities(input.model);
+    const isReasoner = capabilities.thinking && !input.model.toLowerCase().startsWith("o");
+    const isOpenAIReasoner = capabilities.thinking && input.model.toLowerCase().startsWith("o");
 
     const body: any = {
       model: input.model,
@@ -297,11 +319,7 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
       body.stream_options = { include_usage: true };
     }
 
-    const supportsNativeTools = !(
-      (isOfficialDeepSeek && input.model.toLowerCase().includes("reasoner")) ||
-      input.model.toLowerCase().includes("o1-preview") ||
-      input.model.toLowerCase().includes("o1-mini")
-    );
+    const supportsNativeTools = capabilities.toolCalls;
 
     if (tools && tools.length > 0 && supportsNativeTools) {
       body.tools = tools;
@@ -311,8 +329,24 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
       body.response_format = { type: "json_object" };
     }
 
+    const chatController = new AbortController();
+    const chatSignal = chatController.signal;
+
+    let externalSignalAborted = false;
+    const onExternalAbort = () => {
+      externalSignalAborted = true;
+      chatController.abort();
+    };
+
+    if (input.abortSignal) {
+      if (input.abortSignal.aborted) {
+        throw input.abortSignal.reason || new DOMException("The user aborted a request.", "AbortError");
+      }
+      input.abortSignal.addEventListener("abort", onExternalAbort);
+    }
+
     const response = await fetchWithRetry(
-      `${this.baseUrl}/v1/chat/completions`,
+      this.getEndpointUrl("/v1/chat/completions"),
       {
         method: "POST",
         headers: {
@@ -320,7 +354,7 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
           Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify(body),
-        signal: input.abortSignal,
+        signal: chatSignal,
         keepalive: true,
       },
     );
@@ -363,11 +397,17 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
         },
       };
       yield { type: "done" };
+      if (input.abortSignal) {
+        input.abortSignal.removeEventListener("abort", onExternalAbort);
+      }
       return;
     }
 
     const reader = response.body?.getReader();
     if (!reader) {
+      if (input.abortSignal) {
+        input.abortSignal.removeEventListener("abort", onExternalAbort);
+      }
       yield {
         type: "error",
         error: new Error("Response body is not readable"),
@@ -385,10 +425,25 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
     let completionTokens = 0;
     let cacheReadTokens = 0;
 
+    let streamTimeoutId: NodeJS.Timeout | undefined;
+    const streamTimeoutMs = 60000;
+
+    const resetStreamTimeout = () => {
+      if (streamTimeoutId) clearTimeout(streamTimeoutId);
+      streamTimeoutId = setTimeout(() => {
+        chatController.abort(new DOMException("Stream reading timed out after 60 seconds of inactivity.", "TimeoutError"));
+      }, streamTimeoutMs);
+    };
+
     try {
+      resetStreamTimeout();
       while (true) {
         const { done, value } = await reader.read();
+        resetStreamTimeout();
         if (done) break;
+
+        let accumulatedText = "";
+        let accumulatedThinking = "";
 
         buffer += decoder.decode(value, { stream: true });
         let lineStart = 0;
@@ -411,15 +466,16 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
               if (choice?.delta?.content) {
                 const parsedEvents = thinkParser.feed(choice.delta.content);
                 for (const ev of parsedEvents) {
-                  yield { type: ev.type, text: ev.text };
+                  if (ev.type === "text_delta") {
+                    accumulatedText += ev.text;
+                  } else {
+                    accumulatedThinking += ev.text;
+                  }
                 }
               }
 
               if (choice?.delta?.reasoning_content) {
-                yield {
-                  type: "thinking_delta",
-                  text: choice.delta.reasoning_content,
-                };
+                accumulatedThinking += choice.delta.reasoning_content;
               }
 
               if (choice?.delta?.tool_calls) {
@@ -452,6 +508,13 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
           }
         }
         buffer = buffer.substring(lineStart);
+
+        if (accumulatedText) {
+          yield { type: "text_delta", text: accumulatedText };
+        }
+        if (accumulatedThinking) {
+          yield { type: "thinking_delta", text: accumulatedThinking };
+        }
       }
 
       // Flush any remaining characters in parser
@@ -484,7 +547,16 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
         },
       };
       yield { type: "done" };
+    } catch (err: any) {
+      yield {
+        type: "error",
+        error: err,
+      };
     } finally {
+      if (streamTimeoutId) clearTimeout(streamTimeoutId);
+      if (input.abortSignal) {
+        input.abortSignal.removeEventListener("abort", onExternalAbort);
+      }
       reader.releaseLock();
     }
   }
@@ -502,7 +574,7 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
 
     const model = options?.model || "text-embedding-3-small";
 
-    const response = await fetchWithRetry(`${this.baseUrl}/v1/embeddings`, {
+    const response = await fetchWithRetry(this.getEndpointUrl("/v1/embeddings"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -539,6 +611,7 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
       model?: string;
       maxTokens?: number;
       stop?: string[];
+      suffix?: string;
       abortSignal?: AbortSignal;
     },
   ): Promise<string> {
@@ -550,16 +623,34 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
       headers["Authorization"] = `Bearer ${key}`;
     }
 
-    const response = await fetchWithRetry(`${this.baseUrl}/v1/completions`, {
+    const isOfficialDeepSeek = this.baseUrl.includes("api.deepseek.com");
+    let url = this.getEndpointUrl("/v1/completions");
+    const bodyData: any = {
+      model: options?.model || "qwen2.5-coder:1.5b",
+      prompt: prompt,
+      max_tokens: options?.maxTokens || 64,
+      temperature: 0.0,
+      stop: options?.stop || [],
+    };
+
+    if (isOfficialDeepSeek) {
+      // Official DeepSeek API FIM endpoint is under /beta/v1/completions
+      const betaBase = this.baseUrl.endsWith("/") ? this.baseUrl.slice(0, -1) : this.baseUrl;
+      url = betaBase.includes("/beta") ? `${betaBase}/v1/completions` : `${betaBase}/beta/v1/completions`;
+
+      if (options?.suffix !== undefined) {
+        bodyData.prompt = prompt;
+        bodyData.suffix = options.suffix;
+      }
+      if (!options?.model || options.model.includes("qwen")) {
+        bodyData.model = "deepseek-chat";
+      }
+    }
+
+    const response = await fetchWithRetry(url, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        model: options?.model || "qwen2.5-coder:1.5b",
-        prompt: prompt,
-        max_tokens: options?.maxTokens || 64,
-        temperature: 0.0,
-        stop: options?.stop || [],
-      }),
+      body: JSON.stringify(bodyData),
       signal: options?.abortSignal,
     });
 

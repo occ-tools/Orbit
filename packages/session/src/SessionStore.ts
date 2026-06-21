@@ -6,6 +6,7 @@ import {
   appendFileSync,
   mkdirSync,
   readdirSync,
+  rmSync,
 } from "fs";
 import { generateId } from "@orbit-ai/shared";
 import {
@@ -151,6 +152,13 @@ export class SessionStore {
       return JSON.parse(readFileSync(file, "utf8"));
     } catch {
       return [];
+    }
+  }
+
+  public deleteSession(id: string): void {
+    const dir = join(this.sessionDir, id);
+    if (existsSync(dir)) {
+      rmSync(dir, { recursive: true, force: true });
     }
   }
 }

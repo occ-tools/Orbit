@@ -91,6 +91,13 @@ export interface ModelProvider {
   embed?(texts: string[], options?: { model?: string }): Promise<number[][]>;
   complete?(
     prompt: string,
-    options?: { model?: string; maxTokens?: number; stop?: string[] },
+    options?: {
+      model?: string;
+      maxTokens?: number;
+      stop?: string[];
+      suffix?: string;
+      abortSignal?: AbortSignal;
+    },
   ): Promise<string>;
+  getModelCapabilities?(model: string): ModelCapabilities;
 }

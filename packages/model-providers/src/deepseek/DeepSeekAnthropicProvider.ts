@@ -4,8 +4,9 @@ import {
   ModelEvent,
   OrbitMessage,
   OrbitContentBlock,
+  ModelCapabilities,
 } from "../types.js";
-import { zodToJsonSchema } from "../utils.js";
+import { zodToJsonSchema, fetchWithRetry } from "../utils.js";
 
 export class DeepSeekAnthropicProvider implements ModelProvider {
   id = "deepseek-anthropic";
@@ -22,7 +23,32 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
   constructor(
     private apiKey?: string,
     private baseUrl = "https://api.deepseek.com/anthropic",
-  ) {}
+  ) {
+    this.preheat();
+  }
+
+  private preheat() {
+    try {
+      if (this.baseUrl && typeof fetch === "function") {
+        fetch(this.baseUrl, { method: "HEAD" }).catch(() => {});
+      }
+    } catch {
+      // Ignored
+    }
+  }
+
+  public getModelCapabilities(model: string): ModelCapabilities {
+    const lowercase = model.toLowerCase();
+    const isClaude = lowercase.includes("claude");
+    return {
+      streaming: true,
+      toolCalls: true,
+      jsonMode: true,
+      thinking: lowercase.includes("thinking") || lowercase.includes("sonnet-3-7"),
+      vision: isClaude,
+      promptCaching: true,
+    };
+  }
 
   async *chat(input: ModelChatInput): AsyncIterable<ModelEvent> {
     const key = this.apiKey || process.env.ANTHROPIC_AUTH_TOKEN;
@@ -128,7 +154,23 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
       body.temperature = 1.0;
     }
 
-    const response = await fetch(`${this.baseUrl}/v1/messages`, {
+    const chatController = new AbortController();
+    const chatSignal = chatController.signal;
+
+    let externalSignalAborted = false;
+    const onExternalAbort = () => {
+      externalSignalAborted = true;
+      chatController.abort();
+    };
+
+    if (input.abortSignal) {
+      if (input.abortSignal.aborted) {
+        throw input.abortSignal.reason || new DOMException("The user aborted a request.", "AbortError");
+      }
+      input.abortSignal.addEventListener("abort", onExternalAbort);
+    }
+
+    const response = await fetchWithRetry(`${this.baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -136,7 +178,7 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(body),
-      signal: input.abortSignal,
+      signal: chatSignal,
       keepalive: true,
     });
 
@@ -176,11 +218,17 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
         },
       };
       yield { type: "done" };
+      if (input.abortSignal) {
+        input.abortSignal.removeEventListener("abort", onExternalAbort);
+      }
       return;
     }
 
     const reader = response.body?.getReader();
     if (!reader) {
+      if (input.abortSignal) {
+        input.abortSignal.removeEventListener("abort", onExternalAbort);
+      }
       yield {
         type: "error",
         error: new Error("Response body is not readable"),
@@ -198,10 +246,25 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
     let outputTokens = 0;
     let cacheReadTokens = 0;
 
+    let streamTimeoutId: NodeJS.Timeout | undefined;
+    const streamTimeoutMs = 60000;
+
+    const resetStreamTimeout = () => {
+      if (streamTimeoutId) clearTimeout(streamTimeoutId);
+      streamTimeoutId = setTimeout(() => {
+        chatController.abort(new DOMException("Stream reading timed out after 60 seconds of inactivity.", "TimeoutError"));
+      }, streamTimeoutMs);
+    };
+
     try {
+      resetStreamTimeout();
       while (true) {
         const { done, value } = await reader.read();
+        resetStreamTimeout();
         if (done) break;
+
+        let accumulatedText = "";
+        let accumulatedThinking = "";
 
         buffer += decoder.decode(value, { stream: true });
         let lineStart = 0;
@@ -241,10 +304,14 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
                 const idx = parsed.index;
                 const delta = parsed.delta;
                 if (delta.type === "text_delta") {
-                  yield { type: "text_delta", text: delta.text };
+                  accumulatedText += delta.text;
                 } else if (delta.type === "thinking_delta") {
-                  yield { type: "thinking_delta", text: delta.thinking };
+                  accumulatedThinking += delta.thinking;
                 } else if (delta.type === "signature_delta") {
+                  if (accumulatedThinking) {
+                    yield { type: "thinking_delta", text: accumulatedThinking };
+                    accumulatedThinking = "";
+                  }
                   yield {
                     type: "thinking_delta",
                     text: "",
@@ -260,6 +327,14 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
                 const idx = parsed.index;
                 const tool = streamingTools.get(idx);
                 if (tool) {
+                  if (accumulatedText) {
+                    yield { type: "text_delta", text: accumulatedText };
+                    accumulatedText = "";
+                  }
+                  if (accumulatedThinking) {
+                    yield { type: "thinking_delta", text: accumulatedThinking };
+                    accumulatedThinking = "";
+                  }
                   yield {
                     type: "tool_call",
                     toolCall: {
@@ -281,6 +356,13 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
           }
         }
         buffer = buffer.substring(lineStart);
+
+        if (accumulatedText) {
+          yield { type: "text_delta", text: accumulatedText };
+        }
+        if (accumulatedThinking) {
+          yield { type: "thinking_delta", text: accumulatedThinking };
+        }
       }
 
       yield {
@@ -293,7 +375,16 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
         },
       };
       yield { type: "done" };
+    } catch (err: any) {
+      yield {
+        type: "error",
+        error: err,
+      };
     } finally {
+      if (streamTimeoutId) clearTimeout(streamTimeoutId);
+      if (input.abortSignal) {
+        input.abortSignal.removeEventListener("abort", onExternalAbort);
+      }
       reader.releaseLock();
     }
   }

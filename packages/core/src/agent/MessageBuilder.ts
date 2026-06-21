@@ -8,12 +8,16 @@ export class MessageBuilder {
     state: AgentState,
     contextPack: ContextPack,
   ): { system: string; messages: OrbitMessage[] } {
+    const sortedLanguages = [...contextPack.projectIndex.detectedLanguages].sort();
+    const sortedFrameworks = [...contextPack.projectIndex.frameworks].sort();
+    const sortedEntrypoints = [...contextPack.projectIndex.entrypoints].sort();
+
     const fullSystem = [
       systemPrompt,
       "\n### Workspace Context",
-      `Language profile: ${contextPack.projectIndex.detectedLanguages.join(", ")}`,
-      `Framework profile: ${contextPack.projectIndex.frameworks.join(", ") || "None"}`,
-      `Entrypoints: ${contextPack.projectIndex.entrypoints.join(", ") || "None"}`,
+      `Language profile: ${sortedLanguages.join(", ")}`,
+      `Framework profile: ${sortedFrameworks.join(", ") || "None"}`,
+      `Entrypoints: ${sortedEntrypoints.join(", ") || "None"}`,
       `PM: ${contextPack.projectIndex.packageManager || "None"}`,
       contextPack.projectInstructions
         ? `\nInstructions from ORBIT.md:\n${contextPack.projectInstructions}`
@@ -22,9 +26,11 @@ export class MessageBuilder {
       .filter(Boolean)
       .join("\n");
 
-    const filesContent = contextPack.relevantFiles
+    const sortedFiles = [...contextPack.relevantFiles].sort((a, b) => a.path.localeCompare(b.path));
+    const filesContent = sortedFiles
       .map((f) => {
-        return `File: ${f.path}\nReason: ${f.reason}\nSummary: ${f.summary}\n\`\`\`\n${f.excerpt}\n\`\`\``;
+        const readOnlySuffix = (f as any).readOnly ? " (READ-ONLY REFERENCE - DO NOT EDIT OR CALL WRITE TOOLS ON THIS FILE)" : "";
+        return `File: ${f.path}${readOnlySuffix}\nReason: ${f.reason}\nSummary: ${f.summary}\n\`\`\`\n${f.excerpt}\n\`\`\``;
       })
       .join("\n\n");
 
@@ -52,6 +58,7 @@ export class MessageBuilder {
                 ? `### Codebase Context:\n\n${contextPack.codebaseContext}`
                 : "",
               `### Relevant Files Excerpts:\n\n${filesContent || "No files indexed yet."}`,
+              `### Context Instructions:\n- You are strictly prohibited from calling any tools (like write_file, edit_file) to modify any files marked as "READ-ONLY REFERENCE". Those files are for your reference only.`,
             ]
               .filter(Boolean)
               .join("\n\n"),
@@ -66,8 +73,11 @@ export class MessageBuilder {
 
     const messages = state.history.map((msg, idx) => {
       if (idx === lastUserMsgIdx) {
+        if (msg.metadata?.rawText) {
+          return msg;
+        }
+
         const userText =
-          (msg.metadata?.rawText as string) ||
           msg.content.map((b) => (b.type === "text" ? b.text : "")).join("\n");
 
         const combinedText = [
@@ -76,6 +86,7 @@ export class MessageBuilder {
             ? `### Codebase Context:\n\n${contextPack.codebaseContext}`
             : "",
           `### Relevant Files Excerpts:\n\n${filesContent || "No files indexed yet."}`,
+          `### Context Instructions:\n- You are strictly prohibited from calling any tools (like write_file, edit_file) to modify any files marked as "READ-ONLY REFERENCE". Those files are for your reference only.`,
         ]
           .filter(Boolean)
           .join("\n\n");
@@ -84,9 +95,7 @@ export class MessageBuilder {
         if (!msg.metadata) {
           msg.metadata = {};
         }
-        if (!msg.metadata.rawText) {
-          msg.metadata.rawText = userText;
-        }
+        msg.metadata.rawText = userText;
 
         // Persist the decorated text back into the history message itself
         msg.content = [

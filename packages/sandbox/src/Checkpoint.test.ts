@@ -50,4 +50,35 @@ describe("Sandbox Checkpoints and Rollbacks", () => {
     rbManager.rollback(checkpoint);
     expect(existsSync(absPath)).toBe(false);
   });
+
+  it("should reload persisted checkpoints after process restart", async () => {
+    const filePath = "persistent.txt";
+    const absPath = join(tempDir, filePath);
+    writeFileSync(absPath, "before", "utf8");
+
+    const firstManager = new CheckpointManager(tempDir, "session-persisted");
+    const checkpoint = await firstManager.captureBeforeState(
+      "call-persisted",
+      filePath,
+    );
+    writeFileSync(absPath, "after", "utf8");
+
+    const reloadedManager = new CheckpointManager(tempDir, "session-persisted");
+    const reloaded = reloadedManager.getCheckpoints();
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0].id).toBe(checkpoint.id);
+
+    new RollbackManager(tempDir).rollback(reloaded[0]);
+    expect(readFileSync(absPath, "utf8")).toBe("before");
+  });
+
+  it("should remove consumed checkpoints from memory and disk", async () => {
+    const manager = new CheckpointManager(tempDir, "session-remove");
+    const checkpoint = await manager.captureBeforeState("call-remove", "x.ts");
+    manager.removeCheckpoint(checkpoint.id);
+
+    expect(manager.getCheckpoints()).toHaveLength(0);
+    const reloaded = new CheckpointManager(tempDir, "session-remove");
+    expect(reloaded.getCheckpoints()).toHaveLength(0);
+  });
 });

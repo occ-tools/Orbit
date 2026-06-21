@@ -38,6 +38,7 @@ export const ConfigSchema = z.object({
   name: z.string().default("orbit-project"),
   editor: z.string().default("notepad.exe"),
   autoCommit: z.boolean().default(false),
+  language: z.enum(["en", "zh"]).default("en"),
   provider: z
     .object({
       default: z.string().default("deepseek-openai"),
@@ -91,6 +92,18 @@ export const ConfigSchema = z.object({
           "coverage/**",
           ".next/**",
           ".turbo/**",
+          "**/AppData/**",
+          "**/Local Settings/**",
+          "**/Downloads/**",
+          "**/Documents/**",
+          "**/Pictures/**",
+          "**/Music/**",
+          "**/Videos/**",
+          "**/.npm/**",
+          "**/.cargo/**",
+          "**/.gradle/**",
+          "**/.rustup/**",
+          "**/.orbit/**",
         ]),
       autoCompact: z.boolean().default(true),
       compactThreshold: z.number().default(0.75),
@@ -103,6 +116,21 @@ export const ConfigSchema = z.object({
       enabled: z.boolean().default(true),
       provider: z.string().default("ollama"),
       model: z.string().default("qwen2.5-coder:1.5b"),
+      debounceMs: z.number().default(150),
+      speculative: z
+        .object({
+          enabled: z.boolean().default(false),
+          provider: z.string().default("ollama"),
+          model: z.string().default("qwen2.5-coder:0.5b"),
+          timeoutMs: z.number().default(150),
+        })
+        .optional(),
+    })
+    .default({}),
+  tui: z
+    .object({
+      mouse: z.boolean().default(true),
+      scrollSpeed: z.number().int().min(1).max(100).default(50),
     })
     .default({}),
   tools: z

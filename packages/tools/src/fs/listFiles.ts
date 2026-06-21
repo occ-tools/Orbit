@@ -37,6 +37,7 @@ export class ListFilesTool implements OrbitTool<ListFilesInput, string[]> {
         ],
         onlyFiles: true,
         dot: true,
+        suppressErrors: true,
       });
 
       return {

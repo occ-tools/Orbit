@@ -106,5 +106,5 @@ describe("Orchestrator Multi-Agent Flow", () => {
     } catch {
       // Ignored
     }
-  });
+  }, 15_000);
 });

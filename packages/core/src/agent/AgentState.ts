@@ -4,7 +4,7 @@ export interface AgentState {
   sessionId: string;
   task: string;
   history: OrbitMessage[];
-  relevantFiles: Array<{ path: string; reason: string }>;
+  relevantFiles: Array<{ path: string; reason: string; readOnly?: boolean }>;
   done: boolean;
   attemptCount: number;
   maxAttempts: number;

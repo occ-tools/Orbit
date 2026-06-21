@@ -53,3 +53,80 @@ export function zodToJsonSchema(schema: any): any {
       return { type: "string" };
   }
 }
+
+export async function fetchWithRetry(
+  url: string,
+  init: RequestInit & { timeout?: number },
+  maxRetries = 3,
+): Promise<Response> {
+  const timeoutMs = init.timeout ?? 60000;
+  let attempt = 0;
+
+  while (true) {
+    const controller = new AbortController();
+    const signal = controller.signal;
+    
+    let externalSignalAborted = false;
+    const onExternalAbort = () => {
+      externalSignalAborted = true;
+      controller.abort();
+    };
+
+    if (init.signal) {
+      if (init.signal.aborted) {
+        throw init.signal.reason || new DOMException("The user aborted a request.", "AbortError");
+      }
+      init.signal.addEventListener("abort", onExternalAbort);
+    }
+
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal,
+      });
+
+      if (response.ok) {
+        return response;
+      }
+
+      const status = response.status;
+      const isTransient = status === 429 || (status >= 500 && status <= 504);
+      if (!isTransient || attempt >= maxRetries) {
+        return response;
+      }
+    } catch (err: any) {
+      const isExternalAbort = externalSignalAborted || (init.signal?.aborted);
+      if (isExternalAbort) {
+        throw err;
+      }
+      
+      const isTimeout = err.name === "AbortError" && !isExternalAbort;
+      if (isTimeout) {
+        if (attempt >= maxRetries) {
+          throw new DOMException("Request timed out", "TimeoutError");
+        }
+      } else {
+        if (attempt >= maxRetries) {
+          throw err;
+        }
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      if (init.signal) {
+        init.signal.removeEventListener("abort", onExternalAbort);
+      }
+    }
+
+    attempt++;
+    const delay = Math.min(
+      10000,
+      Math.pow(2, attempt) * 1000 + Math.random() * 1000,
+    );
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+}
+

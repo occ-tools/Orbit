@@ -31,6 +31,9 @@ program
     if (options.direct) {
       overrides.direct = true;
     }
+    if (options.yes) {
+      overrides.permissions = { mode: "auto" };
+    }
     await runAgent(cwd, task, overrides, !!options.multi);
   });
 
@@ -70,4 +73,3 @@ program
   });
 
 program.parse(process.argv);
-

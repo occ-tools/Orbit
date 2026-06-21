@@ -102,6 +102,7 @@ export class GrepTool implements OrbitTool<GrepInput, GrepMatch[]> {
         ],
         onlyFiles: true,
         absolute: true,
+        suppressErrors: true,
       });
 
       const matches: GrepMatch[] = [];

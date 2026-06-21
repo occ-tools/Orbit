@@ -6,6 +6,16 @@ import fs from "fs";
 import path from "path";
 
 export class Orchestrator {
+  private currentLoop: AgentLoop | null = null;
+  private aborted = false;
+
+  public abort(): void {
+    this.aborted = true;
+    if (this.currentLoop) {
+      this.currentLoop.abort();
+    }
+  }
+
   constructor(
     private cwd: string,
     private config: OrbitConfig,
@@ -52,7 +62,11 @@ Your final response MUST present the detailed plan clearly.`,
         ],
       },
     );
+    if (this.aborted) return;
+    this.currentLoop = plannerLoop;
     await plannerLoop.run();
+    this.currentLoop = null;
+    if (this.aborted) return;
 
     // Extract the plan from the final message in history
     const plannerHistory = plannerLoop.getHistory();
@@ -122,7 +136,11 @@ You do NOT have bash command execution or testing capabilities. Focus entirely o
           ],
         },
       );
+      if (this.aborted) return;
+      this.currentLoop = coderLoop;
       await coderLoop.run();
+      this.currentLoop = null;
+      if (this.aborted) return;
 
       this.interaction.showText(
         `\n[Phase 3: Review (Attempt ${attempt}/${maxAttempts})] Initializing Reviewer Agent...`,
@@ -155,7 +173,11 @@ If there are failures or issues (syntax errors, lint warnings, test failures), l
           ],
         },
       );
+      if (this.aborted) return;
+      this.currentLoop = reviewerLoop;
       await reviewerLoop.run();
+      this.currentLoop = null;
+      if (this.aborted) return;
 
       const reviewerHistory = reviewerLoop.getHistory();
       const lastReviewMsg = reviewerHistory[reviewerHistory.length - 1];

@@ -94,6 +94,8 @@ function getPathCommentHeader(windowId: string, cwd: string): string {
 
 export class AutocompleteEngine {
   private activeRequests = new Map<string, AbortController>();
+  private debounceTimers = new Map<string, NodeJS.Timeout>();
+  private debounceResolvers = new Map<string, (val: string) => void>();
   private providerCache = new Map<string, any>();
 
   constructor(private cwd: string = process.cwd()) {}
@@ -125,71 +127,175 @@ export class AutocompleteEngine {
       return "";
     }
 
-    // Debounce: Cancel previous autocomplete request for this specific window if it is still running
+    // Debounce: Cancel previous autocomplete timer and resolve its promise
+    const prevTimer = this.debounceTimers.get(windowId);
+    if (prevTimer) {
+      clearTimeout(prevTimer);
+    }
+    const prevResolve = this.debounceResolvers.get(windowId);
+    if (prevResolve) {
+      prevResolve("");
+      this.debounceResolvers.delete(windowId);
+    }
+
+    // Cancel previous autocomplete request for this specific window if it is still running
     const active = this.activeRequests.get(windowId);
     if (active) {
       active.abort();
     }
+
     const controller = new AbortController();
     this.activeRequests.set(windowId, controller);
     const signal = controller.signal;
 
-    const providerId = config.autocomplete.provider || "ollama";
-    const modelName = config.autocomplete.model || "qwen2.5-coder:1.5b";
+    const debounceMs = config.autocomplete?.debounceMs !== undefined ? config.autocomplete.debounceMs : 150;
 
-    try {
-      const provider = this.getCachedProvider(providerId, config);
-      if (typeof provider.complete !== "function") {
-        return "";
-      }
+    return new Promise<string>((resolve) => {
+      this.debounceResolvers.set(windowId, resolve);
 
-      // Prepend path comment header to prefix for FIM context enhancement
-      const header = getPathCommentHeader(windowId, this.cwd);
-      const enhancedPrefix = header ? header + prefix : prefix;
+      const timer = setTimeout(async () => {
+        this.debounceResolvers.delete(windowId);
+        if (signal.aborted) {
+          resolve("");
+          return;
+        }
 
-      // Detect and format FIM Prompt template based on the model name
-      let fimPrompt = "";
-      let stopWords: string[] = [];
+        const providerId = config.autocomplete.provider || "ollama";
+        const modelName = config.autocomplete.model || "qwen2.5-coder:1.5b";
 
-      const lowercaseModel = modelName.toLowerCase();
-      if (lowercaseModel.includes("deepseek")) {
-        fimPrompt = `<｜fim begin｜>${enhancedPrefix}<｜fim hole｜>${suffix}<｜fim end｜>`;
-        stopWords = [
-          "<｜fim begin｜>",
-          "<｜fim hole｜>",
-          "<｜fim end｜>",
-          "\n\n",
-        ];
-      } else {
-        fimPrompt = `<fim_prefix>${enhancedPrefix}<fim_suffix>${suffix}<fim_middle>`;
-        stopWords = [
-          "<fim_prefix>",
-          "<fim_suffix>",
-          "<fim_middle>",
-          "<fim_pad>",
-          "<file_sep>",
-          "\n\n",
-        ];
-      }
+        try {
+          const provider = this.getCachedProvider(providerId, config);
+          if (typeof provider.complete !== "function") {
+            resolve("");
+            return;
+          }
 
-      const completed = await provider.complete(fimPrompt, {
-        model: modelName,
-        maxTokens: 64,
-        stop: stopWords,
-        abortSignal: signal,
-      });
+          // Prepend path comment header to prefix for FIM context enhancement
+          const header = getPathCommentHeader(windowId, this.cwd);
+          const enhancedPrefix = header ? header + prefix : prefix;
 
-      return completed;
-    } catch (e: any) {
-      if (e.name === "AbortError" || signal.aborted) {
-        // Interrupted by next request, return empty silently
-        return "";
-      }
-      return "";
-    } finally {
-      if (this.activeRequests.get(windowId) === controller) {
-        this.activeRequests.delete(windowId);
-      }
-    }
+          // Detect if this is the official DeepSeek API
+          const isOfficialDeepSeek = providerId === "deepseek-openai" || (config.providers?.[providerId]?.baseUrl || "").includes("api.deepseek.com");
+
+          // Detect and format FIM Prompt template based on the model name
+          let fimPrompt = "";
+          let stopWords: string[] = [];
+
+          const lowercaseModel = modelName.toLowerCase();
+          if (lowercaseModel.includes("deepseek")) {
+            fimPrompt = `<｜fim begin｜>${enhancedPrefix}<｜fim hole｜>${suffix}<｜fim end｜>`;
+            stopWords = [
+              "<｜fim begin｜>",
+              "<｜fim hole｜>",
+              "<｜fim end｜>",
+              "\n\n",
+            ];
+          } else if (lowercaseModel.includes("qwen")) {
+            fimPrompt = `<|fim_prefix|>${enhancedPrefix}<|fim_suffix|>${suffix}<|fim_middle|>`;
+            stopWords = [
+              "<|fim_prefix|>",
+              "<|fim_suffix|>",
+              "<|fim_middle|>",
+              "<|fim_pad|>",
+              "<file_sep>",
+              "\n\n",
+            ];
+          } else {
+            fimPrompt = `<fim_prefix>${enhancedPrefix}<fim_suffix>${suffix}<fim_middle>`;
+            stopWords = [
+              "<fim_prefix>",
+              "<fim_suffix>",
+              "<fim_middle>",
+              "<fim_pad>",
+              "<file_sep>",
+              "\n\n",
+            ];
+          }
+
+          let localPromise: Promise<string> = Promise.resolve("");
+          let cloudPromise: Promise<string> = Promise.resolve("");
+
+          const speculativeEnabled = config.autocomplete.speculative?.enabled === true;
+          if (speculativeEnabled) {
+            const specProviderId = config.autocomplete.speculative.provider || "ollama";
+            const specModelName = config.autocomplete.speculative.model || "qwen2.5-coder:0.5b";
+            const isSpecOfficialDeepSeek = specProviderId === "deepseek-openai" || (config.providers?.[specProviderId]?.baseUrl || "").includes("api.deepseek.com");
+            try {
+              const specProvider = this.getCachedProvider(specProviderId, config);
+              if (typeof specProvider.complete === "function") {
+                if (isSpecOfficialDeepSeek) {
+                  localPromise = specProvider.complete(enhancedPrefix, {
+                    model: specModelName,
+                    maxTokens: 32,
+                    stop: stopWords,
+                    suffix: suffix,
+                    abortSignal: signal,
+                  }).catch(() => "");
+                } else {
+                  localPromise = specProvider.complete(fimPrompt, {
+                    model: specModelName,
+                    maxTokens: 32,
+                    stop: stopWords,
+                    abortSignal: signal,
+                  }).catch(() => "");
+                }
+              }
+            } catch {
+              // Ignore spec provider init issues
+            }
+          }
+
+          if (isOfficialDeepSeek) {
+            cloudPromise = provider.complete(enhancedPrefix, {
+              model: modelName,
+              maxTokens: 64,
+              stop: stopWords,
+              suffix: suffix,
+              abortSignal: signal,
+            });
+          } else {
+            cloudPromise = provider.complete(fimPrompt, {
+              model: modelName,
+              maxTokens: 64,
+              stop: stopWords,
+              abortSignal: signal,
+            });
+          }
+
+          if (speculativeEnabled) {
+            const specTimeout = config.autocomplete.speculative.timeoutMs !== undefined
+              ? config.autocomplete.speculative.timeoutMs
+              : 150;
+            const timeoutPromise = new Promise<string>((r) => setTimeout(() => r("__TIMEOUT__"), specTimeout));
+            const winner = await Promise.race([
+              cloudPromise.catch(() => ""),
+              timeoutPromise,
+            ]);
+
+            if (winner !== "__TIMEOUT__" && winner.trim() !== "") {
+              resolve(winner);
+            } else {
+              const localResult = await localPromise;
+              if (localResult.trim() !== "") {
+                resolve(localResult);
+              } else {
+                resolve(await cloudPromise.catch(() => ""));
+              }
+            }
+          } else {
+            const completed = await cloudPromise;
+            resolve(completed);
+          }
+        } catch (e: any) {
+          resolve("");
+        } finally {
+          if (this.activeRequests.get(windowId) === controller) {
+            this.activeRequests.delete(windowId);
+          }
+        }
+      }, debounceMs);
+
+      this.debounceTimers.set(windowId, timer);
+    });
   }
 }

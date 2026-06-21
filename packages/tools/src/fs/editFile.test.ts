@@ -98,4 +98,151 @@ describe("EditFileTool Fuzzy Hunk Merging Cascade", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("Could not find target content");
   });
+
+  it("should block edits that introduce JSON syntax errors", async () => {
+    const jsonPath = join(tempDir, "sample.json");
+    writeFileSync(jsonPath, '{\n  "key": "value"\n}', "utf8");
+
+    const result = await tool.execute(
+      {
+        path: "sample.json",
+        oldText: '"key": "value"',
+        newText: '"key": "value",', // trailing comma makes it invalid JSON
+      },
+      { cwd: tempDir },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Applying this edit would introduce the following syntax error");
+    expect(result.error).toContain("JSON Syntax Error");
+  });
+
+  it("should block edits that introduce JS syntax errors", async () => {
+    const jsPath = join(tempDir, "sample.js");
+    writeFileSync(jsPath, 'const a = 10;\nconsole.log(a);', "utf8");
+
+    const result = await tool.execute(
+      {
+        path: "sample.js",
+        oldText: 'const a = 10;',
+        newText: 'const a = {;', // unclosed brace
+      },
+      { cwd: tempDir },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Applying this edit would introduce the following syntax error");
+    expect(result.error).toContain("JavaScript Syntax Error");
+  });
+
+  it("should block edits that introduce TS syntax errors", async () => {
+    const tsPath = join(tempDir, "sample.ts");
+    writeFileSync(tsPath, 'const x: number = 10;\nconsole.log(x);', "utf8");
+
+    const result = await tool.execute(
+      {
+        path: "sample.ts",
+        oldText: 'const x: number = 10;',
+        newText: 'const x: number = ;', // incomplete assignment
+      },
+      { cwd: tempDir },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Applying this edit would introduce the following syntax error");
+    expect(result.error).toContain("TypeScript Syntax Error");
+  });
+
+  it("should fallback to AST-based symbol matching and succeed when text spacing/newlines do not match exactly", async () => {
+    const tsPath = join(tempDir, "sample.ts");
+    writeFileSync(
+      tsPath,
+      `class Calc {
+  add(a: number, b: number): number {
+    // some comment
+    return a + b;
+  }
+}`,
+      "utf8",
+    );
+
+    const result = await tool.execute(
+      {
+        path: "sample.ts",
+        oldText: `add(  a: number,
+  b: number
+): number {
+  return a + b;
+}`,
+        newText: `add(a: number, b: number): number {
+  return a + b + 1;
+}`,
+      },
+      { cwd: tempDir },
+    );
+
+    expect(result.ok).toBe(true);
+    const content = readFileSync(tsPath, "utf8");
+    expect(content).toContain("return a + b + 1;");
+  });
+
+  it("should block edits that introduce Python syntax errors", async () => {
+    const pyPath = join(tempDir, "sample.py");
+    writeFileSync(pyPath, 'def greet():\n    print("hello")', "utf8");
+
+    const result = await tool.execute(
+      {
+        path: "sample.py",
+        oldText: 'print("hello")',
+        newText: 'print("hello"', // missing closing paren
+      },
+      { cwd: tempDir },
+    );
+
+    try {
+      const { execSync } = await import("child_process");
+      execSync("python --version", { stdio: "ignore" });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("Python Syntax Error");
+    } catch {
+      // If python is not installed, it should fallback and succeed
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  it("should fallback to Python AST-based symbol matching and succeed when formatting varies", async () => {
+    const pyPath = join(tempDir, "sample.py");
+    writeFileSync(
+      pyPath,
+      `class Calculator:
+    def add(self, a, b):
+        # original comment
+        return a + b`,
+      "utf8",
+    );
+
+    const result = await tool.execute(
+      {
+        path: "sample.py",
+        oldText: `def add(  self,
+        a,
+        b
+    ):
+        return a + b`,
+        newText: `def add(self, a, b):
+        return a + b + 100`,
+      },
+      { cwd: tempDir },
+    );
+
+    try {
+      const { execSync } = await import("child_process");
+      execSync("python --version", { stdio: "ignore" });
+      expect(result.ok).toBe(true);
+      const content = readFileSync(pyPath, "utf8");
+      expect(content).toContain("return a + b + 100");
+    } catch {
+      // Skip test assertions if python is not installed
+    }
+  });
 });

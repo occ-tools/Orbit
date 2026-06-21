@@ -73,4 +73,32 @@ describe("PermissionEngine tests", () => {
       "ask",
     );
   });
+
+  it("should classify write aliases as write operations", () => {
+    const engine = new PermissionEngine(mockConfig("normal"));
+    expect(
+      engine.evaluate("replace_file_content", {
+        TargetFile: "src/main.ts",
+      }).action,
+    ).toBe("ask");
+    expect(
+      engine.evaluate("multi_replace_file_content", {
+        filePath: "src/main.ts",
+      }).action,
+    ).toBe("ask");
+  });
+
+  it("should recognize Windows destructive and network commands", () => {
+    const engine = new PermissionEngine(mockConfig("auto"));
+    expect(
+      engine.evaluate("bash", {
+        command: "Remove-Item .\\build -Recurse -Force",
+      }).action,
+    ).toBe("deny");
+    expect(
+      engine.evaluate("bash", {
+        command: "Invoke-WebRequest https://example.com",
+      }).action,
+    ).toBe("ask");
+  });
 });

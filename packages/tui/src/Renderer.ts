@@ -53,17 +53,11 @@ export class Renderer {
 
   public static printThought(thought: string): void {
     if (!thought.trim()) return;
-    const columns = process.stdout.columns || 80;
-    const width = Math.min(100, Math.max(40, columns - 4));
-    const title = "── 🧠 Orbit Agent Thinking ";
-    const remaining = Math.max(5, width - title.length);
-
-    console.log("\n" + morandi.asst("┌" + title + "─".repeat(remaining)));
+    console.log(`\n🧠 ${morandi.asstBold("Orbit Agent Thinking:")}`);
     const lines = thought.trim().split("\n");
     for (const line of lines) {
-      console.log(`${morandi.asst("│")} ${morandi.gray(line)}`);
+      console.log(`   ${morandi.gray(line)}`);
     }
-    console.log(morandi.asst("└" + "─".repeat(width)));
     console.log();
   }
 

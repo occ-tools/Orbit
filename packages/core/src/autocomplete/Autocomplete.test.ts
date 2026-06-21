@@ -15,6 +15,16 @@ vi.mock("@orbit-ai/model-providers", async (importOriginal) => {
     id = "deepseek-openai";
     async complete(prompt: string, options: any) {
       mockLastPrompt = prompt;
+      const lowercaseModel = (options?.model || "").toLowerCase();
+
+      if (lowercaseModel.includes("slow")) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+
+      if (lowercaseModel.includes("0.5b")) {
+        return "Local_Speculative_Completion";
+      }
+
       if (options?.abortSignal) {
         await new Promise((resolve, reject) => {
           const timeout = setTimeout(() => {
@@ -35,10 +45,10 @@ vi.mock("@orbit-ai/model-providers", async (importOriginal) => {
           });
         });
       }
-      if (prompt.includes("<｜fim begin｜>")) {
+      if (prompt.includes("<｜fim begin｜>") || (options?.suffix !== undefined && (options?.model || "").toLowerCase().includes("deepseek"))) {
         return "DeepSeek_Completion_Middle";
       }
-      if (prompt.includes("<fim_prefix>")) {
+      if (prompt.includes("<|fim_prefix|>")) {
         return "Qwen_Completion_Middle";
       }
       return "Generic_Completion";
@@ -62,6 +72,7 @@ describe("AutocompleteEngine Tests", () => {
       enabled: true,
       provider: "ollama",
       model: "qwen2.5-coder:1.5b",
+      debounceMs: 0,
     },
     providers: {
       ollama: {
@@ -103,6 +114,7 @@ describe("AutocompleteEngine Tests", () => {
         enabled: true,
         provider: "deepseek-openai",
         model: "deepseek-coder",
+        debounceMs: 0,
       },
     };
     const result = await engine.autocomplete(
@@ -156,6 +168,58 @@ describe("AutocompleteEngine Tests", () => {
       // 5. Malformed percent-encoded URI (should fall back safely)
       await engine.autocomplete("const x = 1;", "", config, "file:///workspace/src/%invalid.ts");
       expect(mockLastPrompt).toContain("// Path: src/%invalid.ts\nconst x = 1;");
+    });
+  });
+
+  describe("Speculative FIM Autocomplete Race", () => {
+    it("should return the cloud completion immediately if it is fast (under timeout)", async () => {
+      const engine = new AutocompleteEngine();
+      const specConfig = {
+        autocomplete: {
+          enabled: true,
+          provider: "deepseek-openai",
+          model: "fast-deepseek-cloud-model",
+          debounceMs: 0,
+          speculative: {
+            enabled: true,
+            provider: "ollama",
+            model: "qwen2.5-coder:0.5b",
+            timeoutMs: 150,
+          },
+        },
+        providers: {
+          "deepseek-openai": { type: "openai-compatible", baseUrl: "..." },
+          ollama: { type: "ollama", baseUrl: "..." },
+        },
+      };
+
+      const result = await engine.autocomplete("const x = ", "", specConfig);
+      expect(result).toBe("DeepSeek_Completion_Middle");
+    });
+
+    it("should fall back to local completion if the cloud completion is slow (times out)", async () => {
+      const engine = new AutocompleteEngine();
+      const specConfig = {
+        autocomplete: {
+          enabled: true,
+          provider: "deepseek-openai",
+          model: "slow-cloud-model",
+          debounceMs: 0,
+          speculative: {
+            enabled: true,
+            provider: "ollama",
+            model: "qwen2.5-coder:0.5b",
+            timeoutMs: 50,
+          },
+        },
+        providers: {
+          "deepseek-openai": { type: "openai-compatible", baseUrl: "..." },
+          ollama: { type: "ollama", baseUrl: "..." },
+        },
+      };
+
+      const result = await engine.autocomplete("const x = ", "", specConfig);
+      expect(result).toBe("Local_Speculative_Completion");
     });
   });
 });

@@ -30,6 +30,7 @@ export class GlobTool implements OrbitTool<GlobInput, string[]> {
         ],
         onlyFiles: true,
         dot: true,
+        suppressErrors: true,
       });
 
       return {

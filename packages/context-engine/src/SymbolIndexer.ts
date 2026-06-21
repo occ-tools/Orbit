@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "fs";
 import { promises as fsPromises } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { createHash } from "crypto";
 import glob from "fast-glob";
 import { z } from "zod";
@@ -140,8 +140,43 @@ export class SymbolIndexer {
    */
   public async index(): Promise<void> {
     try {
+      // Skip indexing if cwd is user's home directory or system root directory
+      const normCwd = resolve(this.cwd).toLowerCase().replace(/\\/g, "/");
+      const { homedir } = await import("os");
+      const normHome = resolve(homedir()).toLowerCase().replace(/\\/g, "/");
+      if (
+        normCwd === normHome ||
+        normCwd === "/" ||
+        /^[a-zA-Z]:\/$/.test(normCwd) ||
+        dirname(normCwd) === normCwd
+      ) {
+        return;
+      }
+
       const config = ConfigLoader.loadSync(this.cwd);
-      const ignorePatterns = config.context?.ignore || [];
+      const userIgnores = config.context?.ignore || [];
+      const defaultSystemIgnores = [
+        "**/node_modules/**",
+        "**/dist/**",
+        "**/build/**",
+        "**/.git/**",
+        "**/coverage/**",
+        "**/.next/**",
+        "**/.turbo/**",
+        "**/AppData/**",
+        "**/Local Settings/**",
+        "**/Downloads/**",
+        "**/Documents/**",
+        "**/Pictures/**",
+        "**/Music/**",
+        "**/Videos/**",
+        "**/.npm/**",
+        "**/.cargo/**",
+        "**/.gradle/**",
+        "**/.rustup/**",
+        "**/.orbit/**",
+      ];
+      const ignorePatterns = Array.from(new Set([...userIgnores, ...defaultSystemIgnores]));
 
       // Load existing index if present
       let indexData: SymbolIndex = {
@@ -180,6 +215,7 @@ export class SymbolIndexer {
         ignore: ignorePatterns,
         onlyFiles: true,
         absolute: false,
+        suppressErrors: true,
       });
 
       let gitFiles: Set<string> | null = null;
@@ -203,10 +239,20 @@ export class SymbolIndexer {
         ? files.filter((f) => gitFiles!.has(f))
         : files;
 
+      const maxFiles = config.context?.maxFilesToIndex ?? 5000;
+      const slicedFiles = filteredFiles.length > maxFiles
+        ? filteredFiles.slice(0, maxFiles)
+        : filteredFiles;
+
       const activeFiles = new Set<string>();
       let changed = false;
+      let i = 0;
 
-      for (const relativePath of filteredFiles) {
+      for (const relativePath of slicedFiles) {
+        i++;
+        if (i % 50 === 0) {
+          await new Promise<void>((res) => setImmediate(res));
+        }
         // Resolve absolute path safely to avoid path traversal
         const absolutePath = resolveSafePath(this.cwd, relativePath);
         activeFiles.add(relativePath);
@@ -368,6 +414,7 @@ export class SymbolIndexer {
           ignore: ["**/node_modules/**", "**/dist/**"],
           onlyFiles: true,
           absolute: false,
+          suppressErrors: true,
         });
         for (const relPath of packageJsonFiles) {
           try {

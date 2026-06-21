@@ -31,4 +31,13 @@ describe("SessionStore file logging", () => {
     expect(events[0].type).toBe("user_message");
     expect(events[0].payload.text).toBe("hello");
   });
+
+  it("should create, list, and delete sessions", () => {
+    const store = new SessionStore(tempDir);
+    const session = store.createSession("deepseek", "v4-pro");
+    expect(store.listSessions().length).toBe(1);
+
+    store.deleteSession(session.id);
+    expect(store.listSessions().length).toBe(0);
+  });
 });

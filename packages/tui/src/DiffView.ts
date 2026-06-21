@@ -123,25 +123,23 @@ export class DiffView {
     const remaining = Math.max(5, width - 2 - headerLength);
     output.push(
       picocolors.gray(
-        "┌" +
-          headerPrefix +
+        "--- Diff: " +
           picocolors.bold(picocolors.cyan(filePath)) +
-          " " +
-          "─".repeat(remaining),
+          " ---"
       ),
     );
 
     if (before === null) {
       const linesAfter = after.split("\n");
       for (const line of linesAfter) {
-        output.push(`${picocolors.gray("│")} ${picocolors.green(`+ ${line}`)}`);
+        output.push(`  ${picocolors.green(`+ ${line}`)}`);
       }
     } else {
       const linesBefore = before.split("\n");
       const rawHunks = this.findHunks(before, after);
 
       if (rawHunks.length === 0) {
-        output.push(`${picocolors.gray("│")} No changes.`);
+        output.push(`  No changes.`);
       } else {
         // Merge hunks that are close to each other (overlapping contexts where gap <= 6 lines)
         const hunks: MergedHunk[] = [];
@@ -179,13 +177,13 @@ export class DiffView {
 
           // Add section header
           output.push(
-            `${picocolors.gray("│")} ${picocolors.cyan(`@@ -${hunk.startB + 1},${lenB} +${hunk.startA + 1},${lenA} @@`)}`,
+            `  ${picocolors.cyan(`@@ -${hunk.startB + 1},${lenB} +${hunk.startA + 1},${lenA} @@`)}`,
           );
 
           // Context before (max 3 lines)
           const contextStart = Math.max(0, hunk.startB - 3);
           for (let c = contextStart; c < hunk.startB; c++) {
-            output.push(`${picocolors.gray("│")}   ${linesBefore[c]}`);
+            output.push(`    ${linesBefore[c]}`);
           }
 
           // Print hunk content body
@@ -195,19 +193,19 @@ export class DiffView {
             if (sub.startB > currentB) {
               const gapLines = linesBefore.slice(currentB, sub.startB);
               for (const line of gapLines) {
-                output.push(`${picocolors.gray("│")}   ${line}`);
+                output.push(`    ${line}`);
               }
             }
             // Deletions
             for (const line of sub.linesB) {
               output.push(
-                `${picocolors.gray("│")} ${picocolors.red(`- ${line}`)}`,
+                `  ${picocolors.red(`- ${line}`)}`,
               );
             }
             // Insertions
             for (const line of sub.linesA) {
               output.push(
-                `${picocolors.gray("│")} ${picocolors.green(`+ ${line}`)}`,
+                `  ${picocolors.green(`+ ${line}`)}`,
               );
             }
             currentB = sub.endB;
@@ -216,13 +214,13 @@ export class DiffView {
           // Context after (max 3 lines)
           const contextEnd = Math.min(linesBefore.length, hunk.endB + 3);
           for (let c = hunk.endB; c < contextEnd; c++) {
-            output.push(`${picocolors.gray("│")}   ${linesBefore[c]}`);
+            output.push(`    ${linesBefore[c]}`);
           }
         }
       }
     }
 
-    output.push(picocolors.gray("└" + "─".repeat(width - 2)));
+    output.push(picocolors.gray("----------------------------------------------------------------------------"));
     return output.join("\n");
   }
 }

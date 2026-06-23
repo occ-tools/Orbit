@@ -1872,13 +1872,13 @@ export class FullscreenTui {
 
     // 2. 渲染左上角像素行星 Logo 及其右侧信息
     const heartColor = this.getNpmNeedsUpdate()
-      ? `\x1b[38;2;230;190;80m` // Soft Morandi yellow
+      ? `\x1b[5m\x1b[38;2;230;190;80m` // Blinking Soft Morandi yellow
       : `\x1b[38;2;230;110;110m`; // Soft Morandi red
 
     const logoLines = [
       `\x1b[38;2;142;163;175m  /\\___/\\  \x1b[0m`,
       `\x1b[38;2;142;163;175m (  o.o  ) \x1b[0m`,
-      `\x1b[38;2;142;163;175m  / >${heartColor}♥\x1b[38;2;142;163;175m< \\  \x1b[0m`,
+      `\x1b[38;2;142;163;175m  / >${heartColor}♥\x1b[25m\x1b[38;2;142;163;175m< \\  \x1b[0m`,
       `\x1b[38;2;142;163;175m (__/ \\__) \x1b[0m`,
     ];
 

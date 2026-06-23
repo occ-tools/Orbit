@@ -29,6 +29,7 @@ export const BUILTIN_SLASH_COMMANDS = [
   "/mode",
   "/copy",
   "/update",
+  "/upgrade",
 ] as const;
 
 export class CommandRouter {
@@ -403,7 +404,7 @@ export class CommandRouter {
         return { shouldExit: false, processed: true };
       }
 
-      if (command === "/update") {
+      if (command === "/update" || command === "/upgrade") {
         const isZh = config.language === "zh";
         const wasActive = useFullscreenTui && tui.isActive;
 

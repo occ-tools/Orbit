@@ -1,6 +1,6 @@
 {
   "name": "@orbit-build/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "bin": {
     "orbit": "./dist/index.js"
@@ -38,4 +38,3 @@
     "zod": "^3.23.8"
   }
 }
-

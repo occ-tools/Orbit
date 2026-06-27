@@ -6,7 +6,7 @@ import {
   readdirSync,
   rmSync,
 } from "fs";
-import { join, dirname } from "path";
+import { join } from "path";
 import { generateId, resolveSafePath } from "@orbit-build/shared";
 import { FileBackup, Checkpoint } from "./types.js";
 
@@ -79,7 +79,7 @@ export class CheckpointManager {
       if (existsSync(safePath)) {
         originalContent = readFileSync(safePath, "utf8");
       }
-    } catch (e) {
+    } catch {
       // File does not exist yet or read failed
     }
 

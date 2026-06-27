@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { JSVectorStore, Document } from "./VectorStore.js";
 import { BM25Store, tokenize } from "./BM25.js";
 import { HybridSearch } from "./HybridSearch.js";
@@ -147,7 +147,7 @@ export function test() {
 
       await hs.addDocuments([doc1, doc2]);
 
-      const mockEmbedFn = async (texts: string[]) => {
+      const mockEmbedFn = async (_texts: string[]) => {
         // Query "buffer" matches doc1 vector
         return [[0.95, 0.05]];
       };

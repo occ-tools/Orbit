@@ -56,7 +56,7 @@ export class FindSymbolReferencesTool implements OrbitTool<
       const results: SymbolReferenceEntry[] = [];
       const symbolRegex = new RegExp(`\\b${input.symbol}\\b`);
 
-      for (const [file, fileData] of Object.entries(index.files)) {
+      for (const file of Object.keys(index.files)) {
         const absPath = join(ctx.cwd, file);
         if (existsSync(absPath)) {
           const lines = readFileSync(absPath, "utf8").split("\n");

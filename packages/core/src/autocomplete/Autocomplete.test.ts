@@ -1,9 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import { AutocompleteEngine } from "./Autocomplete.js";
-import {
-  DeepSeekOpenAIProvider,
-  OllamaProvider,
-} from "@orbit-build/model-providers";
 
 let mockLastPrompt = "";
 

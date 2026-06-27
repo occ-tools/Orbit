@@ -4,6 +4,7 @@ import {
   parseMouseWheelDirection,
   previousCodePointIndex,
 } from "./run.js";
+import { selectActiveSlashSuggestion } from "../tui/FullscreenTui.js";
 
 // We can extract makeCompleter matcher logic from packages/cli/src/commands/run.ts to test it.
 // Since it's not exported, we can recreate it or mock the exact matcher implementation:
@@ -51,6 +52,8 @@ describe("REPL Autocomplete Completer Tests", () => {
       "/drop",
       "/mode",
       "/copy",
+      "/run",
+      "/update",
     ],
     files: [
       "src/index.ts",
@@ -72,6 +75,8 @@ describe("REPL Autocomplete Completer Tests", () => {
     const [allHits, allLine] = completer("/");
     expect(allHits).toContain("/help");
     expect(allHits).toContain("/exit");
+    expect(allHits).toContain("/run");
+    expect(allHits).toContain("/update");
     expect(allLine).toBe("/");
 
     const [modeHits, modeLine] = completer("/mo");
@@ -169,7 +174,12 @@ describe("REPL Autocomplete Completer Tests", () => {
         } else if (providerType === "openai") {
           models = ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"];
         } else {
-          models = ["deepseek-v4-flash", "deepseek-v4-pro"];
+          models = [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "deepseek-ai/DeepSeek-V4-Flash-DSpark",
+            "deepseek-ai/DeepSeek-V4-Pro-DSpark",
+          ];
         }
         const hits = models
           .filter((m) => m.toLowerCase().includes(query.toLowerCase()))
@@ -257,6 +267,30 @@ describe("REPL Autocomplete Completer Tests", () => {
       );
       expect(anthropicMatches).toContain("/model claude-3-5-sonnet-latest");
       expect(anthropicMatches).not.toContain("/model gpt-4o");
+
+      const dsparkMatches = simulateGetActiveMatches(
+        "/model dspark",
+        "openai-compatible",
+      );
+      expect(dsparkMatches).toContain(
+        "/model deepseek-ai/DeepSeek-V4-Flash-DSpark",
+      );
+      expect(dsparkMatches).toContain(
+        "/model deepseek-ai/DeepSeek-V4-Pro-DSpark",
+      );
+    });
+
+    it("should submit the selected slash suggestion on Enter", () => {
+      expect(
+        selectActiveSlashSuggestion("/", ["/help", "/model", "/run"], 1),
+      ).toBe("/model");
+      expect(
+        selectActiveSlashSuggestion(
+          "/model d",
+          ["/model deepseek-v4-flash", "/model deepseek-v4-pro"],
+          1,
+        ),
+      ).toBe("/model deepseek-v4-pro");
     });
   });
 });

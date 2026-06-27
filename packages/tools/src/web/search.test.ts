@@ -6,9 +6,10 @@ describe("WebSearchTool", () => {
     const mockHtml = `
       <html>
         <body>
-          <div class="result__body">
+          <div class="links_main links_deep result__body">
             <a class="result__a" href="https://example.com/test-result">Test Page Title</a>
             <span class="result__snippet">This is a description snippet of the test result.</span>
+            <div class="clear"></div>
           </div>
         </body>
       </html>

@@ -79,7 +79,7 @@ export class GrepTool implements OrbitTool<GrepInput, GrepMatch[]> {
         data: matches,
         display: `Grep for "${input.pattern}" using ripgrep: found ${matches.length} matches`,
       };
-    } catch (rgError) {
+    } catch {
       return this.jsFallback(input, searchDir, ctx.cwd, max);
     }
   }

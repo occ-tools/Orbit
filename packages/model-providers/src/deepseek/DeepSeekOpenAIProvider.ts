@@ -2,8 +2,6 @@ import {
   ModelProvider,
   ModelChatInput,
   ModelEvent,
-  OrbitMessage,
-  OrbitContentBlock,
   ModelCapabilities,
 } from "../types.js";
 import { zodToJsonSchema, fetchWithRetry } from "../utils.js";
@@ -336,9 +334,7 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
     const chatController = new AbortController();
     const chatSignal = chatController.signal;
 
-    let externalSignalAborted = false;
     const onExternalAbort = () => {
-      externalSignalAborted = true;
       chatController.abort();
     };
 
@@ -399,6 +395,8 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
             data.usage?.prompt_cache_hit_tokens ||
             data.usage?.prompt_tokens_details?.cached_tokens ||
             0,
+          cacheMissTokens: data.usage?.prompt_cache_miss_tokens || 0,
+          cacheWriteTokens: data.usage?.prompt_cache_write_tokens || 0,
           totalTokens: data.usage?.total_tokens || 0,
         },
       };
@@ -430,6 +428,8 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
     let promptTokens = 0;
     let completionTokens = 0;
     let cacheReadTokens = 0;
+    let cacheMissTokens = 0;
+    let cacheWriteTokens = 0;
 
     let streamTimeoutId: NodeJS.Timeout | undefined;
     const streamTimeoutMs = 60000;
@@ -509,8 +509,14 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
                   cacheReadTokens =
                     parsed.usage.prompt_tokens_details.cached_tokens;
                 }
+                if (parsed.usage.prompt_cache_miss_tokens) {
+                  cacheMissTokens = parsed.usage.prompt_cache_miss_tokens;
+                }
+                if (parsed.usage.prompt_cache_write_tokens) {
+                  cacheWriteTokens = parsed.usage.prompt_cache_write_tokens;
+                }
               }
-            } catch (e) {
+            } catch {
               // Parse error on incomplete chunk
             }
           }
@@ -551,6 +557,8 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
           inputTokens: promptTokens,
           outputTokens: completionTokens,
           cacheReadTokens: cacheReadTokens,
+          cacheMissTokens,
+          cacheWriteTokens,
           totalTokens: promptTokens + completionTokens,
         },
       };

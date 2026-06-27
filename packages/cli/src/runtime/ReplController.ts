@@ -223,6 +223,11 @@ export class ReplController {
         tui.startAttempt(payload.attempt);
       }
     };
+    const onModelRequest = (payload: any) => {
+      if (useFullscreenTui && payload?.model) {
+        tui.setActiveModelName(payload.model);
+      }
+    };
     const onCostUpdate = (payload: any) => {
       if (useFullscreenTui) {
         tui.setCost(
@@ -231,6 +236,11 @@ export class ReplController {
           payload.totalCacheReadTokens,
           payload.totalOutputTokens,
         );
+      }
+    };
+    const onCacheUpdate = (payload: any) => {
+      if (useFullscreenTui) {
+        tui.setCacheTelemetry(payload);
       }
     };
     const onThinkingDelta = (payload: any) => {
@@ -243,7 +253,9 @@ export class ReplController {
 
     eventBus.on("model_delta", onModelDelta);
     eventBus.on("loop_start", onLoopStart);
+    eventBus.on("model_request", onModelRequest);
     eventBus.on("cost_update", onCostUpdate);
+    eventBus.on("cache_update", onCacheUpdate);
     eventBus.on("thinking_delta", onThinkingDelta);
 
     // Start background file watcher (Dynamic Incremental Watcher with Config Ignores)
@@ -511,7 +523,9 @@ export class ReplController {
       if (this.watchTimeout) clearTimeout(this.watchTimeout);
       eventBus.off("model_delta", onModelDelta);
       eventBus.off("loop_start", onLoopStart);
+      eventBus.off("model_request", onModelRequest);
       eventBus.off("cost_update", onCostUpdate);
+      eventBus.off("cache_update", onCacheUpdate);
       eventBus.off("thinking_delta", onThinkingDelta);
       tui.dispose();
       this.autocompleteServer?.close();

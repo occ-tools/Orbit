@@ -55,7 +55,7 @@ export class ReferencesRetriever {
       }
       const symbolRefs: ReferenceContext[] = [];
 
-      for (const [relPath, fileData] of Object.entries(index.files)) {
+      for (const relPath of Object.keys(index.files)) {
         if (
           symbolRefs.length >= maxReferencesPerSymbol ||
           totalCollected >= maxTotalReferences

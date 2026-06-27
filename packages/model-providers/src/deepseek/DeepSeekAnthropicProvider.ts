@@ -2,8 +2,6 @@ import {
   ModelProvider,
   ModelChatInput,
   ModelEvent,
-  OrbitMessage,
-  OrbitContentBlock,
   ModelCapabilities,
 } from "../types.js";
 import { zodToJsonSchema, fetchWithRetry } from "../utils.js";
@@ -184,9 +182,7 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
     const chatController = new AbortController();
     const chatSignal = chatController.signal;
 
-    let externalSignalAborted = false;
     const onExternalAbort = () => {
-      externalSignalAborted = true;
       chatController.abort();
     };
 
@@ -240,6 +236,7 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
           inputTokens: data.usage?.input_tokens || 0,
           outputTokens: data.usage?.output_tokens || 0,
           cacheReadTokens: data.usage?.cache_read_input_tokens || 0,
+          cacheMissTokens: data.usage?.cache_creation_input_tokens || 0,
           totalTokens:
             (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0),
         },
@@ -272,6 +269,7 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
     let inputTokens = 0;
     let outputTokens = 0;
     let cacheReadTokens = 0;
+    let cacheMissTokens = 0;
 
     let streamTimeoutId: NodeJS.Timeout | undefined;
     const streamTimeoutMs = 60000;
@@ -316,6 +314,8 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
                   outputTokens = parsed.message.usage.output_tokens || 0;
                   cacheReadTokens =
                     parsed.message.usage.cache_read_input_tokens || 0;
+                  cacheMissTokens =
+                    parsed.message.usage.cache_creation_input_tokens || 0;
                 }
               } else if (parsed.type === "content_block_start") {
                 const idx = parsed.index;
@@ -377,7 +377,7 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
                   outputTokens = parsed.usage.output_tokens || outputTokens;
                 }
               }
-            } catch (e) {
+            } catch {
               // Parse error on incomplete chunk
             }
           }
@@ -398,6 +398,7 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
           inputTokens,
           outputTokens,
           cacheReadTokens,
+          cacheMissTokens,
           totalTokens: inputTokens + outputTokens,
         },
       };

@@ -1,6 +1,5 @@
 import {
   ToolRisk,
-  checkWorkspaceBoundary,
   normalizePath,
 } from "@orbit-build/shared";
 

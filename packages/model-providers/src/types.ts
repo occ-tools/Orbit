@@ -68,6 +68,8 @@ export interface TokenUsage {
   outputTokens: number;
   totalTokens: number;
   cacheReadTokens?: number;
+  cacheMissTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 export type ModelEvent =

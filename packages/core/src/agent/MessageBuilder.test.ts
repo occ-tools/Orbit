@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { MessageBuilder } from "./MessageBuilder.js";
-import { AgentState, createInitialState } from "./AgentState.js";
+import { createInitialState } from "./AgentState.js";
 import { ContextPack } from "@orbit-build/context-engine";
 
 describe("MessageBuilder prompt caching", () => {
@@ -41,11 +41,14 @@ describe("MessageBuilder prompt caching", () => {
 
     const build = MessageBuilder.build("System Prompt Base", state, context);
 
-    // Verify system prompt contains stable base AND dynamic context
+    // Verify system prompt contains stable base AND volatile context
     expect(build.system).toContain("System Prompt Base");
     expect(build.system).toContain("RAG context A");
     expect(build.system).toContain("console.log('hello');");
-    expect(build.system).toContain("Use spaces.");
+    expect(build.system).not.toContain("Use spaces.");
+    expect(build.system.indexOf("File: src/index.ts")).toBeLessThan(
+      build.system.indexOf("### Codebase Context"),
+    );
 
     // Verify user message (last message) is clean and undecorated
     const lastMsgText = build.messages[0].content[0].text;
@@ -94,7 +97,7 @@ describe("MessageBuilder prompt caching", () => {
 
     const build = MessageBuilder.build("System Prompt Base", state, context);
 
-    // Verify the system prompt contains stable base AND dynamic context
+    // Verify the system prompt contains stable base AND volatile context
     expect(build.system).toContain("System Prompt Base");
     expect(build.system).toContain("RAG context B");
 

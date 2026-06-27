@@ -97,6 +97,20 @@ export const CostUpdateEventSchema = z.object({
   }),
 });
 
+export const CacheUpdateEventSchema = z.object({
+  type: z.literal("cache_update"),
+  payload: z.object({
+    slabHash: z.string(),
+    slabTokenEstimate: z.number(),
+    primed: z.boolean(),
+    hitTokens: z.number(),
+    missTokens: z.number(),
+    inputTokens: z.number(),
+    hitRate: z.number(),
+    degraded: z.boolean(),
+  }),
+});
+
 // --- Tool Proposal, Approval & Execution Events ---
 export const ToolProposalEventSchema = z.object({
   type: z.literal("tool_proposal"),
@@ -213,6 +227,7 @@ export const OrbitEventSchema = z.discriminatedUnion("type", [
   ModelDeltaEventSchema,
   ThinkingDeltaEventSchema,
   CostUpdateEventSchema,
+  CacheUpdateEventSchema,
   ToolProposalEventSchema,
   ToolApprovalEventSchema,
   ToolResultEventSchema,

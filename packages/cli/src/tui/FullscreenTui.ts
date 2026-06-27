@@ -152,6 +152,16 @@ const MORANDI = {
 // Width of the fixed input-box left prefix "  │ orbit > " (constant, pre-calculated)
 const INPUT_PREFIX_WIDTH = 12; // "  │ orbit > " visual width
 
+export function selectActiveSlashSuggestion(
+  input: string,
+  matches: string[],
+  activeIndex: number,
+): string {
+  if (!input.startsWith("/") || matches.length === 0) return input;
+  const idx = Math.min(Math.max(0, activeIndex), matches.length - 1);
+  return matches[idx] || input;
+}
+
 /** One conversation turn in the TUI history view. */
 type HistoryEntry = {
   role: "user" | "assistant" | "system";
@@ -206,6 +216,16 @@ export class FullscreenTui {
   private totalInputTokens = 0;
   private totalCacheReadTokens = 0;
   private totalOutputTokens = 0;
+  private cacheTelemetry: {
+    slabHash: string;
+    slabTokenEstimate: number;
+    primed: boolean;
+    hitTokens: number;
+    missTokens: number;
+    inputTokens: number;
+    hitRate: number;
+    degraded: boolean;
+  } | null = null;
   private budgetLimit = 0;
 
   private resolveInput: ((val: string | null) => void) | null = null;
@@ -231,6 +251,7 @@ export class FullscreenTui {
     sessions: string[];
   } | null = null;
   private modelNameGetter: () => string = () => this.modelName;
+  private activeModelName = "";
   private permissionsMode = "normal";
   private hideAutocomplete = false;
   /** Cached logo-line widths — static strings, computed once. */
@@ -301,6 +322,18 @@ export class FullscreenTui {
 
   public setModelNameGetter(getter: () => string) {
     this.modelNameGetter = getter;
+  }
+
+  public setActiveModelName(model: string) {
+    const cleanModel = model.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+    this.activeModelName = cleanModel;
+    const lastAsst = [...this.history]
+      .reverse()
+      .find((m) => m.role === "assistant" && (!m.text || !m.model));
+    if (lastAsst) {
+      lastAsst.model = cleanModel;
+    }
+    this.render();
   }
 
   public setActiveRunnable(runnable: { abort: () => void } | null) {
@@ -940,11 +973,15 @@ export class FullscreenTui {
           models = [
             "deepseek-v4-flash",
             "deepseek-v4-pro",
+            "deepseek-ai/DeepSeek-V4-Flash-DSpark",
+            "deepseek-ai/DeepSeek-V4-Pro-DSpark",
           ];
         } else {
           models = [
             "gpt-4o",
             "gpt-4o-mini",
+            "deepseek-ai/DeepSeek-V4-Flash-DSpark",
+            "deepseek-ai/DeepSeek-V4-Pro-DSpark",
           ];
         }
       } else if (providerType === "ollama") {
@@ -953,6 +990,8 @@ export class FullscreenTui {
         models = [
           "deepseek-v4-flash",
           "deepseek-v4-pro",
+          "deepseek-ai/DeepSeek-V4-Flash-DSpark",
+          "deepseek-ai/DeepSeek-V4-Pro-DSpark",
           "gpt-4o",
           "o3-mini",
           "claude-3-5-sonnet-latest",
@@ -1021,6 +1060,20 @@ export class FullscreenTui {
     return "";
   }
 
+  private acceptActiveSlashSuggestion(): string | null {
+    const matches = this.getActiveMatches();
+    const selected = selectActiveSlashSuggestion(
+      this.inputBuffer,
+      matches,
+      this.activeCommandIndex,
+    );
+    if (selected === this.inputBuffer) return null;
+    this.inputBuffer = selected;
+    this.cursorPosition = selected.length;
+    this.activeCommandIndex = 0;
+    return selected;
+  }
+
   private getHits(): { hits: string[]; lastWord: string } {
     const hits = this.getActiveMatches();
     return { hits, lastWord: this.inputBuffer };
@@ -1036,6 +1089,20 @@ export class FullscreenTui {
     this.totalInputTokens = inputTokens;
     this.totalCacheReadTokens = cacheReadTokens;
     this.totalOutputTokens = outputTokens;
+    this.render();
+  }
+
+  public setCacheTelemetry(payload: {
+    slabHash: string;
+    slabTokenEstimate: number;
+    primed: boolean;
+    hitTokens: number;
+    missTokens: number;
+    inputTokens: number;
+    hitRate: number;
+    degraded: boolean;
+  }) {
+    this.cacheTelemetry = payload;
     this.render();
   }
 
@@ -1219,20 +1286,8 @@ export class FullscreenTui {
           if (key && (key.name === "return" || key.name === "enter")) {
             cleanup();
             process.stdout.write("\x1b[?25l");
-            let submitted = this.inputBuffer;
-            if (this.inputBuffer.startsWith("/")) {
-              const matches = this.getActiveMatches();
-              if (matches.length > 0) {
-                const idx = Math.min(
-                  this.activeCommandIndex,
-                  matches.length - 1,
-                );
-                const match = matches[idx];
-                if (match) {
-                  submitted = match;
-                }
-              }
-            }
+            const submitted =
+              this.acceptActiveSlashSuggestion() || this.inputBuffer;
             this.resolveInput = null;
             this.historyScrollOffset = 0;
             this.hasNewOutputWhileScrolled = false;
@@ -1397,9 +1452,8 @@ export class FullscreenTui {
               );
               this.render();
             } else {
-              const sug = this.getSuggestion();
-              if (sug) {
-                this.inputBuffer += sug;
+              const accepted = this.acceptActiveSlashSuggestion();
+              if (accepted) {
                 this.cursorPosition = this.inputBuffer.length;
                 this.render();
               }
@@ -1409,19 +1463,9 @@ export class FullscreenTui {
 
           if (key && key.name === "tab") {
             if (this.inputBuffer.startsWith("/")) {
-              const matches = this.getActiveMatches();
-              if (matches.length > 0) {
-                const idx = Math.min(
-                  this.activeCommandIndex,
-                  matches.length - 1,
-                );
-                const match = matches[idx];
-                if (match) {
-                  this.inputBuffer = match;
-                  this.cursorPosition = match.length;
-                  this.activeCommandIndex = 0;
-                  this.render();
-                }
+              const accepted = this.acceptActiveSlashSuggestion();
+              if (accepted) {
+                this.render();
                 return;
               }
             }
@@ -1545,6 +1589,7 @@ export class FullscreenTui {
       role: "assistant",
       text: "",
       attempt: attempt,
+      model: this.activeModelName || this.modelNameGetter(),
     });
 
     if (this.thoughtTimer) clearInterval(this.thoughtTimer);
@@ -1693,6 +1738,8 @@ export class FullscreenTui {
               "/drop": "从当前对话上下文中移除选定的资产",
               "/mode": "动态切换系统安全确认模式 (strict, normal, auto, plan)",
               "/copy": "拷贝 AI 的上一条回复到系统剪贴板",
+              "/run": "执行一条本机 Shell 命令，会先走权限检查",
+              "/update": "检测并更新当前项目依赖",
             }
           : {
               "/help": "Display detailed help and commands reference",
@@ -1716,6 +1763,8 @@ export class FullscreenTui {
               "/drop": "Remove selected assets from prompt context",
               "/mode": "Switch permission mode (strict, normal, auto, plan)",
               "/copy": "Copy last assistant response to clipboard",
+              "/run": "Run one local shell command after permission checks",
+              "/update": "Detect and update current project dependencies",
             };
 
         const maxVisible = 5;
@@ -1804,6 +1853,18 @@ export class FullscreenTui {
             morandi.gray("  │") + formattedLine + morandi.gray("│"),
           );
         }
+        const footerText = isZh
+          ? "↑/↓ 选择  Enter 执行  Tab 补全  Esc 关闭"
+          : "↑/↓ select  Enter run  Tab complete  Esc close";
+        const footerW = this.getStringWidth(footerText);
+        const footerPadding = " ".repeat(
+          Math.max(0, popupWidth - footerW - 1),
+        );
+        bottomLines.push(
+          morandi.gray("  │ ") +
+            morandi.dim(footerText + footerPadding) +
+            morandi.gray("│"),
+        );
         bottomLines.push(morandi.gray("  ╰" + "─".repeat(popupWidth) + "╯"));
 
       }
@@ -1831,8 +1892,8 @@ export class FullscreenTui {
     } else if (this.ctrlCPressedOnce) {
       statusText = morandi.warn("Press Ctrl+C again to exit");
     } else {
-      const cleanModel =
-        this.modelNameGetter().split("/").pop() || this.modelNameGetter();
+      const displayedModel = this.activeModelName || this.modelNameGetter();
+      const cleanModel = displayedModel.split("/").pop() || displayedModel;
       const costStr = `$` + this.sessionCost.toFixed(4);
       statusText =
         morandi.completed("●") +
@@ -1885,7 +1946,8 @@ export class FullscreenTui {
 
     // 全屏渲染逻辑（当无法增量时）
     // Strip all ANSI escape sequences (e.g. \x1b[1m bold) from the model name
-    const cleanModel = this.modelNameGetter().replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+    const displayedModel = this.activeModelName || this.modelNameGetter();
+    const cleanModel = displayedModel.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
 
     // 1. 获取 Git 当前分支与状态（短时缓存，避免流式输出期间阻塞重绘）
     const gitSummary = this.getGitSummary();
@@ -1970,19 +2032,31 @@ export class FullscreenTui {
     );
     const displayPath = truncatePath(shortCwd, maxPathWidth);
 
-    const hitRate =
-      this.totalInputTokens > 0
+    const hitRate = this.cacheTelemetry
+      ? this.cacheTelemetry.hitRate * 100
+      : this.totalInputTokens > 0
         ? (this.totalCacheReadTokens / this.totalInputTokens) * 100
         : 0;
-    let cacheText = `[cache] hit: ${hitRate.toFixed(0)}% (${(this.totalCacheReadTokens / 1000).toFixed(0)}k/${(this.totalInputTokens / 1000).toFixed(0)}k tokens)`;
+    const cacheRead = this.cacheTelemetry
+      ? this.cacheTelemetry.hitTokens
+      : this.totalCacheReadTokens;
+    const cacheInput = this.cacheTelemetry
+      ? this.cacheTelemetry.inputTokens || this.totalInputTokens
+      : this.totalInputTokens;
+    const cacheMiss = this.cacheTelemetry?.missTokens || Math.max(0, cacheInput - cacheRead);
+    const slabLabel = this.cacheTelemetry
+      ? ` slab:${this.cacheTelemetry.slabHash.slice(0, 8)}`
+      : "";
+    const primerLabel = this.cacheTelemetry?.primed ? " primed" : "";
+    const cachePrefix = this.cacheTelemetry?.degraded ? "[cache ⚠]" : "[cache]";
+    let cacheText = `${cachePrefix} hit: ${hitRate.toFixed(0)}% (${(cacheRead / 1000).toFixed(0)}k hit/${(cacheMiss / 1000).toFixed(0)}k miss)${slabLabel}${primerLabel}`;
     if (this.getStringWidth(cacheText) > availableWidth) {
-      cacheText = `[cache] hit: ${hitRate.toFixed(0)}% (${(this.totalCacheReadTokens / 1000).toFixed(0)}k/${(this.totalInputTokens / 1000).toFixed(0)}k)`;
+      cacheText = `${cachePrefix} ${hitRate.toFixed(0)}% (${(cacheRead / 1000).toFixed(0)}k/${(cacheInput / 1000).toFixed(0)}k)${slabLabel}`;
     }
     if (this.getStringWidth(cacheText) > availableWidth) {
-      cacheText = `[cache] hit: ${hitRate.toFixed(0)}%`;
+      cacheText = `${cachePrefix} ${hitRate.toFixed(0)}%`;
     }
 
-    const cleanHeaderModel = cleanModel.split("/").pop() || cleanModel;
     let headerLines: string[];
     if (columns < 76) {
       const compactPath = truncatePath(shortCwd, Math.max(8, columns - 15));

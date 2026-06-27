@@ -167,14 +167,14 @@ export class MCPClient {
           }
         }
       }
-    } catch (err) {
+    } catch {
       // Ignored parsing errors of other messages
     }
   }
 
   private cleanup(err: Error) {
     this.isConnected = false;
-    for (const [id, pending] of this.pendingRequests.entries()) {
+    for (const pending of this.pendingRequests.values()) {
       clearTimeout(pending.timeout);
       pending.reject(err);
     }
@@ -213,7 +213,7 @@ export class DynamicMCPTool implements OrbitTool<any, any> {
     this.inputSchema = z.any();
   }
 
-  public async execute(input: any, ctx: ToolContext): Promise<ToolResult<any>> {
+  public async execute(input: any, _ctx: ToolContext): Promise<ToolResult<any>> {
     try {
       const response = await this.client.callTool(this.originalToolName, input);
       const isError = response.isError || false;

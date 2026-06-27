@@ -27,14 +27,14 @@
 
 Orbit is organized as a clean, modular pnpm monorepo:
 
-- [`@orbit-build/cli`](file:///c:/Users/24377/Desktop/Orbit/packages/cli): Main CLI commander entry point and LSP server bridge.
-- [`@orbit-build/core`](file:///c:/Users/24377/Desktop/Orbit/packages/core): Core agent loop, prompt caching, state managers, and autocomplete debouncer.
-- [`@orbit-build/context-engine`](file:///c:/Users/24377/Desktop/Orbit/packages/context-engine): AST Symbol Indexer, PageRank Repo Map generator, and hybrid BM25/Vector RAG.
-- [`@orbit-build/model-providers`](file:///c:/Users/24377/Desktop/Orbit/packages/model-providers): Providers for DeepSeek, OpenAI, Anthropic, and local Ollama streams.
-- [`@orbit-build/sandbox`](file:///c:/Users/24377/Desktop/Orbit/packages/sandbox): Git checkpoint managers and command execution rollback controllers.
-- [`@orbit-build/tools`](file:///c:/Users/24377/Desktop/Orbit/packages/tools): File system operations, grep scanner, reference searchers, and shell execution sandboxes.
-- [`@orbit-build/tui`](file:///c:/Users/24377/Desktop/Orbit/packages/tui): Terminal UI interactive prompt controls and colored terminal renderers.
-- [`@orbit-build/shared`](file:///c:/Users/24377/Desktop/Orbit/packages/shared): Common path utilities, token metrics, and shared schemas.
+- [`@orbit-build/cli`](packages/cli): Main CLI commander entry point and LSP server bridge.
+- [`@orbit-build/core`](packages/core): Core agent loop, prompt caching, state managers, and autocomplete debouncer.
+- [`@orbit-build/context-engine`](packages/context-engine): AST Symbol Indexer, PageRank Repo Map generator, and hybrid BM25/Vector RAG.
+- [`@orbit-build/model-providers`](packages/model-providers): Providers for DeepSeek, OpenAI, Anthropic, and local Ollama streams.
+- [`@orbit-build/sandbox`](packages/sandbox): Git checkpoint managers and command execution rollback controllers.
+- [`@orbit-build/tools`](packages/tools): File system operations, grep scanner, reference searchers, and shell execution sandboxes.
+- [`@orbit-build/tui`](packages/tui): Terminal UI interactive prompt controls and colored terminal renderers.
+- [`@orbit-build/shared`](packages/shared): Common path utilities, token metrics, and shared schemas.
 
 ---
 
@@ -100,7 +100,7 @@ Orbit exposes a standard Language Server Protocol (LSP) interface on `orbit lsp`
 
 ### VS Code
 
-Compile and load the VS Code extension located under [editors/vscode](file:///c:/Users/24377/Desktop/Orbit/editors/vscode) into your VS Code editor. It will automatically spawn `orbit lsp` on startup and query it for real-time code completions.
+Compile and load the VS Code extension located under [editors/vscode](editors/vscode) into your VS Code editor. It will automatically spawn `orbit lsp` on startup and query it for real-time code completions.
 
 ### Neovim / Helix / Emacs
 

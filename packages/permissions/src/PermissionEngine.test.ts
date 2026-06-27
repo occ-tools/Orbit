@@ -101,4 +101,24 @@ describe("PermissionEngine tests", () => {
       }).action,
     ).toBe("ask");
   });
+
+  it("should treat web search as a network operation", () => {
+    const normalEngine = new PermissionEngine(mockConfig("normal"));
+    const strictEngine = new PermissionEngine(mockConfig("strict"));
+
+    expect(
+      normalEngine.evaluate(
+        "web_search",
+        { query: "Orbit docs" },
+        "network",
+      ).action,
+    ).toBe("ask");
+    expect(
+      strictEngine.evaluate(
+        "web_search",
+        { query: "Orbit docs" },
+        "network",
+      ).action,
+    ).toBe("deny");
+  });
 });

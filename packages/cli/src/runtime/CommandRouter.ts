@@ -28,6 +28,7 @@ export const BUILTIN_SLASH_COMMANDS = [
   "/drop",
   "/mode",
   "/copy",
+  "/run",
   "/update",
 ] as const;
 
@@ -81,7 +82,11 @@ export class CommandRouter {
       }
     }
 
-    if (trimmed.startsWith("!") || trimmed.startsWith("/run")) {
+    if (
+      trimmed.startsWith("!") ||
+      trimmed === "/run" ||
+      trimmed.startsWith("/run ")
+    ) {
       const wasActive = useFullscreenTui && tui.isActive;
       if (wasActive) tui.stop();
 
@@ -234,7 +239,7 @@ export class CommandRouter {
             `    ${picocolors.green("/exit")} / ${picocolors.green("/quit")}     - 安全退出交互式终端`,
             "",
             picocolors.bold(picocolors.cyan("  [ 系统控制 (System) ]")),
-            `    ${picocolors.green("!<cmd>")}            - 直接执行系统原生 Shell 命令 (例如: !git diff)`,
+            `    ${picocolors.green("!<cmd>")} / ${picocolors.green("/run")} ${picocolors.cyan("<cmd>")} - 直接执行系统原生 Shell 命令 (例如: !git diff)`,
             "",
           ].join("\n");
         } else {
@@ -267,7 +272,7 @@ export class CommandRouter {
             `    ${picocolors.green("/exit")} / ${picocolors.green("/quit")}     - Terminate the interactive session`,
             "",
             picocolors.bold(picocolors.cyan("  [ Direct Shell Execution ]")),
-            `    ${picocolors.green("!<cmd>")}            - Run a raw shell command directly on the host machine (e.g. !git status)`,
+            `    ${picocolors.green("!<cmd>")} / ${picocolors.green("/run")} ${picocolors.cyan("<cmd>")} - Run a raw shell command directly on the host machine (e.g. !git status)`,
             "",
           ].join("\n");
         }
@@ -859,6 +864,16 @@ export class CommandRouter {
                   value: "deepseek-v4-pro",
                   label: "deepseek-v4-pro (DeepSeek-V4 / Advanced & Pro)",
                 },
+                {
+                  value: "deepseek-ai/DeepSeek-V4-Flash-DSpark",
+                  label:
+                    "deepseek-ai/DeepSeek-V4-Flash-DSpark (self-hosted DSpark Flash)",
+                },
+                {
+                  value: "deepseek-ai/DeepSeek-V4-Pro-DSpark",
+                  label:
+                    "deepseek-ai/DeepSeek-V4-Pro-DSpark (self-hosted DSpark Pro)",
+                },
               ];
             } else if (providerId === "ollama") {
               modelOptions = [
@@ -875,6 +890,16 @@ export class CommandRouter {
                 {
                   value: "deepseek-v4-pro",
                   label: "deepseek-v4-pro (DeepSeek-V4 / Advanced & Pro)",
+                },
+                {
+                  value: "deepseek-ai/DeepSeek-V4-Flash-DSpark",
+                  label:
+                    "deepseek-ai/DeepSeek-V4-Flash-DSpark (OpenAI-compatible DSpark)",
+                },
+                {
+                  value: "deepseek-ai/DeepSeek-V4-Pro-DSpark",
+                  label:
+                    "deepseek-ai/DeepSeek-V4-Pro-DSpark (OpenAI-compatible DSpark)",
                 },
                 { value: "gpt-4o", label: "gpt-4o (GPT-4o)" },
                 {

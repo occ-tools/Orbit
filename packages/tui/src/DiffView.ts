@@ -116,11 +116,6 @@ export class DiffView {
     after: string,
   ): string {
     const output: string[] = [];
-    const columns = process.stdout.columns || 80;
-    const width = Math.min(100, Math.max(40, columns - 4));
-    const headerPrefix = "── Diff: ";
-    const headerLength = headerPrefix.length + filePath.length + 1; // plus space
-    const remaining = Math.max(5, width - 2 - headerLength);
     output.push(
       picocolors.gray(
         "--- Diff: " +

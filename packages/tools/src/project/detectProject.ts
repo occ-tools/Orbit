@@ -81,7 +81,7 @@ export class DetectProjectTool implements OrbitTool<any, ProjectIndex> {
             if (pkg.scripts.build)
               buildCommands.push(`${packageManager} run build`);
           }
-        } catch (e) {
+        } catch {
           // Ignored
         }
       }

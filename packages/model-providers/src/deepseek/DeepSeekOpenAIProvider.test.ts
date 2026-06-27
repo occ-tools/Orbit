@@ -99,7 +99,9 @@ describe("DeepSeekOpenAIProvider messages mapping", () => {
       stream: false
     };
 
-    for await (const _ of provider.chat(input)) {}
+    for await (const event of provider.chat(input)) {
+      void event;
+    }
 
     expect(global.fetch).toHaveBeenCalled();
     const postCall = (global.fetch as any).mock.calls.find((call: any) => call[1]?.method === "POST");

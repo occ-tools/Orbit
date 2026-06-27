@@ -35,6 +35,22 @@ importers:
 
   packages/cli:
     dependencies:
+      commander:
+        specifier: ^12.1.0
+        version: 12.1.0
+      fast-glob:
+        specifier: ^3.3.2
+        version: 3.3.3
+      picocolors:
+        specifier: ^1.0.1
+        version: 1.1.1
+      yaml:
+        specifier: ^2.4.5
+        version: 2.9.0
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
       '@orbit-build/config':
         specifier: workspace:*
         version: link:../config
@@ -56,21 +72,6 @@ importers:
       '@orbit-build/tui':
         specifier: workspace:*
         version: link:../tui
-      commander:
-        specifier: ^12.1.0
-        version: 12.1.0
-      fast-glob:
-        specifier: ^3.3.2
-        version: 3.3.3
-      picocolors:
-        specifier: ^1.0.1
-        version: 1.1.1
-      yaml:
-        specifier: ^2.4.5
-        version: 2.9.0
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
 
   packages/config:
     dependencies:

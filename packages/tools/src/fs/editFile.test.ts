@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { writeFileSync, readFileSync, rmSync, mkdirSync, existsSync } from "fs";
+import { writeFileSync, readFileSync, rmSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { EditFileTool } from "./editFile.js";

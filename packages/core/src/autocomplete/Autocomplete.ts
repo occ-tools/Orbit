@@ -286,7 +286,7 @@ export class AutocompleteEngine {
             const completed = await cloudPromise;
             resolve(completed);
           }
-        } catch (e: any) {
+        } catch {
           resolve("");
         } finally {
           if (this.activeRequests.get(windowId) === controller) {

@@ -134,7 +134,8 @@ export class HybridSearch {
     return sortedIds.map(([docId, rrfScore]) => {
       const doc = docMap.get(docId)!;
       // We strip the vector from the returned results to reduce size
-      const { vector, ...cleanDoc } = doc;
+      const cleanDoc = { ...doc };
+      delete cleanDoc.vector;
       return {
         ...cleanDoc,
         hybridScore: rrfScore,

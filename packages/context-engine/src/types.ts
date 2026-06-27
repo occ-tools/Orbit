@@ -8,6 +8,7 @@ export interface ContextPack {
     reason: string;
     summary?: string;
     excerpt?: string;
+    readOnly?: boolean;
   }>;
   recentChanges: string;
   currentDiff: string;

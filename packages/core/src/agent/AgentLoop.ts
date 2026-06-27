@@ -18,6 +18,10 @@ import { StatusBar, Prompt, Renderer } from "@orbit-build/tui";
 import { AgentState, createInitialState } from "./AgentState.js";
 import { z } from "zod";
 import { MessageBuilder } from "./MessageBuilder.js";
+import {
+  PromptCacheSlab,
+  PromptCacheSlabBuilder,
+} from "./PromptCacheSlab.js";
 import { StepRunner } from "./StepRunner.js";
 import { Planner } from "./Planner.js";
 import { eventBus } from "../events/EventBus.js";
@@ -31,6 +35,10 @@ const execPromise = promisify(exec);
 import { MCPClient, DynamicMCPTool } from "@orbit-build/mcp";
 import { resolveSafePath } from "@orbit-build/shared";
 import { VerificationContractManager } from "../verification/VerificationContractManager.js";
+
+const DEEPSEEK_CACHE_PRIMER_ROUNDS = 2;
+const DEEPSEEK_CACHE_PRIMER_TTL_MS = 240000;
+const DEEPSEEK_CACHE_REPAIR_HIT_RATE = 0.85;
 
 export interface UserInteraction {
   askApproval(reason: string, preview?: string): Promise<boolean>;
@@ -64,6 +72,7 @@ export class AgentLoop {
   private cachedContextPack: ContextPack | null = null;
   private cachedRepoMapTextForRun: string | null = null;
   private activeModelForRun: string | null = null;
+  private primedCacheSlabs = new Set<string>();
   private userId: string;
   private keepaliveTimer: NodeJS.Timeout | null = null;
   private lastChatParams: {
@@ -446,19 +455,28 @@ export class AgentLoop {
           }
           toolDefs.sort((a, b) => a.name.localeCompare(b.name));
 
-          // System prompt layering for optimal DeepSeek prefix cache:
-          // Layer 1 (stable across turns): core rules + tool schemas
-          // Layer 2 (semi-stable): repo map (cached by mtime)
-          // Layer 3 (dynamic): RAG context + file excerpts (in MessageBuilder)
-          let systemPrompt =
+          // DeepSeek cache-first layering:
+          // Stable slab: core rules + canonical tool prompt + repo profile/map.
+          // Volatile suffix: RAG snippets, selected file excerpts, current history.
+          const baseSystemPrompt =
             (this.options?.systemPromptOverride ||
               Planner.makeSystemPrompt(activeModel));
-          systemPrompt += generateXMLToolsPrompt(toolDefs);
-          systemPrompt += repoMapText;
-
+          const toolsPrompt = generateXMLToolsPrompt(toolDefs);
           const contextPack = this.cachedContextPack;
+          const cacheSlab = PromptCacheSlabBuilder.build({
+            cwd: this.cwd,
+            model: activeModel,
+            baseSystemPrompt,
+            toolsPrompt,
+            repoMapText,
+            contextPack,
+          });
+          const cachePrimer = await this.primeDeepSeekCache(
+            activeModel,
+            cacheSlab,
+          );
           const { system, messages } = MessageBuilder.build(
-            systemPrompt,
+            cacheSlab.text,
             this.state,
             contextPack,
           );
@@ -536,6 +554,12 @@ export class AgentLoop {
               } else if (event.type === "usage") {
                 this.accumulateCost(activeModel, event.usage);
                 finalUsage = event.usage;
+                this.emitCacheTelemetry(
+                  activeModel,
+                  cacheSlab,
+                  event.usage,
+                  cachePrimer.primed,
+                );
               } else if (event.type === "tool_call") {
                 toolCallsToExecute.push(event.toolCall);
               } else if (event.type === "error") {
@@ -1236,11 +1260,10 @@ ${errLog}`;
               }
             }
 
-            let hasGitCheckpoint = false;
             if (tc.name === "bash" || tc.name === "run_tests") {
               const isGit = await this.isGitRepo();
               if (isGit) {
-                hasGitCheckpoint = await this.createGitCheckpoint(tc.id);
+                await this.createGitCheckpoint(tc.id);
               }
             }
 
@@ -1376,7 +1399,7 @@ ${errLog}`;
                     cwd: this.cwd,
                   });
                 }
-              } catch (err) {
+              } catch {
                 // Ignore formatting failures
               }
 
@@ -1400,17 +1423,20 @@ ${errLog}`;
                   await execPromise(lintCmd, { cwd: this.cwd });
                   this.interaction.showText(`✔ Syntax verification passed.`);
                 } catch (err: any) {
+                  let lintError = err;
                   this.interaction.showText(
                     picocolors.yellow(
                       `⚠ Syntax/Lint validation warning for ${targetPath}:`,
                     ),
                   );
                   this.interaction.showText(
-                    picocolors.red(err.stdout || err.stderr || err.message),
+                    picocolors.red(
+                      lintError.stdout || lintError.stderr || lintError.message,
+                    ),
                   );
 
                   let checkPassedAfterAutoInstall = false;
-                  const outputText = err.stdout || err.stderr || "";
+                  const outputText = lintError.stdout || lintError.stderr || "";
 
                   try {
                     const missingModules: string[] = [];
@@ -1491,7 +1517,7 @@ ${errLog}`;
                           );
                           checkPassedAfterAutoInstall = true;
                         } catch (recheckErr: any) {
-                          err = recheckErr;
+                          lintError = recheckErr;
                         }
                       }
                     }
@@ -1503,7 +1529,8 @@ ${errLog}`;
                   if (!checkPassedAfterAutoInstall) {
                     try {
                       const missingSymbols: string[] = [];
-                      const currentOutput = err.stdout || err.stderr || "";
+                      const currentOutput =
+                        lintError.stdout || lintError.stderr || "";
                       const match1 = [
                         ...currentOutput.matchAll(/'([^']+)' is not defined/g),
                       ];
@@ -1529,7 +1556,7 @@ ${errLog}`;
                           const raw = fs.readFileSync(indexPath, "utf8");
                           const index = JSON.parse(raw);
                           if (index.files && typeof index.files === "object") {
-                            let fileContent = fs.readFileSync(
+                            const fileContent = fs.readFileSync(
                               targetPath,
                               "utf8",
                             );
@@ -1630,7 +1657,7 @@ ${errLog}`;
                     if (autoFix) {
                       finalResult = {
                         ok: false,
-                        error: `Syntax or Lint verification failed on file edit: ${err.stdout || err.stderr || err.message}. Please fix the syntax/import errors.`,
+                        error: `Syntax or Lint verification failed on file edit: ${lintError.stdout || lintError.stderr || lintError.message}. Please fix the syntax/import errors.`,
                       };
                     }
                   }
@@ -2568,6 +2595,178 @@ ${errLog}`;
     }
   }
 
+  private isDeepSeekCacheProvider(model?: string): boolean {
+    const providerId = this.provider.id?.toLowerCase?.() || "";
+    const configuredProvider =
+      this.config.provider?.default?.toLowerCase?.() || "";
+    const providerConfig = this.config.providers?.[configuredProvider];
+    const providerType = providerConfig?.type || this.provider.type || "";
+    const modelName = model?.toLowerCase?.() || "";
+    const isCompatibleProvider =
+      providerType === "openai-compatible" ||
+      providerType === "anthropic-compatible" ||
+      (providerId !== "openai" && providerId !== "anthropic");
+    return (
+      providerId.includes("deepseek") ||
+      configuredProvider.includes("deepseek") ||
+      (isCompatibleProvider &&
+        (modelName.includes("deepseek") || modelName.includes("dspark")))
+    );
+  }
+
+  private async primeDeepSeekCache(
+    model: string,
+    slab: PromptCacheSlab,
+  ): Promise<{ primed: boolean }> {
+    if (!this.isDeepSeekCacheProvider(model)) {
+      return { primed: false };
+    }
+    if (this.primedCacheSlabs.has(slab.hash)) {
+      return { primed: false };
+    }
+
+    const lastPrimedAt = slab.lastPrimedAt ? Date.parse(slab.lastPrimedAt) : 0;
+    if (
+      lastPrimedAt &&
+      Date.now() - lastPrimedAt < DEEPSEEK_CACHE_PRIMER_TTL_MS
+    ) {
+      this.primedCacheSlabs.add(slab.hash);
+      return { primed: false };
+    }
+
+    const rounds = DEEPSEEK_CACHE_PRIMER_ROUNDS;
+    this.interaction.showText(
+      `● Priming DeepSeek cache slab ${slab.hash.slice(0, 8)} (${slab.tokenEstimate} tokens, ${rounds} rounds)...`,
+    );
+    const primed = await this.runDeepSeekCachePrimers(model, slab, rounds);
+    if (primed) {
+      PromptCacheSlabBuilder.markPrimed(slab);
+      this.primedCacheSlabs.add(slab.hash);
+      eventBus.emitEvent("cache_update", {
+        slabHash: slab.hash,
+        slabTokenEstimate: slab.tokenEstimate,
+        primed: true,
+        hitTokens: 0,
+        missTokens: 0,
+        inputTokens: 0,
+        hitRate: 0,
+        degraded: false,
+      });
+    }
+    return { primed };
+  }
+
+  private async runDeepSeekCachePrimers(
+    model: string,
+    slab: PromptCacheSlab,
+    rounds: number,
+  ): Promise<boolean> {
+    try {
+      for (let round = 0; round < rounds; round++) {
+        const primerText = round % 2 === 0 ? "0" : "1";
+        const primerStream = this.provider.chat({
+          model,
+          system: slab.text,
+          messages: [
+            {
+              id: `msg_cache_primer_${Date.now()}_${round}`,
+              role: "user",
+              createdAt: new Date().toISOString(),
+              content: [
+                {
+                  type: "text",
+                  text: primerText,
+                },
+              ],
+            },
+          ],
+          tools: [],
+          stream: false,
+          maxTokens: 1,
+        });
+
+        for await (const event of primerStream) {
+          if (event.type === "usage") {
+            this.accumulateCost(model, event.usage);
+          }
+        }
+      }
+      return true;
+    } catch (err: any) {
+      this.interaction.showText(
+        picocolors.yellow(
+          `⚠ DeepSeek cache primer skipped: ${err.message || String(err)}`,
+        ),
+      );
+      return false;
+    }
+  }
+
+  private emitCacheTelemetry(
+    model: string,
+    slab: PromptCacheSlab,
+    usage: {
+      inputTokens?: number;
+      cacheReadTokens?: number;
+      cacheMissTokens?: number;
+    },
+    primed: boolean,
+  ): void {
+    const inputTokens = usage.inputTokens || 0;
+    const hitTokens = usage.cacheReadTokens || 0;
+    const explicitMiss = usage.cacheMissTokens;
+    const missTokens =
+      explicitMiss !== undefined
+        ? explicitMiss
+        : Math.max(0, inputTokens - hitTokens);
+    const hitRate = inputTokens > 0 ? hitTokens / inputTokens : 0;
+    const degraded =
+      inputTokens >= Math.min(1024, Math.max(256, slab.tokenEstimate / 2)) &&
+      hitRate < DEEPSEEK_CACHE_REPAIR_HIT_RATE;
+
+    eventBus.emitEvent("cache_update", {
+      slabHash: slab.hash,
+      slabTokenEstimate: slab.tokenEstimate,
+      primed,
+      hitTokens,
+      missTokens,
+      inputTokens,
+      hitRate,
+      degraded,
+    });
+
+    if (degraded) {
+      this.interaction.showText(
+        picocolors.yellow(
+          `⚠ DeepSeek cache hit degraded for slab ${slab.hash.slice(0, 8)}: ${(hitRate * 100).toFixed(0)}% hit (${hitTokens}/${inputTokens} tokens).`,
+        ),
+      );
+      if (!primed) {
+        void this.repairDeepSeekCache(model, slab);
+      }
+    }
+  }
+
+  private async repairDeepSeekCache(
+    model: string,
+    slab: PromptCacheSlab,
+  ): Promise<void> {
+    if (!this.isDeepSeekCacheProvider(model)) return;
+    try {
+      const primed = await this.runDeepSeekCachePrimers(
+        model,
+        slab,
+        DEEPSEEK_CACHE_PRIMER_ROUNDS,
+      );
+      if (primed) {
+        PromptCacheSlabBuilder.markPrimed(slab);
+        this.primedCacheSlabs.add(slab.hash);
+      }
+    } catch {
+      // Background cache repair must never affect the visible answer.
+    }
+  }
+
   private async createGitCheckpoint(toolCallId: string): Promise<boolean> {
     try {
       const isGit = await this.isGitRepo();
@@ -2697,7 +2896,8 @@ ${errLog}`;
         });
 
         // Consume generator stream to trigger call
-        for await (const _ of pingStream) {
+        for await (const event of pingStream) {
+          void event;
           // No-op
         }
       } catch (err: any) {
@@ -2869,7 +3069,7 @@ function parseSearchReplaceBlocks(
 }
 
 function cleanAndTruncateTestLog(log: string): string {
-  let cleaned = log
+  const cleaned = log
     .replace(/\u001b\[\d+(;\d+)*m/g, "")
     .replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "");
   const lines = cleaned.split(/\r?\n/);

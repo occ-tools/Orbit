@@ -91,7 +91,7 @@ export class RunTestsTool implements OrbitTool<
           if (existsSync(join(cwd, "yarn.lock"))) return "yarn test";
           return "npm test";
         }
-      } catch (e) {
+      } catch {
         // Fallback
       }
       return "npm test";

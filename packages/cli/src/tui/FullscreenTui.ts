@@ -2740,6 +2740,7 @@ export class FullscreenTui {
           ? {
               "/help": "查看系统命令的详细帮助与指南",
               "/status": "实时诊断当前会话的健康与资源状态",
+              "/doctor": "全面检查运行环境、模型、联网、skills 与安全配置",
               "/config": "查看与修改本地/全局的运行配置参数",
               "/model": "动态切换正在使用的 AI 语言大模型",
               "/chat": "会话管理器 (支持子命令: list, new, delete, switch)",
@@ -2764,6 +2765,8 @@ export class FullscreenTui {
           : {
               "/help": "Display detailed help and commands reference",
               "/status": "Diagnose session health, token usage, and limits",
+              "/doctor":
+                "Inspect runtime, models, web, skills, and safety config",
               "/config": "View and edit local or global configuration",
               "/model": "Switch the active language model dynamically",
               "/chat":

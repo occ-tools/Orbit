@@ -111,6 +111,40 @@ describe("CommandRouter Unit Tests", () => {
     expect(result.shouldExit).toBe(false);
   });
 
+  it("routes command output through fullscreen TUI when active", async () => {
+    const addSystemMessage = vi.fn();
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const tui = {
+      ...mockTui,
+      isActive: true,
+      addSystemMessage,
+    };
+    const router = new CommandRouter(
+      "/dummy/cwd",
+      mockConfig,
+      mockProvider,
+      vi.fn(),
+      mockLoop as any,
+      tui as any,
+      true,
+      () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+      vi.fn(),
+      () => localState,
+      vi.fn(),
+      mockInteraction as any,
+      false,
+    );
+
+    const result = await router.route("/exit");
+
+    expect(result).toEqual({ shouldExit: true, processed: true });
+    expect(addSystemMessage).toHaveBeenCalledWith(
+      expect.stringContaining("Exiting"),
+      false,
+    );
+    expect(consoleLog).not.toHaveBeenCalled();
+  });
+
   it("keeps the /chat picker open after deleting a session", async () => {
     let sessions = [
       {

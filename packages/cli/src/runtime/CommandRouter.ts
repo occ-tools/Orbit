@@ -17,12 +17,14 @@ import {
   getProviderModelCandidates,
 } from "./ModelCatalog.js";
 import { createRequire } from "module";
+import { buildDoctorReport } from "../commands/doctor.js";
 
 const require = createRequire(import.meta.url);
 
 export const BUILTIN_SLASH_COMMANDS = [
   "/help",
   "/status",
+  "/doctor",
   "/config",
   "/model",
   "/chat",
@@ -208,7 +210,7 @@ export class CommandRouter {
       const command = parts[0].toLowerCase();
 
       if (command === "/exit" || command === "/quit") {
-        console.log(
+        this.printOutput(
           picocolors.yellow("Exiting Orbit Interactive Shell. Goodbye!"),
         );
         return { shouldExit: true, processed: true };
@@ -232,6 +234,7 @@ export class CommandRouter {
             "",
             picocolors.bold(picocolors.yellow("[ 配置与状态 (Settings) ]")),
             `  ${picocolors.green("/status")}           - 诊断并展示当前会话、模型与消耗`,
+            `  ${picocolors.green("/doctor")}           - 全面诊断运行环境、模型、联网、skills 与安全配置`,
             `  ${picocolors.green("/config")}   ${picocolors.cyan("[k=v]")}    - 查看或直接修改配置参数`,
             `  ${picocolors.green("/model")}    ${picocolors.cyan("[name]")}   - 动态查询或切换正在使用的语言大模型`,
             `  ${picocolors.green("/mode")}     ${picocolors.cyan("[mode]")}   - 切换安全确认模式 (strict, normal, auto, plan)`,
@@ -259,6 +262,7 @@ export class CommandRouter {
             "",
             picocolors.bold(picocolors.yellow("[ Configuration & Status ]")),
             `  ${picocolors.green("/status")}           - Show current session, model, and cost`,
+            `  ${picocolors.green("/doctor")}           - Diagnose runtime, models, web, skills, and safety config`,
             `  ${picocolors.green("/config")}   ${picocolors.cyan("[k=v]")}    - View or modify configurations`,
             `  ${picocolors.green("/model")}    ${picocolors.cyan("[name]")}   - Show or switch active model`,
             `  ${picocolors.green("/mode")}     ${picocolors.cyan("[mode]")}   - Switch permission mode (strict, normal, auto, plan)`,
@@ -304,7 +308,7 @@ export class CommandRouter {
           .map((l) => l.trim())
           .filter(Boolean);
         if (lines.length === 0) {
-          console.log(
+          this.printOutput(
             isZh
               ? picocolors.yellow("当前工作区没有检测到任何未提交的代码变更。")
               : picocolors.yellow(
@@ -372,7 +376,7 @@ export class CommandRouter {
                   }
                 }
               }
-              console.log(
+              this.printOutput(
                 isZh
                   ? picocolors.green(
                       `✔ 成功回滚以下文件的变更: ${selected.join(", ")}`,
@@ -383,14 +387,14 @@ export class CommandRouter {
               );
             }
           } else {
-            console.log(
+            this.printOutput(
               isZh
                 ? picocolors.yellow("未选择任何文件。")
                 : picocolors.yellow("No files selected."),
             );
           }
         } catch (err: any) {
-          console.log(
+          this.printOutput(
             isZh
               ? picocolors.red(`回滚操作失败: ${err.message}`)
               : picocolors.red(`Rollback operation failed: ${err.message}`),
@@ -409,7 +413,7 @@ export class CommandRouter {
         // 1. Check if package.json exists
         const packageJsonPath = join(cwd, "package.json");
         if (!existsSync(packageJsonPath)) {
-          console.log(
+          this.printOutput(
             isZh
               ? picocolors.yellow(
                   "当前工作区没有检测到 package.json，不支持 npm 更新。",
@@ -513,6 +517,11 @@ export class CommandRouter {
             ];
 
         this.printOutput(statusLines.join("\n"));
+        return { shouldExit: false, processed: true };
+      }
+
+      if (command === "/doctor") {
+        this.printOutput(buildDoctorReport(cwd, loop.getConfig()));
         return { shouldExit: false, processed: true };
       }
 
@@ -722,11 +731,11 @@ export class CommandRouter {
                 const parseResult = ConfigSchema.safeParse(testConfig);
                 if (parseResult.success) {
                   this.setNestedProperty(activeConfig, choice, boolVal);
-                  console.log(
+                  this.printOutput(
                     picocolors.green(`✔ Updated "${choice}" to: ${boolVal}`),
                   );
                 } else {
-                  console.log(
+                  this.printOutput(
                     picocolors.red(
                       `Validation error: ${parseResult.error.message}`,
                     ),
@@ -763,11 +772,11 @@ export class CommandRouter {
                 const parseResult = ConfigSchema.safeParse(testConfig);
                 if (parseResult.success) {
                   this.setNestedProperty(activeConfig, choice, nextVal);
-                  console.log(
+                  this.printOutput(
                     picocolors.green(`✔ Updated "${choice}" to: ${nextVal}`),
                   );
                 } else {
-                  console.log(
+                  this.printOutput(
                     picocolors.red(
                       `Validation error: ${parseResult.error.message}`,
                     ),
@@ -807,11 +816,11 @@ export class CommandRouter {
                 const parseResult = ConfigSchema.safeParse(testConfig);
                 if (parseResult.success) {
                   this.setNestedProperty(activeConfig, choice, nextVal);
-                  console.log(
+                  this.printOutput(
                     picocolors.green(`✔ Updated "${choice}" to: ${nextVal}`),
                   );
                 } else {
-                  console.log(
+                  this.printOutput(
                     picocolors.red(
                       `Validation error: ${parseResult.error.message}`,
                     ),
@@ -826,7 +835,7 @@ export class CommandRouter {
               if (nextValStr !== null && nextValStr !== "") {
                 const numVal = Number(nextValStr);
                 if (isNaN(numVal)) {
-                  console.log(
+                  this.printOutput(
                     picocolors.red(
                       "Error: budgetLimit must be a valid number.",
                     ),
@@ -837,11 +846,11 @@ export class CommandRouter {
                   const parseResult = ConfigSchema.safeParse(testConfig);
                   if (parseResult.success) {
                     this.setNestedProperty(activeConfig, choice, numVal);
-                    console.log(
+                    this.printOutput(
                       picocolors.green(`✔ Updated "${choice}" to: ${numVal}`),
                     );
                   } else {
-                    console.log(
+                    this.printOutput(
                       picocolors.red(
                         `Validation error: ${parseResult.error.message}`,
                       ),
@@ -864,13 +873,13 @@ export class CommandRouter {
                 const parseResult = ConfigSchema.safeParse(testConfig);
                 if (parseResult.success) {
                   this.setNestedProperty(activeConfig, choice, arrVal);
-                  console.log(
+                  this.printOutput(
                     picocolors.green(
                       `✔ Updated "${choice}" to: [${arrVal.join(", ")}]`,
                     ),
                   );
                 } else {
-                  console.log(
+                  this.printOutput(
                     picocolors.red(
                       `Validation error: ${parseResult.error.message}`,
                     ),
@@ -891,11 +900,11 @@ export class CommandRouter {
                 const parseResult = ConfigSchema.safeParse(testConfig);
                 if (parseResult.success) {
                   this.setNestedProperty(activeConfig, choice, nextValStr);
-                  console.log(
+                  this.printOutput(
                     picocolors.green(`✔ Updated "${choice}" to: ${nextValStr}`),
                   );
                 } else {
-                  console.log(
+                  this.printOutput(
                     picocolors.red(
                       `Validation error: ${parseResult.error.message}`,
                     ),
@@ -997,7 +1006,7 @@ export class CommandRouter {
               .toString()
               .trim();
             if (!unstaged) {
-              console.log(
+              this.printOutput(
                 picocolors.yellow(
                   isZh
                     ? "工作区干净，没有检测到任何已暂存或未暂存的更改。"
@@ -1019,7 +1028,7 @@ export class CommandRouter {
             if (wasActive) tui.start(config.budgetLimit);
 
             if (!autoStage) {
-              console.log(
+              this.printOutput(
                 picocolors.yellow(
                   isZh
                     ? "操作已取消。请先运行 'git add' 暂存你的修改。"
@@ -1029,13 +1038,13 @@ export class CommandRouter {
               return { shouldExit: false, processed: true };
             }
 
-            console.log(
+            this.printOutput(
               isZh ? "正在暂存所有变更..." : "Staging all changes...",
             );
             execSync("git add -A", { cwd });
             diff = execSync("git diff --cached", { cwd }).toString().trim();
             if (!diff) {
-              console.log(
+              this.printOutput(
                 picocolors.red(
                   isZh
                     ? "✖ 暂存失败或暂存后仍无变更。"
@@ -1048,7 +1057,7 @@ export class CommandRouter {
 
           let finalMsg = commitMsg;
           if (!finalMsg) {
-            console.log("Generating commit message via LLM...");
+            this.printOutput("Generating commit message via LLM...");
             const fastModel = config.models.fast || config.models.default;
             const stream = this.providerInstance.chat({
               model: fastModel,
@@ -1080,14 +1089,16 @@ export class CommandRouter {
             }
           }
 
-          console.log(
+          this.printOutput(
             `Committing changes with message: "${picocolors.green(finalMsg)}"`,
           );
           const commitCmd = `git commit -m ${JSON.stringify(finalMsg)}`;
           execSync(commitCmd, { cwd });
-          console.log(picocolors.green("✔ Git commit created successfully."));
+          this.printOutput(
+            picocolors.green("✔ Git commit created successfully."),
+          );
         } catch (err: any) {
-          console.log(picocolors.red(`✖ Commit failed: ${err.message}`));
+          this.printOutput(picocolors.red(`✖ Commit failed: ${err.message}`));
         }
         return { shouldExit: false, processed: true };
       }
@@ -1126,7 +1137,7 @@ export class CommandRouter {
               !candidates.files ||
               candidates.files.length === 0
             ) {
-              console.log(
+              this.printOutput(
                 isZh
                   ? picocolors.yellow("工作区未找到可添加的文件。")
                   : picocolors.yellow(
@@ -1141,7 +1152,7 @@ export class CommandRouter {
               );
 
               if (filterQuery === null) {
-                console.log(
+                this.printOutput(
                   isZh
                     ? picocolors.yellow("操作已取消。")
                     : picocolors.yellow("Operation cancelled."),
@@ -1158,7 +1169,7 @@ export class CommandRouter {
               }
 
               if (filtered.length === 0) {
-                console.log(
+                this.printOutput(
                   isZh
                     ? picocolors.yellow("未找到匹配过滤词的文件。")
                     : picocolors.yellow("No matching files found."),
@@ -1192,7 +1203,7 @@ export class CommandRouter {
                       );
                     }
                   }
-                  console.log(
+                  this.printOutput(
                     isZh
                       ? readOnly
                         ? picocolors.green(
@@ -1210,7 +1221,7 @@ export class CommandRouter {
                           ),
                   );
                 } else {
-                  console.log(
+                  this.printOutput(
                     isZh
                       ? picocolors.yellow("未选择任何文件。")
                       : picocolors.yellow("No files selected."),
@@ -1219,7 +1230,7 @@ export class CommandRouter {
               }
             }
           } catch (err: any) {
-            console.log(
+            this.printOutput(
               isZh
                 ? picocolors.red(`选择文件失败: ${err.message}`)
                 : picocolors.red(`Failed to select files: ${err.message}`),
@@ -1261,7 +1272,7 @@ export class CommandRouter {
                   loop.addRelevantFilePublic(f, "Matched via glob /add");
                 }
               }
-              console.log(
+              this.printOutput(
                 isZh
                   ? readOnly
                     ? picocolors.green(
@@ -1280,7 +1291,7 @@ export class CommandRouter {
               );
               tui.syncFromLoop(loop);
             } else {
-              console.log(
+              this.printOutput(
                 isZh
                   ? picocolors.yellow(
                       `没有找到匹配通配符 "${fileArg}" 的文件。`,
@@ -1304,7 +1315,7 @@ export class CommandRouter {
                 matched[0],
                 "Fuzzy matched via /add --read-only",
               );
-              console.log(
+              this.printOutput(
                 isZh
                   ? picocolors.green(`✔ 自动匹配并添加只读文件: ${matched[0]}`)
                   : picocolors.green(
@@ -1313,7 +1324,7 @@ export class CommandRouter {
               );
             } else {
               loop.addRelevantFilePublic(matched[0], "Fuzzy matched via /add");
-              console.log(
+              this.printOutput(
                 isZh
                   ? picocolors.green(`✔ 自动匹配并添加文件: ${matched[0]}`)
                   : picocolors.green(
@@ -1324,7 +1335,7 @@ export class CommandRouter {
             tui.syncFromLoop(loop);
             return { shouldExit: false, processed: true };
           } else if (matched.length > 1) {
-            console.log(
+            this.printOutput(
               isZh
                 ? picocolors.yellow(
                     `找到多个匹配文件，请精确输入路径或使用无参交互选择:\n${matched.map((m: string) => `  • ${m}`).join("\n")}`,
@@ -1335,7 +1346,7 @@ export class CommandRouter {
             );
             return { shouldExit: false, processed: true };
           }
-          console.log(
+          this.printOutput(
             isZh
               ? picocolors.red(`文件不存在: ${fileArg}`)
               : picocolors.red(`File does not exist: ${fileArg}`),
@@ -1365,7 +1376,7 @@ export class CommandRouter {
                 );
               }
             }
-            console.log(
+            this.printOutput(
               isZh
                 ? readOnly
                   ? picocolors.green(
@@ -1388,7 +1399,7 @@ export class CommandRouter {
                 relPath,
                 "Manually added file via /add --read-only",
               );
-              console.log(
+              this.printOutput(
                 isZh
                   ? picocolors.green(`✔ 已将只读文件 ${relPath} 添加到上下文。`)
                   : picocolors.green(
@@ -1400,7 +1411,7 @@ export class CommandRouter {
                 relPath,
                 "Manually added file via /add",
               );
-              console.log(
+              this.printOutput(
                 isZh
                   ? picocolors.green(`✔ 已将 ${relPath} 添加到上下文。`)
                   : picocolors.green(`✔ Added ${relPath} to active context.`),
@@ -1409,7 +1420,7 @@ export class CommandRouter {
           }
           tui.syncFromLoop(loop);
         } catch (err: any) {
-          console.log(
+          this.printOutput(
             isZh
               ? picocolors.red(`添加失败: ${err.message}`)
               : picocolors.red(`Failed to add: ${err.message}`),
@@ -1428,7 +1439,7 @@ export class CommandRouter {
           try {
             const activeFiles = loop.getRelevantFiles();
             if (activeFiles.length === 0) {
-              console.log(
+              this.printOutput(
                 isZh
                   ? picocolors.yellow("当前活动上下文为空，无可移除的文件。")
                   : picocolors.yellow(
@@ -1450,7 +1461,7 @@ export class CommandRouter {
                 for (const f of selected) {
                   loop.removeRelevantFilePublic(f);
                 }
-                console.log(
+                this.printOutput(
                   isZh
                     ? picocolors.green(
                         `✔ 成功从上下文中移除 ${selected.length} 个文件。`,
@@ -1460,7 +1471,7 @@ export class CommandRouter {
                       ),
                 );
               } else {
-                console.log(
+                this.printOutput(
                   isZh
                     ? picocolors.yellow("未选择任何文件。")
                     : picocolors.yellow("No files selected."),
@@ -1468,7 +1479,7 @@ export class CommandRouter {
               }
             }
           } catch (err: any) {
-            console.log(
+            this.printOutput(
               isZh
                 ? picocolors.red(`移除文件失败: ${err.message}`)
                 : picocolors.red(`Failed to remove files: ${err.message}`),
@@ -1483,7 +1494,7 @@ export class CommandRouter {
         if (fileArg === "all" || fileArg === "*") {
           loop.clearRelevantFilesPublic();
           tui.syncFromLoop(loop);
-          console.log(
+          this.printOutput(
             isZh
               ? picocolors.green(`✔ 已从上下文中清空所有文件。`)
               : picocolors.green(`✔ Cleared all files from active context.`),
@@ -1523,7 +1534,7 @@ export class CommandRouter {
         const afterCount = loop.getRelevantFiles().length;
         const droppedCount = beforeCount - afterCount;
         if (droppedCount > 0) {
-          console.log(
+          this.printOutput(
             isZh
               ? picocolors.green(
                   `✔ 从上下文中成功移除 ${droppedCount} 个文件。`,
@@ -1533,7 +1544,7 @@ export class CommandRouter {
                 ),
           );
         } else {
-          console.log(
+          this.printOutput(
             isZh
               ? picocolors.yellow(`上下文中未找到匹配 "${fileArg}" 的文件。`)
               : picocolors.yellow(
@@ -2028,7 +2039,7 @@ export class CommandRouter {
               tui.syncFromLoop(loop);
             }
           } else {
-            console.log(
+            this.printOutput(
               isZh
                 ? picocolors.yellow("用法: /mode <strict|normal|auto|plan>")
                 : picocolors.yellow("Usage: /mode <strict|normal|auto|plan>"),
@@ -2082,7 +2093,7 @@ export class CommandRouter {
           .find((msg) => msg.role === "assistant");
 
         if (!lastAssistantMsg) {
-          console.log(
+          this.printOutput(
             isZh
               ? picocolors.yellow("没有找到 AI 的最近回复。")
               : picocolors.yellow(
@@ -2102,7 +2113,7 @@ export class CommandRouter {
         }
 
         if (!textToCopy) {
-          console.log(
+          this.printOutput(
             isZh
               ? picocolors.yellow("AI 的最近回复内容为空。")
               : picocolors.yellow("Recent assistant response is empty."),
@@ -2112,7 +2123,7 @@ export class CommandRouter {
 
         const copied = this.copyToClipboard(textToCopy);
         if (copied) {
-          console.log(
+          this.printOutput(
             isZh
               ? picocolors.green("✔ 已成功复制 AI 最近回复到剪贴板！")
               : picocolors.green(
@@ -2120,7 +2131,7 @@ export class CommandRouter {
                 ),
           );
         } else {
-          console.log(
+          this.printOutput(
             isZh
               ? picocolors.red(
                   "✖ 复制到剪贴板失败，系统未配置剪贴板工具（如 pbcopy/clip/xclip）。",

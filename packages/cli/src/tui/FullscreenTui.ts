@@ -141,19 +141,19 @@ export async function pageText(text: string): Promise<void> {
 
 // ─── Shared ANSI colour helpers (class-level constant, avoids recreation per render) ───
 const MORANDI = {
-  user: (s: string) => `\x1b[38;2;142;163;175m${s}\x1b[0m`,
-  userBold: (s: string) => `\x1b[1;38;2;142;163;175m${s}\x1b[0m`,
-  asst: (s: string) => `\x1b[38;2;143;153;129m${s}\x1b[0m`,
-  asstBold: (s: string) => `\x1b[1;38;2;143;153;129m${s}\x1b[0m`,
-  cyan: (s: string) => `\x1b[38;2;142;163;175m${s}\x1b[0m`,
-  accent: (s: string) => `\x1b[38;2;200;170;120m${s}\x1b[0m`,
-  completed: (s: string) => `\x1b[38;2;135;165;130m${s}\x1b[0m`,
-  failed: (s: string) => `\x1b[38;2;180;120;120m${s}\x1b[0m`,
-  warn: (s: string) => `\x1b[38;2;180;140;130m${s}\x1b[0m`,
-  white: (s: string) => `\x1b[38;2;230;225;215m${s}\x1b[0m`,
-  whiteBold: (s: string) => `\x1b[1;38;2;230;225;215m${s}\x1b[0m`,
-  gray: (s: string) => `\x1b[38;2;150;150;150m${s}\x1b[0m`,
-  dim: (s: string) => `\x1b[2;38;2;110;110;110m${s}\x1b[0m`,
+  user: (s: string) => `\x1b[38;2;158;184;196m${s}\x1b[0m`,
+  userBold: (s: string) => `\x1b[1;38;2;158;184;196m${s}\x1b[0m`,
+  asst: (s: string) => `\x1b[38;2;164;178;150m${s}\x1b[0m`,
+  asstBold: (s: string) => `\x1b[1;38;2;164;178;150m${s}\x1b[0m`,
+  cyan: (s: string) => `\x1b[38;2;158;184;196m${s}\x1b[0m`,
+  accent: (s: string) => `\x1b[38;2;224;188;124m${s}\x1b[0m`,
+  completed: (s: string) => `\x1b[38;2;152;188;146m${s}\x1b[0m`,
+  failed: (s: string) => `\x1b[38;2;212;132;132m${s}\x1b[0m`,
+  warn: (s: string) => `\x1b[38;2;226;178;98m${s}\x1b[0m`,
+  white: (s: string) => `\x1b[38;2;236;233;224m${s}\x1b[0m`,
+  whiteBold: (s: string) => `\x1b[1;38;2;245;242;232m${s}\x1b[0m`,
+  gray: (s: string) => `\x1b[38;2;178;176;168m${s}\x1b[0m`,
+  dim: (s: string) => `\x1b[38;2;148;146;138m${s}\x1b[0m`,
 } as const;
 
 // Width of the fixed input-box left prefix "  │ orbit > " (constant, pre-calculated)
@@ -3079,10 +3079,10 @@ export class FullscreenTui {
       : `\x1b[38;2;230;110;110m`; // Soft Morandi red
 
     const logoLines = [
-      `\x1b[38;2;142;163;175m  /\\___/\\  \x1b[0m`,
-      `\x1b[38;2;142;163;175m (  o.o  ) \x1b[0m`,
-      `\x1b[38;2;142;163;175m  / >${heartColor}♥\x1b[25m\x1b[38;2;142;163;175m< \\  \x1b[0m`,
-      `\x1b[38;2;142;163;175m (__/ \\__) \x1b[0m`,
+      `\x1b[38;2;158;184;196m  /\\___/\\  \x1b[0m`,
+      `\x1b[38;2;158;184;196m (  o.o  ) \x1b[0m`,
+      `\x1b[38;2;158;184;196m  / >${heartColor}♥\x1b[25m\x1b[38;2;158;184;196m< \\  \x1b[0m`,
+      `\x1b[38;2;158;184;196m (__/ \\__) \x1b[0m`,
     ];
 
     // Logo widths are static — cache them to avoid re-computation every render frame
@@ -3280,10 +3280,10 @@ export class FullscreenTui {
               : `${thoughtTimeVal}ms`;
 
           const breatheDots = [
-            "\x1b[38;2;142;163;175m·\x1b[0m",
-            "\x1b[38;2;143;153;129m•\x1b[0m",
-            "\x1b[38;2;200;170;120m●\x1b[0m",
-            "\x1b[38;2;135;165;130m•\x1b[0m",
+            "\x1b[38;2;158;184;196m·\x1b[0m",
+            "\x1b[38;2;164;178;150m•\x1b[0m",
+            "\x1b[38;2;224;188;124m●\x1b[0m",
+            "\x1b[38;2;152;188;146m•\x1b[0m",
           ];
           const spinIdx = Math.floor(Date.now() / 250) % 4;
           const dotChar = isThinkingNow
@@ -3849,9 +3849,9 @@ export class FullscreenTui {
         }
 
         if (charIndex < inputLength) {
-          formattedLine += `\x1b[1;38;2;230;225;215m${charStr}\x1b[0m`; // morandi.whiteBold
+          formattedLine += `\x1b[1;38;2;245;242;232m${charStr}\x1b[0m`; // morandi.whiteBold
         } else {
-          formattedLine += `\x1b[2;38;2;110;110;110m${charStr}\x1b[0m`; // morandi.dim
+          formattedLine += `\x1b[38;2;148;146;138m${charStr}\x1b[0m`; // morandi.dim
         }
         charIndex += increment;
       }

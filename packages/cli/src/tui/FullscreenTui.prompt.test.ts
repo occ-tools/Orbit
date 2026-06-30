@@ -62,6 +62,7 @@ describe("FullscreenTui prompt interactions", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     process.stdout.write = originalWrite;
     Object.defineProperty(process.stdout, "rows", {
       configurable: true,
@@ -315,5 +316,29 @@ describe("FullscreenTui prompt interactions", () => {
     expect(plain).toContain("latest: hangzhou weather today");
     expect(plain).not.toContain("Success:");
     expect(plain).not.toContain("DeepSeek cache hit degraded");
+  });
+
+  it("renders the first model delta immediately and coalesces early bursts", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const tui = createTui();
+    const render = (tui as any).render;
+
+    tui.startAttempt(1);
+    render.mockClear();
+
+    tui.handleModelDelta("h");
+    expect(render).toHaveBeenCalledTimes(1);
+
+    tui.handleModelDelta("i");
+    expect(render).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(15);
+    expect(render).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(render).toHaveBeenCalledTimes(2);
+
+    tui.finishAttempt();
   });
 });

@@ -406,6 +406,7 @@ export class FullscreenTui {
   private lastRenderTime = 0;
   private renderPending = false;
   private renderTimeout: NodeJS.Timeout | null = null;
+  private hasRenderedAttemptDelta = false;
 
   private originalWrite = process.stdout.write.bind(process.stdout);
   private hasWrittenStdoutSinceStop = false;
@@ -2388,6 +2389,13 @@ export class FullscreenTui {
     this.isThinking = true;
     this.thoughtElapsed = 0;
     this.currentThinking = "";
+    this.hasRenderedAttemptDelta = false;
+    this.lastRenderTime = 0;
+    if (this.renderTimeout) {
+      clearTimeout(this.renderTimeout);
+      this.renderTimeout = null;
+    }
+    this.renderPending = false;
 
     this.history.push({
       role: "assistant",
@@ -2427,12 +2435,25 @@ export class FullscreenTui {
 
   private throttleRender() {
     const now = Date.now();
-    const minInterval = 60;
+    const minInterval = this.getStreamRenderIntervalMs();
+    if (!this.hasRenderedAttemptDelta) {
+      this.hasRenderedAttemptDelta = true;
+      if (this.renderTimeout) {
+        clearTimeout(this.renderTimeout);
+        this.renderTimeout = null;
+      }
+      this.renderPending = false;
+      this.lastRenderTime = now;
+      this.render();
+      return;
+    }
+
     if (now - this.lastRenderTime >= minInterval) {
       if (this.renderTimeout) {
         clearTimeout(this.renderTimeout);
         this.renderTimeout = null;
       }
+      this.renderPending = false;
       this.lastRenderTime = now;
       this.render();
     } else if (!this.renderPending) {
@@ -2446,6 +2467,17 @@ export class FullscreenTui {
         minInterval - (now - this.lastRenderTime),
       );
     }
+  }
+
+  private getStreamRenderIntervalMs(): number {
+    const lastAsst = [...this.history]
+      .reverse()
+      .find((m) => m.role === "assistant");
+    const streamedChars =
+      (lastAsst?.text.length || 0) + this.currentThinking.length;
+    if (streamedChars < 1200) return 16;
+    if (streamedChars < 6000) return 32;
+    return 60;
   }
 
   public finishAttempt() {

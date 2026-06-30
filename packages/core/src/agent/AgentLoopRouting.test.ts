@@ -59,6 +59,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
 
   afterEach(() => {
     delete process.env.ORBIT_DEEPSEEK_CACHE_PRIMER_BUDGET_MS;
+    vi.useRealTimers();
     if (fs.existsSync(testDir)) {
       fs.rmSync(testDir, { recursive: true, force: true });
     }
@@ -374,6 +375,58 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     expect(chatMock.mock.calls[2][0].model).toBe(
       "deepseek-ai/DeepSeek-V4-Flash-DSpark",
     );
+  });
+
+  it("keeps DeepSeek cache alive with the stable slab only", async () => {
+    vi.useFakeTimers();
+    const chatMock = vi.fn().mockImplementation(async function* () {
+      yield { type: "done" };
+    });
+
+    const mockProvider: ModelProvider = {
+      id: "deepseek-openai",
+      type: "openai-compatible",
+      chat: chatMock,
+      getModelCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        jsonMode: true,
+        thinking: false,
+        vision: false,
+        promptCaching: true,
+      }),
+    } as any;
+
+    const loop = new AgentLoop(
+      testDir,
+      {
+        ...dummyConfig,
+        provider: { default: "deepseek-openai" },
+      },
+      mockProvider,
+      "what is this project?",
+      dummyInteraction,
+      { disableStatusBar: true },
+    );
+
+    (loop as any).lastChatParams = {
+      model: "deepseek-v4-flash",
+      system: "stable slab\n<!-- VOLATILE_CONTEXT -->",
+    };
+    (loop as any).startKeepaliveTimer();
+
+    await vi.advanceTimersByTimeAsync(210000);
+
+    expect(chatMock).toHaveBeenCalledTimes(1);
+    const keepaliveArgs = chatMock.mock.calls[0][0];
+    expect(keepaliveArgs.system).toBe("stable slab\n<!-- VOLATILE_CONTEXT -->");
+    expect(keepaliveArgs.messages).toHaveLength(1);
+    expect(keepaliveArgs.messages[0].content[0].text).toBe("0");
+    expect(keepaliveArgs.tools).toEqual([]);
+    expect(keepaliveArgs.stream).toBe(false);
+    expect(keepaliveArgs.maxTokens).toBe(1);
+
+    (loop as any).stopKeepaliveTimer();
   });
 
   it("does not block Flash main request when cache primer exceeds latency budget", async () => {

@@ -38,6 +38,8 @@ const DEEPSEEK_CACHE_PRIMER_TTL_MS = 240000;
 const DEEPSEEK_CACHE_REPAIR_HIT_RATE = 0.85;
 const DEEPSEEK_FLASH_CACHE_PRIMER_LATENCY_BUDGET_MS = 800;
 const DEEPSEEK_REASONING_CACHE_PRIMER_LATENCY_BUDGET_MS = 1500;
+const DEEPSEEK_CACHE_KEEPALIVE_INTERVAL_MS = 210000;
+const DEEPSEEK_CACHE_KEEPALIVE_PROMPT = "0";
 const DEEPSEEK_VERBOSE_CACHE_ENV = "ORBIT_DEEPSEEK_VERBOSE_CACHE";
 
 export interface UserInteraction {
@@ -79,9 +81,9 @@ export class AgentLoop {
   private keepaliveTimer: NodeJS.Timeout | null = null;
   private lastChatParams: {
     model: string;
-    messages: any[];
     system: string;
   } | null = null;
+  private cacheKeepaliveInFlight = false;
 
   constructor(
     private cwd: string,
@@ -621,7 +623,9 @@ export class AgentLoop {
           }
 
           this.stopKeepaliveTimer();
-          this.lastChatParams = { model: activeModel, messages, system };
+          this.lastChatParams = this.isDeepSeekCacheProvider(activeModel)
+            ? { model: activeModel, system: cacheSlab.text }
+            : null;
 
           eventBus.emitEvent("model_request", {
             model: activeModel,
@@ -3222,28 +3226,42 @@ ${errLog}`;
   private startKeepaliveTimer(): void {
     this.stopKeepaliveTimer();
 
-    // Send a minimal ping request to refresh DeepSeek's prompt cache TTL (5-10 min)
+    // Refresh only the stable DeepSeek slab prefix. Replaying full turn history
+    // here is slower, more expensive, and can keep volatile context alive.
     this.keepaliveTimer = setInterval(async () => {
-      if (!this.lastChatParams) return;
+      if (!this.lastChatParams || this.cacheKeepaliveInFlight) return;
+      this.cacheKeepaliveInFlight = true;
       try {
-        // Silent refresh of prompt cache in TUI
         const pingStream = this.provider.chat({
           model: this.lastChatParams.model,
-          messages: this.lastChatParams.messages,
           system: this.lastChatParams.system,
+          messages: [
+            {
+              id: `msg_cache_keepalive_${Date.now()}`,
+              role: "user",
+              createdAt: new Date().toISOString(),
+              content: [
+                {
+                  type: "text",
+                  text: DEEPSEEK_CACHE_KEEPALIVE_PROMPT,
+                },
+              ],
+            },
+          ],
+          tools: [],
           stream: false,
           maxTokens: 1,
         });
 
-        // Consume generator stream to trigger call
         for await (const event of pingStream) {
           void event;
-          // No-op
         }
-      } catch (err: any) {
-        console.error(`[Cache Keepalive Error] ${err.message}`);
+      } catch {
+        // Background cache refresh must never disturb the active TUI.
+      } finally {
+        this.cacheKeepaliveInFlight = false;
       }
-    }, 240000); // 4 minutes
+    }, DEEPSEEK_CACHE_KEEPALIVE_INTERVAL_MS);
   }
 
   private stopKeepaliveTimer(): void {

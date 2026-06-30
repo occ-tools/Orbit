@@ -1394,6 +1394,18 @@ export class FullscreenTui {
     this.render();
   }
 
+  public clearHistoryView(options: { silent?: boolean } = {}) {
+    this.history = [];
+    this.historyScrollOffset = 0;
+    this.maxHistoryScrollOffset = 0;
+    this.lastHistoryLineCount = 0;
+    this.hasNewOutputWhileScrolled = false;
+    this.historySearchQuery = null;
+    if (!options.silent) {
+      this.render();
+    }
+  }
+
   public syncFromLoop(loop: any) {
     this.activeContextFiles = loop.getRelevantFiles() || [];
     const loopHistory = loop.getHistory();
@@ -1429,9 +1441,7 @@ export class FullscreenTui {
   }
 
   public loadHistory(loopHistory: any[], options: { silent?: boolean } = {}) {
-    this.history = [];
-    this.historyScrollOffset = 0;
-    this.hasNewOutputWhileScrolled = false;
+    this.clearHistoryView({ silent: true });
     let attempt = 0;
     for (const msg of loopHistory) {
       if (msg.role === "user") {
@@ -2149,6 +2159,7 @@ export class FullscreenTui {
 
           if (key && key.ctrl && key.name === "u") {
             this.activeCommandIndex = 0;
+            this.hideAutocomplete = false;
             this.historySearchQuery = null;
             this.inputBuffer = "";
             this.cursorPosition = 0;
@@ -2176,6 +2187,7 @@ export class FullscreenTui {
                 this.historyIndex--;
               }
               this.inputBuffer = this.inputHistory[this.historyIndex];
+              this.hideAutocomplete = false;
               this.cursorPosition = this.inputBuffer.length;
               this.render();
             }
@@ -2201,6 +2213,7 @@ export class FullscreenTui {
                 this.historyIndex = -1;
                 this.inputBuffer = this.tempBuffer || "";
               }
+              this.hideAutocomplete = false;
               this.cursorPosition = this.inputBuffer.length;
               this.render();
             }
@@ -2256,14 +2269,13 @@ export class FullscreenTui {
           }
 
           if (key && key.ctrl && key.name === "l") {
-            this.history = [];
-            this.historySearchQuery = null;
-            this.render();
+            this.clearHistoryView();
             return;
           }
 
           if (key && key.ctrl && key.name === "p") {
             this.activeCommandIndex = 0;
+            this.hideAutocomplete = false;
             this.historySearchQuery = null;
             if (!this.inputBuffer.startsWith("/")) {
               this.inputBuffer = "/" + this.inputBuffer;

@@ -183,6 +183,27 @@ describe("FullscreenTui prompt interactions", () => {
     expect(render).toHaveBeenCalledTimes(1);
   });
 
+  it("clears history and scroll state through one TUI path", () => {
+    const tui = createTui();
+    const render = (tui as any).render as ReturnType<typeof vi.fn>;
+    (tui as any).history = [{ role: "system", text: "old output" }];
+    (tui as any).historyScrollOffset = 12;
+    (tui as any).maxHistoryScrollOffset = 40;
+    (tui as any).lastHistoryLineCount = 80;
+    (tui as any).hasNewOutputWhileScrolled = true;
+    (tui as any).historySearchQuery = "old";
+
+    tui.clearHistoryView();
+
+    expect((tui as any).history).toEqual([]);
+    expect((tui as any).historyScrollOffset).toBe(0);
+    expect((tui as any).maxHistoryScrollOffset).toBe(0);
+    expect((tui as any).lastHistoryLineCount).toBe(0);
+    expect((tui as any).hasNewOutputWhileScrolled).toBe(false);
+    expect((tui as any).historySearchQuery).toBeNull();
+    expect(render).toHaveBeenCalled();
+  });
+
   it("submits the ranked slash command candidate on enter", async () => {
     const tui = createTui({
       provider: { default: "deepseek" },
@@ -236,6 +257,22 @@ describe("FullscreenTui prompt interactions", () => {
     press("", { name: "return" });
 
     await expect(result).resolves.toBe("/model deepseek-v4-flash");
+  });
+
+  it("reopens slash suggestions with Ctrl+P after Esc hides them", async () => {
+    const tui = createTui();
+
+    const result = tui.askInput();
+
+    typeText("/mod");
+    press("", { name: "escape" });
+    expect((tui as any).hideAutocomplete).toBe(true);
+
+    press("", { name: "p", ctrl: true });
+
+    expect((tui as any).hideAutocomplete).toBe(false);
+    press("", { name: "return" });
+    await expect(result).resolves.toBe("/model");
   });
 
   it("compacts noisy web search system logs in history rendering", () => {

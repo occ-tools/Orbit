@@ -125,6 +125,8 @@ describe("AgentLoop Hunk Acceptance Flow", () => {
   });
 
   it("should apply selected hunks and reject other hunks", async () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const showText = vi.fn();
     const askSelectSpy = vi
       .spyOn(Prompt, "askSelect")
       .mockResolvedValue("hunks");
@@ -138,12 +140,19 @@ describe("AgentLoop Hunk Acceptance Flow", () => {
       dummyConfig,
       createMockProvider(),
       "modify file",
-      dummyInteraction,
+      { ...dummyInteraction, showText },
     );
     await loop.run();
 
     expect(askSelectSpy).toHaveBeenCalled();
     expect(askMultiSelectSpy).toHaveBeenCalled();
+    expect(showText).toHaveBeenCalledWith(
+      expect.stringContaining("Reviewing 2 hunks"),
+    );
+    expect(showText).toHaveBeenCalledWith(
+      expect.stringContaining("--- Hunk #1/2 ---"),
+    );
+    expect(consoleLog).not.toHaveBeenCalled();
 
     const finalContent = fs.readFileSync(testFile, "utf8");
     // Hunk 1 accepted (lineX), Hunk 2 rejected (remains line4)

@@ -1996,28 +1996,29 @@ ${errLog}`;
                   if (hunks.length === 0) {
                     accepted = true;
                   } else {
-                    this.interaction.showText(
+                    const previewLines = [
                       `\n● Reviewing ${hunks.length} hunks in ${targetPath}:`,
-                    );
+                    ];
                     for (let hIdx = 0; hIdx < hunks.length; hIdx++) {
                       const hunk = hunks[hIdx];
-                      console.log(
+                      previewLines.push(
                         picocolors.cyan(
                           `\n--- Hunk #${hIdx + 1}/${hunks.length} ---`,
                         ),
                       );
                       for (const line of hunk.linesB) {
-                        console.log(`  ${picocolors.red(`- ${line}`)}`);
+                        previewLines.push(`  ${picocolors.red(`- ${line}`)}`);
                       }
                       for (const line of hunk.linesA) {
-                        console.log(`  ${picocolors.green(`+ ${line}`)}`);
+                        previewLines.push(`  ${picocolors.green(`+ ${line}`)}`);
                       }
-                      console.log(
+                      previewLines.push(
                         picocolors.cyan(
                           "----------------------------------------",
                         ),
                       );
                     }
+                    this.interaction.showText(previewLines.join("\n"));
 
                     const selectedHunkIndices = await Prompt.askMultiSelect(
                       `Select the hunks to apply to ${targetPath}:`,

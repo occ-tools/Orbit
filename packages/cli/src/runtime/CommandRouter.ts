@@ -1557,7 +1557,7 @@ export class CommandRouter {
 
       if (command === "/clear") {
         loop.clearHistoryPublic();
-        tui.loadHistory([]);
+        tui.clearHistoryView({ silent: !useFullscreenTui });
         if (!useFullscreenTui) {
           console.clear();
         }

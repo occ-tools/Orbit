@@ -61,6 +61,12 @@ export function nextWordIndex(text: string, index: number): number {
   return pos;
 }
 
+export type SubmittedInputEcho = boolean | ((submitted: string) => boolean);
+
+export interface AskInputOptions {
+  echoSubmitted?: SubmittedInputEcho;
+}
+
 export function parseMouseWheelDirection(
   input: string | undefined | null,
 ): "up" | "down" | null {
@@ -1949,7 +1955,7 @@ export class FullscreenTui {
     });
   }
 
-  public async askInput(): Promise<string | null> {
+  public async askInput(options: AskInputOptions = {}): Promise<string | null> {
     if (!this.isActive) {
       if (this.hasWrittenStdoutSinceStop) {
         const wasRaw = !!process.stdin.isRaw;
@@ -2051,7 +2057,13 @@ export class FullscreenTui {
             this.hasNewOutputWhileScrolled = false;
 
             if (submitted.trim()) {
-              this.history.push({ role: "user", text: submitted });
+              const echoSubmitted =
+                typeof options.echoSubmitted === "function"
+                  ? options.echoSubmitted(submitted)
+                  : options.echoSubmitted !== false;
+              if (echoSubmitted) {
+                this.history.push({ role: "user", text: submitted });
+              }
               if (
                 this.inputHistory[this.inputHistory.length - 1] !== submitted
               ) {

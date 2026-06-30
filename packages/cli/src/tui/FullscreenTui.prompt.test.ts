@@ -222,6 +222,22 @@ describe("FullscreenTui prompt interactions", () => {
     );
   });
 
+  it("can submit control commands without echoing them into chat history", async () => {
+    const tui = createTui();
+
+    const result = tui.askInput({
+      echoSubmitted: (submitted) => !submitted.trim().startsWith("/"),
+    });
+
+    typeText("/mod");
+    press("", { name: "return" });
+
+    await expect(result).resolves.toBe("/model");
+    expect((tui as any).history).toEqual([]);
+    expect((tui as any).inputHistory.at(-1)).toBe("/model");
+    expect((tui as any).saveInputHistory).toHaveBeenCalledOnce();
+  });
+
   it("makes slash command enter behavior explicit in the footer", () => {
     expect(getSlashSuggestionFooterText(false, 16)).toContain(
       "Enter run selected",

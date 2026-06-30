@@ -363,7 +363,15 @@ export class ReplController {
       while (true) {
         let input: string | null;
         if (useFullscreenTui) {
-          input = await tui.askInput();
+          input = await tui.askInput({
+            echoSubmitted: (submitted) => {
+              const trimmedSubmitted = submitted.trim();
+              return (
+                !trimmedSubmitted.startsWith("/") &&
+                !trimmedSubmitted.startsWith("!")
+              );
+            },
+          });
         } else {
           input = await Prompt.askTextWithAutocomplete(
             "Type your task or command...",

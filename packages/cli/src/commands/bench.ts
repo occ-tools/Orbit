@@ -4,6 +4,7 @@ import type { ModelProvider } from "@orbit-build/model-providers";
 import { createProviderFromConfig } from "../runtime/ProviderFactory.js";
 import {
   benchmarkPromptHash,
+  compareProviderBenchmarkResults,
   formatProviderBenchmarkSummary,
   recordProviderBenchmark,
   type ProviderBenchmarkResult,
@@ -98,6 +99,14 @@ function clampMaxTokens(value: unknown): number {
   return Math.max(1, Math.min(4096, Math.floor(parsed)));
 }
 
+function parseModels(options: { model?: string; models?: string }): string[] {
+  const raw = options.models || options.model || "";
+  return raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function printBenchResult(
   result: ProviderBenchmarkResult,
   index: number,
@@ -130,15 +139,23 @@ export async function runBench(
   cwd: string,
   options: {
     prompt?: string;
+    provider?: string;
     model?: string;
+    models?: string;
     repeat?: number;
     maxTokens?: number;
     json?: boolean;
   } = {},
 ): Promise<void> {
-  const config = ConfigLoader.loadSync(cwd);
+  const overrides = options.provider
+    ? ({ provider: { default: options.provider } } as any)
+    : undefined;
+  const config = ConfigLoader.loadSync(cwd, overrides);
   const provider = createProviderFromConfig(config);
-  const model = options.model || config.models.fast || config.models.default;
+  const models = parseModels(options);
+  if (models.length === 0) {
+    models.push(config.models.fast || config.models.default);
+  }
   const prompt =
     options.prompt ||
     "Reply with one concise sentence explaining what Orbit is.";
@@ -146,13 +163,21 @@ export async function runBench(
   const maxTokens = clampMaxTokens(options.maxTokens);
   const results: ProviderBenchmarkResult[] = [];
 
-  for (let i = 0; i < repeat; i++) {
-    const result = await runSingleBench(provider, model, prompt, maxTokens);
-    recordProviderBenchmark(cwd, result);
-    results.push(result);
+  for (const model of models) {
+    for (let i = 0; i < repeat; i++) {
+      const result = await runSingleBench(provider, model, prompt, maxTokens);
+      recordProviderBenchmark(cwd, result);
+      results.push(result);
+      if (!options.json) {
+        printBenchResult(result, i + 1);
+        if (i < repeat - 1 || models.length > 1) {
+          console.log("");
+        }
+      }
+    }
     if (!options.json) {
-      printBenchResult(result, i + 1);
-      if (i < repeat - 1) {
+      console.log(formatProviderBenchmarkSummary(cwd, provider.id, model));
+      if (model !== models.at(-1)) {
         console.log("");
       }
     }
@@ -160,8 +185,8 @@ export async function runBench(
 
   if (options.json) {
     console.log(JSON.stringify({ results }, null, 2));
-  } else {
+  } else if (models.length > 1 || repeat > 1) {
     console.log("");
-    console.log(formatProviderBenchmarkSummary(cwd, provider.id, model));
+    console.log(compareProviderBenchmarkResults(results));
   }
 }

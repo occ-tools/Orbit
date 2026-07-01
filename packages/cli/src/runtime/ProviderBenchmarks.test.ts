@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
+  compareProviderBenchmarkResults,
   formatProviderBenchmarkSummary,
   readProviderBenchmarks,
   recordProviderBenchmark,
@@ -49,5 +50,45 @@ describe("ProviderBenchmarks", () => {
     expect(JSON.stringify(samples)).not.toContain("Reply with ok");
     expect(summary).toContain("slow-first-token");
     expect(summary).toContain("p50 first=2800ms");
+  });
+
+  it("ranks benchmark comparison by first-token latency", () => {
+    const comparison = compareProviderBenchmarkResults([
+      {
+        providerId: "gateway",
+        model: "slow",
+        checkedAt: "2026-07-01T00:00:00.000Z",
+        promptHash: "a",
+        promptChars: 1,
+        maxTokens: 16,
+        firstDeltaMs: 1200,
+        totalMs: 1800,
+        outputTokens: 20,
+        textChars: 60,
+        throughputTokensPerSec: 11,
+        cacheReadTokens: 0,
+        cacheInputTokens: 8,
+        cacheHitRate: 0,
+      },
+      {
+        providerId: "gateway",
+        model: "fast",
+        checkedAt: "2026-07-01T00:00:01.000Z",
+        promptHash: "a",
+        promptChars: 1,
+        maxTokens: 16,
+        firstDeltaMs: 300,
+        totalMs: 700,
+        outputTokens: 20,
+        textChars: 60,
+        throughputTokensPerSec: 28,
+        cacheReadTokens: 0,
+        cacheInputTokens: 8,
+        cacheHitRate: 0,
+      },
+    ]);
+
+    expect(comparison).toContain("1. best gateway / fast");
+    expect(comparison.indexOf("fast")).toBeLessThan(comparison.indexOf("slow"));
   });
 });

@@ -72,14 +72,18 @@ program
   .description(
     "measure provider first-token latency, throughput, and cache usage",
   )
+  .option("--provider <provider>", "provider id to benchmark")
   .option("--model <model>", "model to benchmark")
+  .option("--models <models>", "comma-separated models to benchmark")
   .option("--prompt <prompt>", "custom benchmark prompt")
   .option("--repeat <n>", "number of benchmark samples to record")
   .option("--max-tokens <n>", "maximum completion tokens for each sample")
   .option("--json", "print benchmark samples as JSON")
   .action(async (options) => {
     await runBench(process.cwd(), {
+      provider: options.provider,
       model: options.model,
+      models: options.models,
       prompt: options.prompt,
       repeat: options.repeat,
       maxTokens: options.maxTokens,

@@ -126,3 +126,67 @@ export function formatProviderBenchmarkSummary(
     `● Provider benchmark:${slowFirstToken} samples=${successful.length}/${samples.length}; ${latestText}; p50 first=${firstP50 ?? "n/a"}ms p90 first=${firstP90 ?? "n/a"}ms p50 total=${totalP50 ?? "n/a"}ms avg=${avgTps ? avgTps.toFixed(1) : "n/a"} tok/s cache=${Math.round((avgCache || 0) * 100)}%.`,
   );
 }
+
+export function compareProviderBenchmarkResults(
+  results: ProviderBenchmarkResult[],
+): string {
+  const successful = results.filter(
+    (item) => !item.error && typeof item.firstDeltaMs === "number",
+  );
+  if (successful.length === 0) {
+    return picocolors.yellow(
+      "● Benchmark comparison: no successful samples to rank.",
+    );
+  }
+
+  const grouped = new Map<string, ProviderBenchmarkResult[]>();
+  for (const result of successful) {
+    const key = `${result.providerId}::${result.model}`;
+    const current = grouped.get(key) || [];
+    current.push(result);
+    grouped.set(key, current);
+  }
+
+  const rows = Array.from(grouped.entries())
+    .map(([key, items]) => {
+      const [providerId, model] = key.split("::");
+      const first = avg(
+        items
+          .map((item) => item.firstDeltaMs)
+          .filter((value): value is number => typeof value === "number"),
+      );
+      const total = avg(items.map((item) => item.totalMs));
+      const throughput = avg(
+        items
+          .map((item) => item.throughputTokensPerSec)
+          .filter((value) => value > 0),
+      );
+      const cache = avg(items.map((item) => item.cacheHitRate));
+      return {
+        providerId,
+        model,
+        samples: items.length,
+        first: first || Number.POSITIVE_INFINITY,
+        total: total || Number.POSITIVE_INFINITY,
+        throughput: throughput || 0,
+        cache: cache || 0,
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.first - b.first || a.total - b.total || b.throughput - a.throughput,
+    );
+
+  const lines = [picocolors.bold("Benchmark Comparison")];
+  rows.forEach((row, index) => {
+    const leader = index === 0 ? "best " : "";
+    lines.push(
+      `${index + 1}. ${leader}${row.providerId} / ${row.model}: first=${Math.round(
+        row.first,
+      )}ms total=${Math.round(row.total)}ms avg=${row.throughput.toFixed(
+        1,
+      )} tok/s cache=${Math.round(row.cache * 100)}% samples=${row.samples}`,
+    );
+  });
+  return lines.join("\n");
+}

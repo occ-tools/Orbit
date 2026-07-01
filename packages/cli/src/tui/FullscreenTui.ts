@@ -570,27 +570,40 @@ export class FullscreenTui {
   ): string[] {
     const morandi = MORANDI;
     const lines: string[] = [];
-    let webSearchCount = 0;
-    let webSearchResults = 0;
-    let lastWebSearchQuery = "";
+    let liveLookupCount = 0;
+    let liveLookupTool = "";
+    let liveLookupResults = 0;
+    let liveLookupOpenMeteo = false;
+    let lastLiveLookupQuery = "";
 
-    const flushWebSearchSummary = () => {
-      if (webSearchCount === 0) return;
+    const flushLiveLookupSummary = () => {
+      if (liveLookupCount === 0) return;
       const resultsText =
-        webSearchResults > 0 ? ` · ${webSearchResults} results` : "";
-      const queryText = lastWebSearchQuery
-        ? this.truncatePlainToWidth(lastWebSearchQuery, 42)
+        liveLookupResults > 0 ? ` · ${liveLookupResults} results` : "";
+      const sourceText = liveLookupOpenMeteo ? " · Open-Meteo" : "";
+      const queryText = lastLiveLookupQuery
+        ? this.truncatePlainToWidth(lastLiveLookupQuery, 42)
         : "";
+      const label =
+        liveLookupTool && liveLookupTool !== "mixed"
+          ? liveLookupTool
+          : "live_lookup";
       const summary =
-        webSearchCount === 1
-          ? `web_search${queryText ? ` ${queryText}` : ""}${resultsText}`
-          : `web_search ${webSearchCount} searches${resultsText}${
-              queryText ? ` · latest: ${queryText}` : ""
-            }`;
+        liveLookupCount === 1
+          ? `${label}${queryText ? ` ${queryText}` : ""}${resultsText}${sourceText}`
+          : label === "web_search"
+            ? `web_search ${liveLookupCount} searches${resultsText}${
+                queryText ? ` · latest: ${queryText}` : ""
+              }`
+            : `${label} ${liveLookupCount} lookups${resultsText}${sourceText}${
+                queryText ? ` · latest: ${queryText}` : ""
+              }`;
       lines.push(morandi.cyan("✦") + " " + morandi.gray(summary));
-      webSearchCount = 0;
-      webSearchResults = 0;
-      lastWebSearchQuery = "";
+      liveLookupCount = 0;
+      liveLookupTool = "";
+      liveLookupResults = 0;
+      liveLookupOpenMeteo = false;
+      lastLiveLookupQuery = "";
     };
 
     for (const sys of system) {
@@ -598,18 +611,21 @@ export class FullscreenTui {
       for (const rawLine of rawLines) {
         const plain = stripAnsiCodes(rawLine.trim()).trim();
         if (!plain) {
-          flushWebSearchSummary();
+          flushLiveLookupSummary();
           if (options.preserveBlank) lines.push("");
           continue;
         }
 
-        const webSearchMatch = plain.match(
-          /^✦\s*(?:✨\s*)?web_search\b\s*(.*)$/i,
+        const liveLookupMatch = plain.match(
+          /^✦\s*(?:✨\s*)?(web_search|weather)\b\s*(.*)$/i,
         );
-        if (webSearchMatch) {
-          webSearchCount += 1;
-          const query = webSearchMatch[1]?.trim();
-          if (query) lastWebSearchQuery = query;
+        if (liveLookupMatch) {
+          liveLookupCount += 1;
+          const toolName = liveLookupMatch[1] || "";
+          liveLookupTool =
+            !liveLookupTool || liveLookupTool === toolName ? toolName : "mixed";
+          const query = liveLookupMatch[2]?.trim();
+          if (query) lastLiveLookupQuery = query;
           continue;
         }
 
@@ -617,7 +633,16 @@ export class FullscreenTui {
           /^(?:✓|✔)\s*Success:\s*Web search returned\s+(\d+)\s+results?/i,
         );
         if (webSearchSuccess) {
-          webSearchResults += Number(webSearchSuccess[1] || 0);
+          liveLookupResults += Number(webSearchSuccess[1] || 0);
+          continue;
+        }
+
+        if (
+          /^(?:✓|✔)\s*Success:\s*Weather data returned\b.*\bOpen-Meteo\b/i.test(
+            plain,
+          )
+        ) {
+          liveLookupOpenMeteo = true;
           continue;
         }
 
@@ -625,7 +650,7 @@ export class FullscreenTui {
           continue;
         }
 
-        flushWebSearchSummary();
+        flushLiveLookupSummary();
         const formatted = this.formatSystemStatusLine(
           rawLine,
           options.prefixUnknown,
@@ -635,7 +660,7 @@ export class FullscreenTui {
         }
       }
     }
-    flushWebSearchSummary();
+    flushLiveLookupSummary();
     return lines;
   }
 

@@ -15,6 +15,7 @@ import { DetectProjectTool } from "./project/detectProject.js";
 import { InspectProjectTool } from "./project/inspectProject.js";
 import { SearchSymbolsTool } from "./project/searchSymbols.js";
 import { WebSearchTool } from "./web/search.js";
+import { WeatherTool } from "./web/weather.js";
 import { FindSymbolReferencesTool } from "./project/findReferences.js";
 
 // Register core tools automatically
@@ -34,6 +35,7 @@ toolRegistry.register(new DetectProjectTool());
 toolRegistry.register(new InspectProjectTool());
 toolRegistry.register(new SearchSymbolsTool());
 toolRegistry.register(new WebSearchTool());
+toolRegistry.register(new WeatherTool());
 toolRegistry.register(new FindSymbolReferencesTool());
 
 export * from "./types.js";
@@ -54,4 +56,5 @@ export * from "./project/detectProject.js";
 export * from "./project/inspectProject.js";
 export * from "./project/searchSymbols.js";
 export * from "./web/search.js";
+export * from "./web/weather.js";
 export * from "./project/findReferences.js";

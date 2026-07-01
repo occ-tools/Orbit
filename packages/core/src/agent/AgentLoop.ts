@@ -41,6 +41,9 @@ const DEEPSEEK_REASONING_CACHE_PRIMER_LATENCY_BUDGET_MS = 1500;
 const DEEPSEEK_CACHE_KEEPALIVE_INTERVAL_MS = 210000;
 const DEEPSEEK_CACHE_KEEPALIVE_PROMPT = "0";
 const DEEPSEEK_VERBOSE_CACHE_ENV = "ORBIT_DEEPSEEK_VERBOSE_CACHE";
+const NETWORK_TOOL_RESULT_MAX_RESULTS = 10;
+const NETWORK_TOOL_RESULT_SUMMARY_CHARS = 280;
+const NETWORK_TOOL_RESULT_MAX_CHARS = 6000;
 
 export interface UserInteraction {
   askApproval(reason: string, preview?: string): Promise<boolean>;
@@ -179,10 +182,108 @@ export class AgentLoop {
     toolName: string,
     risk?: string,
   ): string | null {
-    if (toolName === "web_search" && risk === "network") {
-      return "network:web_search";
+    if (
+      (toolName === "web_search" || toolName === "weather") &&
+      risk === "network"
+    ) {
+      return "network:live_lookup";
     }
     return null;
+  }
+
+  private buildToolResultContent(toolName: string, result: any): string {
+    const content = result.ok
+      ? typeof result.data === "string"
+        ? result.data
+        : JSON.stringify(result.data)
+      : result.error || "Unknown error";
+
+    if (!result.ok || (toolName !== "web_search" && toolName !== "weather")) {
+      return content;
+    }
+
+    return this.compactNetworkToolResult(
+      toolName,
+      content,
+      result.display || "",
+    );
+  }
+
+  private compactNetworkToolResult(
+    toolName: string,
+    content: string,
+    display: string,
+  ): string {
+    const normalized = content.replace(/\r\n/g, "\n").trim();
+    const header = display
+      ? `${toolName} result: ${display}`
+      : `${toolName} result`;
+
+    if (!normalized) {
+      return header;
+    }
+
+    if (normalized.startsWith("Source: Open-Meteo weather API")) {
+      return this.truncateToolResultText(`${header}\n${normalized}`);
+    }
+
+    const parsedResults = this.parseSearchResultBlocks(normalized);
+    if (parsedResults.length === 0) {
+      return this.truncateToolResultText(`${header}\n${normalized}`);
+    }
+
+    const keep = parsedResults.slice(0, NETWORK_TOOL_RESULT_MAX_RESULTS);
+    const lines = [
+      `${header}`,
+      `Results kept for reasoning: ${keep.length}/${parsedResults.length}. Use another live lookup only if these results are insufficient or stale.`,
+    ];
+
+    for (const result of keep) {
+      lines.push(
+        `[${result.index}] ${result.title}`,
+        `Link: ${result.link}`,
+        `Summary: ${this.truncatePlain(result.summary, NETWORK_TOOL_RESULT_SUMMARY_CHARS)}`,
+      );
+    }
+
+    return this.truncateToolResultText(lines.join("\n"));
+  }
+
+  private parseSearchResultBlocks(content: string): Array<{
+    index: string;
+    title: string;
+    link: string;
+    summary: string;
+  }> {
+    const results: Array<{
+      index: string;
+      title: string;
+      link: string;
+      summary: string;
+    }> = [];
+    const regex =
+      /\[(\d+)\]\s+Title:\s*([\s\S]*?)\n\s*Link:\s*([^\n]+)\n\s*Summary:\s*([\s\S]*?)(?=\n\n\[\d+\]\s+Title:|\s*$)/g;
+
+    let match;
+    while ((match = regex.exec(content)) !== null) {
+      results.push({
+        index: match[1],
+        title: this.truncatePlain(match[2], 180),
+        link: match[3].trim(),
+        summary: match[4].replace(/\s+/g, " ").trim(),
+      });
+    }
+
+    return results;
+  }
+
+  private truncateToolResultText(text: string): string {
+    return this.truncatePlain(text, NETWORK_TOOL_RESULT_MAX_CHARS);
+  }
+
+  private truncatePlain(text: string, maxChars: number): string {
+    if (text.length <= maxChars) return text;
+    return `${text.slice(0, Math.max(0, maxChars - 32)).trimEnd()}\n... [truncated for context budget]`;
   }
 
   public async run(): Promise<void> {
@@ -551,7 +652,9 @@ export class AgentLoop {
           }
           let toolDefs = toolRegistry.getDefinitions();
           if (!this.config.tools.webSearch.enabled) {
-            toolDefs = toolDefs.filter((tool) => tool.name !== "web_search");
+            toolDefs = toolDefs.filter(
+              (tool) => tool.name !== "web_search" && tool.name !== "weather",
+            );
           }
           if (!this.config.tools.bash.enabled) {
             toolDefs = toolDefs.filter(
@@ -1008,6 +1111,10 @@ ${errLog}`;
                 argSummary = `"${parsed.pattern || parsed.Pattern}" in ${parsed.path || parsed.DirectoryPath || ""}`;
               } else if (tc.name === "web_search") {
                 argSummary = parsed.query || "";
+              } else if (tc.name === "weather") {
+                argSummary = [parsed.location, parsed.date]
+                  .filter(Boolean)
+                  .join(" ");
               } else {
                 argSummary = tc.arguments;
               }
@@ -2134,11 +2241,7 @@ ${errLog}`;
               toolResult: {
                 toolCallId: tc.id,
                 name: tc.name,
-                content: finalResult.ok
-                  ? typeof finalResult.data === "string"
-                    ? finalResult.data
-                    : JSON.stringify(finalResult.data)
-                  : finalResult.error || "Unknown error",
+                content: this.buildToolResultContent(tc.name, finalResult),
                 isError: !finalResult.ok,
               },
             });

@@ -301,6 +301,90 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     }
   });
 
+  it("compacts live lookup tool results before replaying them to the model", async () => {
+    const originalWebSearch = toolRegistry.get("web_search");
+    const longSummary = "杭州天气实时资料 ".repeat(80);
+    const rawResults = Array.from({ length: 15 }, (_, index) =>
+      [
+        `[${index + 1}] Title: Weather Result ${index + 1}`,
+        `    Link: https://example.com/weather/${index + 1}`,
+        `    Summary: ${longSummary}${index + 1}`,
+      ].join("\n"),
+    ).join("\n\n");
+
+    toolRegistry.register({
+      name: "web_search",
+      description: "mock web search",
+      inputSchema: z.object({ query: z.string() }),
+      risk: "network",
+      execute: vi.fn(async () => ({
+        ok: true,
+        data: rawResults,
+        display: "Web search returned 15 results via Mock.",
+      })),
+    });
+
+    const askApproval = vi.spyOn(Prompt, "askApproval").mockResolvedValue(true);
+    let callCount = 0;
+    let replayedMessages: any[] = [];
+    const chatMock = vi.fn().mockImplementation(async function* (input: any) {
+      callCount++;
+      if (callCount === 1) {
+        yield {
+          type: "tool_call",
+          toolCall: {
+            id: "search-compact",
+            name: "web_search",
+            arguments: JSON.stringify({ query: "杭州天气" }),
+          },
+        };
+        return;
+      }
+
+      replayedMessages = input.messages;
+      yield { type: "text_delta", text: "done" };
+    });
+
+    const mockProvider: ModelProvider = {
+      id: "openai",
+      chat: chatMock,
+    } as any;
+
+    try {
+      const loop = new AgentLoop(
+        testDir,
+        {
+          ...dummyConfig,
+          permissions: { ...dummyConfig.permissions, mode: "normal" },
+          tools: {
+            ...dummyConfig.tools,
+            webSearch: { enabled: true },
+          },
+        } as any,
+        mockProvider,
+        "查杭州天气",
+        dummyInteraction,
+        { disableStatusBar: true },
+      );
+
+      await loop.run();
+
+      const toolMessage = replayedMessages.find((msg) => msg.role === "tool");
+      const toolResult = toolMessage?.content?.[0]?.toolResult;
+      expect(toolResult?.content).toContain(
+        "Results kept for reasoning: 10/15",
+      );
+      expect(toolResult?.content).toContain("Weather Result 10");
+      expect(toolResult?.content).not.toContain("Weather Result 15");
+      expect(toolResult?.content.length).toBeLessThan(rawResults.length);
+    } finally {
+      if (originalWebSearch) {
+        toolRegistry.register(originalWebSearch);
+      }
+      askApproval.mockRestore();
+    }
+  });
+
   it("should prime DeepSeek cache slab before the main request", async () => {
     const chatMock = vi.fn().mockImplementation(async function* (input: any) {
       if (input.maxTokens === 1) {

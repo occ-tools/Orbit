@@ -318,6 +318,27 @@ describe("FullscreenTui prompt interactions", () => {
     expect(plain).not.toContain("DeepSeek cache hit degraded");
   });
 
+  it("compacts weather lookup system logs in history rendering", () => {
+    const tui = createTui();
+
+    const lines = (tui as any).formatSystemLinesForDisplay(
+      [
+        {
+          role: "system",
+          text: [
+            "  ✦ weather 杭州 2026-06-30",
+            "  ✔ Success: Weather data returned for 杭州, 浙江省, 中国 for 2026-06-30 via Open-Meteo.",
+          ].join("\n"),
+        },
+      ],
+      { prefixUnknown: true, preserveBlank: false },
+    );
+
+    const plain = lines.map((line: string) => stripAnsiCodes(line)).join("\n");
+    expect(plain).toContain("weather 杭州 2026-06-30 · Open-Meteo");
+    expect(plain).not.toContain("Success:");
+  });
+
   it("renders the first model delta immediately and coalesces early bursts", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

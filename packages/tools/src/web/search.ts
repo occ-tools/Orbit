@@ -21,6 +21,7 @@ interface SearchResult {
 interface SearchStrategy {
   name: string;
   url: string;
+  priority: number;
   method?: "GET" | "POST";
   userAgent?: string;
   headers?: Record<string, string>;
@@ -676,13 +677,18 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
     if (provider === "auto" || provider === "searxng") {
       for (const baseUrl of searxngUrls) {
         const normalized = this.normalizeBaseUrl(baseUrl);
+        const isLocal =
+          normalized.includes("127.0.0.1") || normalized.includes("localhost");
         strategies.push({
           name: `SearXNG (${normalized})`,
           url: `${normalized}/search?q=${encodeURIComponent(query)}&format=json&language=auto&safesearch=0`,
+          priority: isLocal && configuredSearxngUrls.length === 0 ? 1 : 0,
           userAgent: "Orbit/0.1 (+https://github.com/orbit-build/orbit)",
           parser: (body) =>
             this.limitResults(this.parseSearxngResults(body), maxResults),
-          timeoutMs: Math.min(timeoutMs, 5000),
+          timeoutMs: isLocal
+            ? Math.min(timeoutMs, 1200)
+            : Math.min(timeoutMs, 5000),
         });
       }
     }
@@ -698,6 +704,7 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
       strategies.push({
         name: "Tavily",
         url: tavilyBaseUrl,
+        priority: 0,
         method: "POST",
         headers: {
           Authorization: `Bearer ${tavilyApiKey}`,
@@ -722,6 +729,7 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
       strategies.push({
         name: "Bing HTML",
         url: `${bingBase}?q=${encodeURIComponent(query)}&setlang=zh-CN`,
+        priority: provider === "auto" ? 1 : 0,
         userAgent:
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         parser: (body) =>
@@ -741,6 +749,7 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
         {
           name: "DuckDuckGo HTML",
           url: `${duckHtmlBase}?q=${encodeURIComponent(query)}`,
+          priority: provider === "auto" ? 1 : 0,
           userAgent:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0",
           parser: (body) =>
@@ -750,6 +759,7 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
         {
           name: "DuckDuckGo Lite",
           url: `${duckLiteBase}?q=${encodeURIComponent(query)}`,
+          priority: provider === "auto" ? 1 : 0,
           userAgent:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           parser: (body) =>
@@ -760,6 +770,45 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
     }
 
     return strategies;
+  }
+
+  private async runSearchStrategy(
+    strategy: SearchStrategy,
+    ctx: ToolContext,
+  ): Promise<
+    | { ok: true; strategy: SearchStrategy; results: SearchResult[] }
+    | { ok: false; error: string }
+  > {
+    const timeout = this.makeTimeoutSignal(ctx.abortSignal, strategy.timeoutMs);
+    try {
+      const response = await fetch(strategy.url, {
+        method: strategy.method || "GET",
+        headers: {
+          ...(strategy.userAgent ? { "User-Agent": strategy.userAgent } : {}),
+          ...(strategy.headers || {}),
+        },
+        body: strategy.body,
+        signal: timeout.signal,
+      });
+
+      if (response.status !== 200) {
+        return {
+          ok: false,
+          error: `${strategy.name} status ${response.status}: ${response.statusText}`,
+        };
+      }
+
+      const body = await response.text();
+      const results = strategy.parser(body);
+      if (results.length === 0) {
+        return { ok: false, error: `${strategy.name} returned 0 results` };
+      }
+      return { ok: true, strategy, results };
+    } catch (e: any) {
+      return { ok: false, error: `${strategy.name} error: ${e.message}` };
+    } finally {
+      timeout.cleanup();
+    }
   }
 
   async execute(
@@ -785,33 +834,25 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
       };
     }
 
-    for (const strategy of strategies) {
-      const timeout = this.makeTimeoutSignal(
-        _ctx.abortSignal,
-        strategy.timeoutMs,
-      );
-      try {
-        const response = await fetch(strategy.url, {
-          method: strategy.method || "GET",
-          headers: {
-            ...(strategy.userAgent ? { "User-Agent": strategy.userAgent } : {}),
-            ...(strategy.headers || {}),
-          },
-          body: strategy.body,
-          signal: timeout.signal,
-        });
+    const priorities = Array.from(
+      new Set(strategies.map((strategy) => strategy.priority)),
+    ).sort((a, b) => a - b);
 
-        if (response.status !== 200) {
-          errors.push(
-            `${strategy.name} status ${response.status}: ${response.statusText}`,
-          );
+    for (const priority of priorities) {
+      const group = strategies.filter(
+        (strategy) => strategy.priority === priority,
+      );
+      const settled = await Promise.allSettled(
+        group.map((strategy) => this.runSearchStrategy(strategy, _ctx)),
+      );
+
+      for (const item of settled) {
+        if (item.status === "rejected") {
+          errors.push(item.reason?.message || String(item.reason));
           continue;
         }
-
-        const body = await response.text();
-        const results = strategy.parser(body);
-
-        if (results.length > 0) {
+        if (item.value.ok) {
+          const { strategy, results } = item.value;
           const formatted = results
             .map(
               (r, i) =>
@@ -824,13 +865,8 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
             data: formatted,
             display: `Web search returned ${results.length} results via ${strategy.name}.`,
           };
-        } else {
-          errors.push(`${strategy.name} returned 0 results`);
         }
-      } catch (e: any) {
-        errors.push(`${strategy.name} error: ${e.message}`);
-      } finally {
-        timeout.cleanup();
+        errors.push(item.value.error);
       }
     }
 

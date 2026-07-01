@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { runInit } from "./commands/init.js";
 import { runConfig } from "./commands/config.js";
 import { runDoctor } from "./commands/doctor.js";
+import { runBench } from "./commands/bench.js";
 import { runAgent } from "./commands/run.js";
 import { runLSPServer } from "./commands/LSPServer.js";
 import { runLogin } from "./commands/login.js";
@@ -61,8 +62,23 @@ program
 program
   .command("doctor")
   .description("diagnose local environment and API configs")
-  .action(() => {
-    runDoctor(process.cwd());
+  .option("--probe", "perform a lightweight live provider capability probe")
+  .action(async (options) => {
+    await runDoctor(process.cwd(), { probe: !!options.probe });
+  });
+
+program
+  .command("bench")
+  .description(
+    "measure provider first-token latency, throughput, and cache usage",
+  )
+  .option("--model <model>", "model to benchmark")
+  .option("--prompt <prompt>", "custom benchmark prompt")
+  .action(async (options) => {
+    await runBench(process.cwd(), {
+      model: options.model,
+      prompt: options.prompt,
+    });
   });
 
 program

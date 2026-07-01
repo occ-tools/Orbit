@@ -84,4 +84,34 @@ describe("PromptCacheSlabBuilder", () => {
     expect(first.text).not.toContain("console.log(Date.now())");
     expect(fs.existsSync(first.path)).toBe(true);
   });
+
+  it("records cache telemetry and builds diagnostics", () => {
+    const slab = PromptCacheSlabBuilder.build({
+      cwd,
+      model: "deepseek-v4-flash",
+      baseSystemPrompt: "Base rules",
+      toolsPrompt: "Tool schema A",
+      repoMapText: "Repo map A",
+      contextPack: makeContext("RAG result one"),
+    });
+
+    PromptCacheSlabBuilder.recordTelemetry(
+      slab,
+      {
+        inputTokens: 1000,
+        hitTokens: 900,
+        missTokens: 100,
+        hitRate: 0.9,
+        degraded: false,
+      },
+      new Date("2026-06-30T00:00:00Z"),
+    );
+
+    const diagnostics = PromptCacheSlabBuilder.buildDiagnostics(cwd);
+
+    expect(diagnostics).toContain("Cache diagnostics:");
+    expect(diagnostics).toContain(slab.hash.slice(0, 8));
+    expect(diagnostics).toContain("recent hit=90%");
+    expect(diagnostics).toContain("trend samples=1");
+  });
 });

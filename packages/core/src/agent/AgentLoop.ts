@@ -2667,7 +2667,17 @@ ${errLog}`;
 
       if (cutIdx > 1) {
         droppedCount = cutIdx - 1;
-        const kept = [history[0], ...history.slice(cutIdx)];
+        const summaryText = this.buildCompactionSummary(
+          history.slice(1, cutIdx),
+        );
+        const summaryMessage: OrbitMessage = {
+          id: `msg_compaction_summary_${Date.now()}`,
+          role: "user",
+          createdAt: new Date().toISOString(),
+          content: [{ type: "text", text: summaryText }],
+          metadata: { kind: "history_compaction_summary" },
+        };
+        const kept = [history[0], summaryMessage, ...history.slice(cutIdx)];
         this.state.history.length = 0;
         this.state.history.push(...kept);
       }
@@ -2686,6 +2696,42 @@ ${errLog}`;
         `✔ Cache-aware compaction: truncated ${truncatedCount} bulky tool outputs (preserved ${history.length} messages for prefix cache stability).`,
       );
     }
+  }
+
+  private buildCompactionSummary(messages: OrbitMessage[]): string {
+    const lines = [
+      "[Conversation Summary]",
+      "Older conversation turns were compacted to preserve context budget. Use this stable summary as background; rely on recent turns for exact current instructions.",
+    ];
+
+    const snippets: string[] = [];
+    for (const msg of messages.slice(-24)) {
+      const text = msg.content
+        .map((block: any) => {
+          if (block.type === "text") return block.text;
+          if (block.type === "tool_call") {
+            return `tool_call:${block.toolCall.name}`;
+          }
+          if (block.type === "tool_result") {
+            return `tool_result:${block.toolResult.name}:${block.toolResult.isError ? "error" : "ok"}`;
+          }
+          return "";
+        })
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!text) continue;
+      snippets.push(`- ${msg.role}: ${text.slice(0, 240)}`);
+    }
+
+    if (snippets.length === 0) {
+      lines.push("- No compactable text content was found.");
+    } else {
+      lines.push(...snippets.slice(-12));
+    }
+
+    return lines.join("\n");
   }
 
   private async promptSchemaGuided(
@@ -3068,6 +3114,14 @@ ${errLog}`;
       hitTokens,
       missTokens,
       inputTokens,
+      hitRate,
+      degraded,
+    });
+
+    PromptCacheSlabBuilder.recordTelemetry(slab, {
+      inputTokens,
+      hitTokens,
+      missTokens,
       hitRate,
       degraded,
     });

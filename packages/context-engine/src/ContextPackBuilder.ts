@@ -17,7 +17,9 @@ export class ContextPackBuilder {
     | {
         key: string;
         loadedAt: number;
-        skills: Array<SkillSummary & { content: string }>;
+        skills: Array<
+          SkillSummary & { content: string; truncatedByRead?: boolean }
+        >;
       }
     | undefined;
 
@@ -205,6 +207,7 @@ export class ContextPackBuilder {
       activation: "auto",
       maxActive: 3,
       maxSkillBytes: 24000,
+      maxAutoSkillBytes: 8000,
       ...(config.skills || {}),
     };
     if (skillsConfig.enabled === false) {
@@ -244,21 +247,29 @@ export class ContextPackBuilder {
       };
     }
 
-    const loaded: Array<SkillSummary & { content: string }> = [];
+    const loaded: Array<
+      SkillSummary & { content: string; truncatedByRead?: boolean }
+    > = [];
     for (const dir of resolvedDirs) {
       const skillFiles = await this.findSkillFiles(dir);
       for (const filePath of skillFiles) {
         try {
           const raw = await fsPromises.readFile(filePath, "utf8");
-          const content = raw.slice(0, skillsConfig.maxSkillBytes || 24000);
-          loaded.push(this.parseSkillFile(filePath, content));
+          const maxBytes = skillsConfig.maxSkillBytes || 24000;
+          const content = raw.slice(0, maxBytes);
+          loaded.push(
+            this.parseSkillFile(filePath, content, raw.length > content.length),
+          );
         } catch {
           // Ignore unreadable skill files.
         }
       }
     }
 
-    const unique = new Map<string, SkillSummary & { content: string }>();
+    const unique = new Map<
+      string,
+      SkillSummary & { content: string; truncatedByRead?: boolean }
+    >();
     for (const skill of loaded) {
       const key = skill.name.toLowerCase();
       if (!unique.has(key)) {
@@ -316,7 +327,8 @@ export class ContextPackBuilder {
   private parseSkillFile(
     filePath: string,
     content: string,
-  ): SkillSummary & { content: string } {
+    truncatedByRead = false,
+  ): SkillSummary & { content: string; truncatedByRead?: boolean } {
     const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
     const metadata = frontmatter?.[1] || "";
     const name =
@@ -335,11 +347,14 @@ export class ContextPackBuilder {
       description,
       path: filePath.replace(/\\/g, "/"),
       content,
+      truncatedByRead,
     };
   }
 
   private selectActiveSkills(
-    skills: Array<SkillSummary & { content: string }>,
+    skills: Array<
+      SkillSummary & { content: string; truncatedByRead?: boolean }
+    >,
     userQuery: string | undefined,
     skillsConfig: any,
   ): ActiveSkill[] {
@@ -367,7 +382,7 @@ export class ContextPackBuilder {
             score += 3;
           }
         }
-        return { skill, score };
+        return { skill, score, explicit };
       })
       .filter((item) => item.score > 0)
       .sort(
@@ -375,11 +390,26 @@ export class ContextPackBuilder {
       )
       .slice(0, skillsConfig.maxActive || 3);
 
-    return scored.map(({ skill }) => ({
-      name: skill.name,
-      description: skill.description,
-      path: skill.path,
-      content: skill.content,
-    }));
+    return scored.map(({ skill, explicit }) => {
+      const activation = explicit ? "explicit" : "auto";
+      const autoByteLimit =
+        skillsConfig.maxAutoSkillBytes ||
+        Math.min(8000, skillsConfig.maxSkillBytes || 24000);
+      const byteLimit = explicit
+        ? skillsConfig.maxSkillBytes || 24000
+        : autoByteLimit;
+      const content = skill.content.slice(0, byteLimit);
+      return {
+        name: skill.name,
+        description: skill.description,
+        path: skill.path,
+        content,
+        activation,
+        loadedBytes: Buffer.byteLength(content, "utf8"),
+        truncated:
+          Boolean(skill.truncatedByRead) ||
+          content.length < skill.content.length,
+      };
+    });
   }
 }

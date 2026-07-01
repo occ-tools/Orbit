@@ -1,6 +1,7 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   writeFileSync,
@@ -28,6 +29,23 @@ export interface PromptCacheSlab {
   lastPrimedAt?: string;
 }
 
+export interface PromptCacheTelemetrySample {
+  recordedAt: string;
+  inputTokens: number;
+  hitTokens: number;
+  missTokens: number;
+  hitRate: number;
+  degraded: boolean;
+}
+
+interface PromptCacheSlabMetadata {
+  hash?: string;
+  model?: string;
+  tokenEstimate?: number;
+  lastPrimedAt?: string;
+  telemetry?: PromptCacheTelemetrySample[];
+}
+
 export class PromptCacheSlabBuilder {
   public static build(input: PromptCacheSlabInput): PromptCacheSlab {
     const stableText = this.buildStableText(input);
@@ -39,17 +57,11 @@ export class PromptCacheSlabBuilder {
       `${hash.slice(0, 24)}.json`,
     );
 
-    let lastPrimedAt: string | undefined;
-    if (existsSync(slabPath)) {
-      try {
-        const raw = JSON.parse(readFileSync(slabPath, "utf8"));
-        if (raw?.hash === hash && typeof raw.lastPrimedAt === "string") {
-          lastPrimedAt = raw.lastPrimedAt;
-        }
-      } catch {
-        // Ignore stale or partial slab metadata.
-      }
-    }
+    const existing = this.readMetadata(slabPath);
+    const lastPrimedAt =
+      existing?.hash === hash && typeof existing.lastPrimedAt === "string"
+        ? existing.lastPrimedAt
+        : undefined;
 
     const slab: PromptCacheSlab = {
       hash,
@@ -75,12 +87,89 @@ export class PromptCacheSlabBuilder {
     return updated;
   }
 
-  private static save(slab: PromptCacheSlab): void {
+  public static recordTelemetry(
+    slab: PromptCacheSlab,
+    sample: Omit<PromptCacheTelemetrySample, "recordedAt">,
+    date = new Date(),
+  ): void {
+    const existing = this.readMetadata(slab.path);
+    const telemetry = [
+      ...(existing?.telemetry || []),
+      {
+        recordedAt: date.toISOString(),
+        ...sample,
+      },
+    ].slice(-20);
+    this.save(slab, telemetry);
+  }
+
+  public static buildDiagnostics(cwd: string): string {
+    const dir = join(cwd, ".orbit", "cache-slabs");
+    if (!existsSync(dir)) {
+      return [
+        "Cache diagnostics:",
+        "- No cache slab metadata found yet.",
+        "- Run at least one DeepSeek request to create a stable slab.",
+      ].join("\n");
+    }
+
+    const slabs = readdirSync(dir)
+      .filter((file) => file.endsWith(".json"))
+      .map((file) => this.readMetadata(join(dir, file)))
+      .filter((meta): meta is PromptCacheSlabMetadata => Boolean(meta?.hash))
+      .sort((a, b) => {
+        const aTime = Date.parse(
+          a.telemetry?.at(-1)?.recordedAt || a.lastPrimedAt || "",
+        );
+        const bTime = Date.parse(
+          b.telemetry?.at(-1)?.recordedAt || b.lastPrimedAt || "",
+        );
+        return (
+          (Number.isFinite(bTime) ? bTime : 0) -
+          (Number.isFinite(aTime) ? aTime : 0)
+        );
+      });
+
+    if (slabs.length === 0) {
+      return "Cache diagnostics:\n- No readable cache slab metadata found.";
+    }
+
+    const lines = ["Cache diagnostics:"];
+    for (const slab of slabs.slice(0, 5)) {
+      const samples = slab.telemetry || [];
+      const recent = samples.at(-1);
+      const avgHit =
+        samples.length > 0
+          ? samples.reduce((sum, item) => sum + item.hitRate, 0) /
+            samples.length
+          : undefined;
+      lines.push(
+        `- slab ${String(slab.hash).slice(0, 8)} model=${slab.model || "unknown"} tokens=${slab.tokenEstimate || 0} primed=${slab.lastPrimedAt || "never"}`,
+      );
+      if (recent) {
+        lines.push(
+          `  recent hit=${Math.round(recent.hitRate * 100)}% (${recent.hitTokens}/${recent.inputTokens}) miss=${recent.missTokens} degraded=${recent.degraded ? "yes" : "no"} at=${recent.recordedAt}`,
+        );
+      }
+      if (avgHit !== undefined) {
+        lines.push(
+          `  trend samples=${samples.length} avgHit=${Math.round(avgHit * 100)}%`,
+        );
+      }
+    }
+    return lines.join("\n");
+  }
+
+  private static save(
+    slab: PromptCacheSlab,
+    telemetry?: PromptCacheTelemetrySample[],
+  ): void {
     try {
       const dir = dirname(slab.path);
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
       }
+      const existing = this.readMetadata(slab.path);
       const tmpPath = `${slab.path}.tmp`;
       writeFileSync(
         tmpPath,
@@ -90,6 +179,7 @@ export class PromptCacheSlabBuilder {
             model: slab.model,
             tokenEstimate: slab.tokenEstimate,
             lastPrimedAt: slab.lastPrimedAt,
+            telemetry: telemetry || existing?.telemetry || [],
           },
           null,
           2,
@@ -99,6 +189,17 @@ export class PromptCacheSlabBuilder {
       renameSync(tmpPath, slab.path);
     } catch {
       // Cache metadata must never block agent execution.
+    }
+  }
+
+  private static readMetadata(
+    path: string,
+  ): PromptCacheSlabMetadata | undefined {
+    if (!existsSync(path)) return undefined;
+    try {
+      return JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      return undefined;
     }
   }
 

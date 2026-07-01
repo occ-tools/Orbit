@@ -324,6 +324,10 @@ export class ConfigLoader {
       if (Number.isFinite(maxSkillBytes) && maxSkillBytes > 0) {
         nextConfig.skills.maxSkillBytes = maxSkillBytes;
       }
+      const maxAutoSkillBytes = Number(process.env.ORBIT_SKILLS_MAX_AUTO_BYTES);
+      if (Number.isFinite(maxAutoSkillBytes) && maxAutoSkillBytes > 0) {
+        nextConfig.skills.maxAutoSkillBytes = maxAutoSkillBytes;
+      }
     }
 
     return nextConfig;

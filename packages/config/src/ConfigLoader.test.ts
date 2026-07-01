@@ -72,6 +72,7 @@ describe("ConfigLoader tests", () => {
     process.env.ORBIT_SKILLS_ACTIVATION = "explicit";
     process.env.ORBIT_SKILLS_MAX_ACTIVE = "2";
     process.env.ORBIT_SKILLS_MAX_BYTES = "4096";
+    process.env.ORBIT_SKILLS_MAX_AUTO_BYTES = "1024";
 
     try {
       const config = ConfigLoader.loadSync(process.cwd());
@@ -79,11 +80,13 @@ describe("ConfigLoader tests", () => {
       expect(config.skills.activation).toBe("explicit");
       expect(config.skills.maxActive).toBe(2);
       expect(config.skills.maxSkillBytes).toBe(4096);
+      expect(config.skills.maxAutoSkillBytes).toBe(1024);
     } finally {
       delete process.env.ORBIT_SKILLS_DIRS;
       delete process.env.ORBIT_SKILLS_ACTIVATION;
       delete process.env.ORBIT_SKILLS_MAX_ACTIVE;
       delete process.env.ORBIT_SKILLS_MAX_BYTES;
+      delete process.env.ORBIT_SKILLS_MAX_AUTO_BYTES;
     }
   });
 

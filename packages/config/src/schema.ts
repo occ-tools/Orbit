@@ -210,6 +210,7 @@ export const ConfigSchema = z.object({
       activation: z.enum(["explicit", "auto"]).default("auto"),
       maxActive: z.number().int().min(0).max(8).default(3),
       maxSkillBytes: z.number().int().min(512).max(200000).default(24000),
+      maxAutoSkillBytes: z.number().int().min(512).max(200000).default(8000),
     })
     .default({}),
   mcpServers: z.record(McpServerConfigSchema).default({}),

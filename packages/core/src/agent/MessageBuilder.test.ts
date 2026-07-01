@@ -5,13 +5,13 @@ import { ContextPack } from "@orbit-build/context-engine";
 
 describe("MessageBuilder prompt caching", () => {
   it("should include codebase context and files excerpts in the system prompt", () => {
-    const state = createInitialState("session-123", "fix the bug");
+    const state = createInitialState("session-123", "杭州今天天气");
     state.history = [
       {
         id: "msg-1",
         role: "user",
         createdAt: new Date().toISOString(),
-        content: [{ type: "text", text: "fix the bug" }],
+        content: [{ type: "text", text: "杭州今天天气" }],
       },
     ];
 
@@ -57,8 +57,8 @@ describe("MessageBuilder prompt caching", () => {
     expect(build.system).toContain("RAG context A");
     expect(build.system).toContain("console.log('hello');");
     expect(build.system).not.toContain("Use spaces.");
-    expect(build.system.indexOf("### Runtime Context")).toBeLessThan(
-      build.system.indexOf("### Context Instructions"),
+    expect(build.system.indexOf("### Runtime Context")).toBeGreaterThan(
+      build.system.indexOf("### Relevant Files Excerpts"),
     );
     expect(build.system.indexOf("File: src/index.ts")).toBeLessThan(
       build.system.indexOf("### Codebase Context"),
@@ -66,7 +66,35 @@ describe("MessageBuilder prompt caching", () => {
 
     // Verify user message (last message) is clean and undecorated
     const lastMsgText = build.messages[0].content[0].text;
-    expect(lastMsgText).toBe("fix the bug");
+    expect(lastMsgText).toBe("杭州今天天气");
+  });
+
+  it("keeps non-time-sensitive volatile context date-only for cache reuse", () => {
+    const state = createInitialState("session-123", "fix the bug");
+    const context: ContextPack = {
+      projectIndex: {
+        detectedLanguages: ["typescript"],
+        frameworks: ["vitest"],
+        entrypoints: [],
+        packageManager: "pnpm",
+        files: {},
+      },
+      projectInstructions: "",
+      relevantFiles: [],
+      recentChanges: "",
+      currentDiff: "",
+      previousErrors: "",
+      codebaseContext: "",
+      tokenBudget: { max: 128000, usedEstimate: 100 },
+    };
+
+    const build = MessageBuilder.build("System Prompt Base", state, context, {
+      now: new Date(2026, 5, 29, 10, 30, 5),
+    });
+
+    expect(build.system).toContain("Current local date: 2026-06-29");
+    expect(build.system).not.toContain("Current local time:");
+    expect(build.system).not.toContain("Current ISO time:");
   });
 
   it("should keep messages stable across multiple turns and steps", () => {

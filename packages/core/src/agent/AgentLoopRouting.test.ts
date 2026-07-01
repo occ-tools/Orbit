@@ -147,6 +147,67 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     expect((loop as any).state.maxAttempts).toBe(12);
   });
 
+  it("summarizes aggressively compacted history instead of replaying old turns", () => {
+    const mockProvider: ModelProvider = {
+      id: "openai",
+      chat: vi.fn(),
+    } as any;
+
+    const loop = new AgentLoop(
+      testDir,
+      dummyConfig,
+      mockProvider,
+      "continue",
+      dummyInteraction,
+      { disableStatusBar: true },
+    );
+
+    const summary = (loop as any).buildCompactionSummary([
+      {
+        id: "old-user",
+        role: "user",
+        createdAt: "2026-07-01T00:00:00.000Z",
+        content: [{ type: "text", text: "请全面优化 TUI 删除体验" }],
+      },
+      {
+        id: "old-assistant",
+        role: "assistant",
+        createdAt: "2026-07-01T00:00:01.000Z",
+        content: [
+          {
+            type: "tool_call",
+            toolCall: {
+              id: "edit-1",
+              name: "edit_file",
+              arguments: "{}",
+            },
+          },
+        ],
+      },
+      {
+        id: "old-tool",
+        role: "tool",
+        createdAt: "2026-07-01T00:00:02.000Z",
+        content: [
+          {
+            type: "tool_result",
+            toolResult: {
+              id: "edit-1",
+              name: "edit_file",
+              content: "ok",
+              isError: false,
+            },
+          },
+        ],
+      },
+    ]);
+
+    expect(summary).toContain("[Conversation Summary]");
+    expect(summary).toContain("tool_call:edit_file");
+    expect(summary).toContain("tool_result:edit_file:ok");
+    expect(summary.length).toBeLessThan(700);
+  });
+
   it("should ask only once for repeated web search approval in one run", async () => {
     const originalWebSearch = toolRegistry.get("web_search");
     const executeWebSearch = vi.fn(async (input: any) => ({

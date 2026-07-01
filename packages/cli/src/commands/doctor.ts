@@ -3,6 +3,13 @@ import { existsSync } from "fs";
 import { join } from "path";
 import picocolors from "picocolors";
 import { ConfigLoader, type OrbitConfig } from "@orbit-build/config";
+import { buildCacheDiagnostics } from "../runtime/CacheDiagnostics.js";
+import {
+  formatProviderProbe,
+  probeProviderCapabilities,
+  readProviderProbeCache,
+} from "../runtime/ProviderDiagnostics.js";
+import { createProviderFromConfig } from "../runtime/ProviderFactory.js";
 
 type DoctorExec = (
   command: string,
@@ -12,6 +19,7 @@ type DoctorExec = (
 interface DoctorReportOptions {
   exec?: DoctorExec;
   env?: NodeJS.ProcessEnv;
+  providerProbeText?: string;
 }
 
 function defaultExec(command: string, options: Record<string, unknown> = {}) {
@@ -171,6 +179,24 @@ export function buildDoctorReport(
       config.models.coder,
     )}`,
   );
+  if (options.providerProbeText) {
+    lines.push(options.providerProbeText);
+  } else {
+    const cachedProbe = readProviderProbeCache(cwd).find(
+      (item) =>
+        item.providerId === defaultProvider &&
+        item.model === config.models.default,
+    );
+    if (cachedProbe) {
+      lines.push(picocolors.gray(formatProviderProbe(cachedProbe)));
+    } else {
+      lines.push(
+        picocolors.gray(
+          "● Provider probe: no cached result yet. Run `orbit doctor --probe` to test streaming and usage support.",
+        ),
+      );
+    }
+  }
 
   lines.push("");
   lines.push(picocolors.bold("Tools"));
@@ -209,7 +235,7 @@ export function buildDoctorReport(
   lines.push(
     `● Skills: ${boolText(skills.enabled)} activation=${picocolors.cyan(
       skills.activation,
-    )} maxActive=${skills.maxActive} maxBytes=${skills.maxSkillBytes}`,
+    )} maxActive=${skills.maxActive} maxBytes=${skills.maxSkillBytes} maxAutoBytes=${skills.maxAutoSkillBytes}`,
   );
   lines.push(
     `● Skill dirs: ${skills.directories.map((dir) => picocolors.cyan(dir)).join(", ")}`,
@@ -233,9 +259,30 @@ export function buildDoctorReport(
     )} threshold=${config.context.compactThreshold}`,
   );
 
+  lines.push("");
+  lines.push(picocolors.bold("DeepSeek Cache"));
+  lines.push(buildCacheDiagnostics(cwd));
+
   return lines.join("\n");
 }
 
-export function runDoctor(cwd: string): void {
-  console.log(buildDoctorReport(cwd));
+export async function runDoctor(
+  cwd: string,
+  options: { probe?: boolean } = {},
+): Promise<void> {
+  const config = ConfigLoader.loadSync(cwd);
+  let providerProbeText: string | undefined;
+  if (options.probe) {
+    try {
+      const provider = createProviderFromConfig(config);
+      providerProbeText = formatProviderProbe(
+        await probeProviderCapabilities(cwd, config, provider),
+      );
+    } catch (error: any) {
+      providerProbeText = picocolors.red(
+        `Provider probe failed: ${error?.message || String(error)}`,
+      );
+    }
+  }
+  console.log(buildDoctorReport(cwd, config, { providerProbeText }));
 }

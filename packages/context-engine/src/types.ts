@@ -8,6 +8,9 @@ export interface SkillSummary {
 
 export interface ActiveSkill extends SkillSummary {
   content: string;
+  activation: "explicit" | "auto";
+  loadedBytes: number;
+  truncated: boolean;
 }
 
 export interface ContextPack {

@@ -60,6 +60,7 @@ describe("doctor diagnostics", () => {
         activation: "auto",
         maxActive: 3,
         maxSkillBytes: 24000,
+        maxAutoSkillBytes: 8000,
       },
       mcpServers: {},
       hooks: {},

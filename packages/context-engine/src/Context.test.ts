@@ -40,7 +40,7 @@ describe("ContextPackBuilder tests", () => {
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(
       join(tempDir, "orbit.config.yaml"),
-      "skills:\n  directories:\n    - .orbit/skills\n",
+      "skills:\n  directories:\n    - .orbit/skills\n  maxSkillBytes: 512\n",
       "utf8",
     );
     writeFileSync(
@@ -63,5 +63,63 @@ describe("ContextPackBuilder tests", () => {
       "api-tuning",
     );
     expect(pack.activeSkills?.[0].content).toContain("short retry backoff");
+    expect(pack.activeSkills?.[0].activation).toBe("explicit");
+    expect(pack.activeSkills?.[0].truncated).toBe(false);
+  });
+
+  it("loads auto-triggered skills with a smaller budget", async () => {
+    const skillDir = join(tempDir, ".orbit", "skills", "api-tuning");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      join(tempDir, "orbit.config.yaml"),
+      "skills:\n  directories:\n    - .orbit/skills\n  maxSkillBytes: 512\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(skillDir, "SKILL.md"),
+      [
+        "---",
+        "name: api-tuning",
+        "description: Optimize OpenAI compatible provider throughput",
+        "---",
+        "",
+        "Use streaming and short retry backoff for API gateways.",
+        "This extra guidance should be truncated for automatic activation.",
+        "Extended automatic guidance. ".repeat(80),
+      ].join("\n"),
+      "utf8",
+    );
+
+    const builder = new ContextPackBuilder(tempDir);
+    const pack = await builder.build([], "optimize provider throughput");
+
+    expect(pack.activeSkills?.[0].activation).toBe("auto");
+    expect(pack.activeSkills?.[0].loadedBytes).toBeLessThanOrEqual(512);
+    expect(pack.activeSkills?.[0].truncated).toBe(true);
+  });
+
+  it("honors maxAutoSkillBytes when selecting automatic skills", () => {
+    const builder = new ContextPackBuilder(tempDir);
+    const active = (builder as any).selectActiveSkills(
+      [
+        {
+          name: "api-tuning",
+          description: "provider throughput",
+          path: ".orbit/skills/api-tuning/SKILL.md",
+          content: "Use streaming. ".repeat(200),
+        },
+      ],
+      "optimize provider throughput",
+      {
+        activation: "auto",
+        maxActive: 3,
+        maxSkillBytes: 4096,
+        maxAutoSkillBytes: 512,
+      },
+    );
+
+    expect(active[0].activation).toBe("auto");
+    expect(active[0].loadedBytes).toBeLessThanOrEqual(512);
+    expect(active[0].truncated).toBe(true);
   });
 });

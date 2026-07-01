@@ -5,13 +5,6 @@ import {
   Orchestrator,
   eventBus,
 } from "@orbit-build/core";
-import {
-  DeepSeekAnthropicProvider,
-  DeepSeekOpenAIProvider,
-  OpenAIProvider,
-  AnthropicProvider,
-  OllamaProvider,
-} from "@orbit-build/model-providers";
 import { Prompt, DiffView } from "@orbit-build/tui";
 import picocolors from "picocolors";
 import { existsSync, readFileSync } from "fs";
@@ -23,6 +16,7 @@ import {
   pageText,
 } from "../tui/FullscreenTui.js";
 import { ReplController } from "../runtime/ReplController.js";
+import { createProviderFromConfig } from "../runtime/ProviderFactory.js";
 
 export { previousCodePointIndex, nextCodePointIndex, parseMouseWheelDirection };
 
@@ -82,63 +76,12 @@ export async function runAgent(
     }
   }
 
-  const providerName = config.provider.default;
-  const pConfig = config.providers[providerName];
-  if (!pConfig) {
-    console.error(
-      picocolors.red(
-        `Provider "${providerName}" is not defined in configuration.`,
-      ),
-    );
-    return;
-  }
-
   let providerInstance: any;
-  const providerOptions = {
-    id: providerName,
-    apiKeyEnv: pConfig.apiKeyEnv,
-    apiKeyHeader: pConfig.apiKeyHeader,
-    apiKeyPrefix: pConfig.apiKeyPrefix,
-    headers: pConfig.headers,
-    requestTimeoutMs: pConfig.requestTimeoutMs,
-    streamTimeoutMs: pConfig.streamTimeoutMs,
-    maxRetries: pConfig.maxRetries,
-    disablePreheat: pConfig.disablePreheat,
-    extraBody: pConfig.extraBody,
-    capabilities: pConfig.capabilities,
-    modelCapabilities: pConfig.modelCapabilities,
-  };
-  if (pConfig.type === "anthropic-compatible") {
-    providerInstance = new DeepSeekAnthropicProvider(
-      pConfig.apiKey,
-      pConfig.baseUrl,
-      providerOptions,
-    );
-  } else if (pConfig.type === "openai-compatible") {
-    providerInstance = new DeepSeekOpenAIProvider(
-      pConfig.apiKey,
-      pConfig.baseUrl,
-      providerOptions,
-    );
-  } else if (pConfig.type === "openai") {
-    providerInstance = new OpenAIProvider(
-      pConfig.apiKey,
-      pConfig.baseUrl,
-      providerOptions,
-    );
-  } else if (pConfig.type === "anthropic") {
-    providerInstance = new AnthropicProvider(
-      pConfig.apiKey,
-      pConfig.baseUrl,
-      providerOptions,
-    );
-  } else if (pConfig.type === "ollama") {
-    providerInstance = new OllamaProvider(pConfig.baseUrl);
-  }
-
-  if (!providerInstance) {
+  try {
+    providerInstance = createProviderFromConfig(config);
+  } catch (error: any) {
     console.error(
-      picocolors.red(`Unsupported provider type "${pConfig.type}".`),
+      picocolors.red(error?.message || "Failed to create provider instance."),
     );
     return;
   }

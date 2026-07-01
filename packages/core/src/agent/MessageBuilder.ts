@@ -13,7 +13,10 @@ export class MessageBuilder {
     contextPack: ContextPack,
     options: MessageBuilderOptions = {},
   ): { system: string; messages: OrbitMessage[] } {
-    const dynamicContextStr = this.buildVolatileContext(contextPack, options);
+    const dynamicContextStr = this.buildVolatileContext(contextPack, {
+      ...options,
+      task: state.task,
+    });
 
     const system = `${systemPrompt}\n${dynamicContextStr}`;
 
@@ -25,7 +28,7 @@ export class MessageBuilder {
 
   public static buildVolatileContext(
     contextPack: ContextPack,
-    options: MessageBuilderOptions = {},
+    options: MessageBuilderOptions & { task?: string } = {},
   ): string {
     const filesByPath = new Map<
       string,
@@ -81,6 +84,7 @@ export class MessageBuilder {
         return [
           `Skill: ${this.normalizeContextText(skill.name)}`,
           `Path: ${this.normalizeContextText(skill.path)}`,
+          `Activation: ${skill.activation || "auto"}; loadedBytes: ${skill.loadedBytes || this.normalizeContextText(skill.content).length}; truncated: ${skill.truncated ? "yes" : "no"}`,
           skill.description
             ? `Description: ${this.normalizeContextText(skill.description)}`
             : "",
@@ -95,7 +99,6 @@ export class MessageBuilder {
 
     const dynamicContextParts = [
       "### Volatile Context",
-      this.buildRuntimeContext(options.now || new Date()),
       `\n### Context Instructions:\n- You are strictly prohibited from calling any tools (like write_file, edit_file) to modify any files marked as "READ-ONLY REFERENCE". Those files are for your reference only.`,
       activeSkillsContent
         ? `\n### Active Skills\nUse these skill instructions only when they apply to this turn. Follow any progressive-loading instructions before using optional references.\n\n${activeSkillsContent}`
@@ -104,12 +107,18 @@ export class MessageBuilder {
       contextPack.codebaseContext
         ? `\n### Codebase Context:\n\n${this.normalizeContextText(contextPack.codebaseContext)}`
         : "",
+      this.buildRuntimeContext(options.now || new Date(), {
+        precise: this.isTimeSensitiveTask(options.task || ""),
+      }),
     ];
 
     return dynamicContextParts.filter(Boolean).join("\n");
   }
 
-  private static buildRuntimeContext(now: Date): string {
+  private static buildRuntimeContext(
+    now: Date,
+    options: { precise: boolean },
+  ): string {
     const timezone =
       Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
     const offsetMinutes = -now.getTimezoneOffset();
@@ -121,21 +130,27 @@ export class MessageBuilder {
       this.pad(now.getMonth() + 1),
       this.pad(now.getDate()),
     ].join("-");
-    const localTime = [
-      this.pad(now.getHours()),
-      this.pad(now.getMinutes()),
-      this.pad(now.getSeconds()),
-    ].join(":");
-
-    return [
+    const lines = [
       "\n### Runtime Context:",
       `- Current local date: ${localDate}`,
-      `- Current local time: ${localTime}`,
       `- Time zone: ${timezone} (${offset})`,
-      `- Current ISO time: ${now.toISOString()}`,
       "- Resolve relative dates such as today, tomorrow, yesterday, latest, current, and now against this runtime date.",
       "- For weather, news, prices, laws, model/API docs, schedules, or other time-sensitive facts, use web_search and trust live results over model training memory.",
-    ].join("\n");
+    ];
+    if (options.precise) {
+      const localTime = [
+        this.pad(now.getHours()),
+        this.pad(now.getMinutes()),
+        this.pad(now.getSeconds()),
+      ].join(":");
+      lines.splice(
+        3,
+        0,
+        `- Current local time: ${localTime}`,
+        `- Current ISO time: ${now.toISOString()}`,
+      );
+    }
+    return lines.join("\n");
   }
 
   private static pad(value: number): string {
@@ -144,5 +159,11 @@ export class MessageBuilder {
 
   private static normalizeContextText(text: string): string {
     return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  }
+
+  private static isTimeSensitiveTask(task: string): boolean {
+    return /(?:today|tomorrow|yesterday|latest|current|now|weather|forecast|news|price|schedule|law|api docs|version|release|date|time|今天|今日|明天|昨天|最新|当前|现在|实时|天气|预报|新闻|价格|日程|法律|法规|日期|时间)/i.test(
+      task,
+    );
   }
 }

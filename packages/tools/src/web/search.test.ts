@@ -360,4 +360,66 @@ describe("WebSearchTool", () => {
       }
     }
   });
+
+  it("runs auto fallback HTML providers concurrently after configured providers", async () => {
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.includes("127.0.0.1") || url.includes("localhost")) {
+        return {
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({ results: [] }),
+        } as any;
+      }
+      if (url.includes("bing.com")) {
+        return {
+          status: 200,
+          statusText: "OK",
+          text: async () => `
+            <ol>
+              <li class="b_algo">
+                <h2><a href="https://example.com/bing">Bing Result</a></h2>
+                <p>Bing summary.</p>
+              </li>
+            </ol>
+          `,
+        } as any;
+      }
+      return {
+        status: 200,
+        statusText: "OK",
+        text: async () => "",
+      } as any;
+    });
+    global.fetch = fetchMock as any;
+
+    const tool = new WebSearchTool();
+    const res = await tool.execute(
+      { query: "deepseek context caching", maxResults: 3 },
+      {
+        cwd: process.cwd(),
+        sessionId: "test",
+        config: {
+          tools: {
+            webSearch: {
+              enabled: true,
+              provider: "auto",
+              searxngUrls: [],
+              tavilyApiKeyEnv: "NO_TAVILY_KEY",
+              tavilyBaseUrl: "https://api.tavily.com/search",
+              timeoutMs: 8000,
+              maxResults: 5,
+            },
+          },
+        } as any,
+      },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(res.data).toContain("Bing Result");
+    expect(calls.some((url) => url.includes("127.0.0.1"))).toBe(true);
+    expect(calls.some((url) => url.includes("bing.com"))).toBe(true);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+  });
 });

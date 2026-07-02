@@ -372,6 +372,12 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
       for (const block of data.content) {
         if (block.type === "text") {
           yield { type: "text_delta", text: block.text };
+        } else if (block.type === "thinking") {
+          yield {
+            type: "thinking_delta",
+            text: block.thinking || block.text || "",
+            ...(block.signature ? { signature: block.signature } : {}),
+          };
         } else if (block.type === "tool_use") {
           yield {
             type: "tool_call",

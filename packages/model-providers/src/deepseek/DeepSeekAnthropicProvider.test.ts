@@ -107,6 +107,51 @@ describe("DeepSeekAnthropicProvider compatibility options", () => {
     expect(body.temperature).toBeUndefined();
   });
 
+  it("emits non-stream Anthropic thinking blocks before final text", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          content: [
+            { type: "thinking", thinking: "reasoning", signature: "sig" },
+            { type: "text", text: "answer" },
+          ],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }),
+    }) as any;
+    const provider = new DeepSeekAnthropicProvider(
+      "test-key",
+      "https://anthropic.example.com",
+      {
+        disablePreheat: true,
+        maxRetries: 0,
+      },
+    );
+    const events = [];
+
+    for await (const event of provider.chat({
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          id: "msg-1",
+          role: "user",
+          createdAt: new Date().toISOString(),
+          content: [{ type: "text", text: "think" }],
+        },
+      ],
+      stream: false,
+    })) {
+      events.push(event);
+    }
+
+    expect(events[0]).toEqual({
+      type: "thinking_delta",
+      text: "reasoning",
+      signature: "sig",
+    });
+    expect(events[1]).toEqual({ type: "text_delta", text: "answer" });
+  });
+
   it("splits Orbit volatile context into separate Anthropic cache blocks", async () => {
     const provider = new DeepSeekAnthropicProvider(
       "test-key",

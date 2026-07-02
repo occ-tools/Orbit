@@ -9,6 +9,10 @@ import {
   readProviderBenchmarks,
 } from "../runtime/ProviderBenchmarks.js";
 import {
+  describeDeprecatedDeepSeekAliases,
+  isDeprecatedDeepSeekAlias,
+} from "../runtime/ModelCatalog.js";
+import {
   formatProviderProbe,
   probeProviderCapabilities,
   readProviderProbeCache,
@@ -111,9 +115,7 @@ function buildDeepSeekDoctorSection(
   const providerId = config.provider.default;
   const provider = config.providers[providerId];
   const models = allConfiguredModelNames(config);
-  const deprecatedAliases = models.filter((model) =>
-    /^(deepseek-chat|deepseek-reasoner)$/i.test(model),
-  );
+  const deprecatedAliases = models.filter(isDeprecatedDeepSeekAlias);
   const deepseekV4Models = models.filter((model) =>
     /deepseek-v4-(flash|pro)/i.test(model),
   );
@@ -153,9 +155,7 @@ function buildDeepSeekDoctorSection(
   lines.push(
     statusLine(
       deprecatedAliases.length === 0,
-      deprecatedAliases.length === 0
-        ? "No deprecated deepseek-chat/deepseek-reasoner aliases in configured model roles."
-        : `Deprecated aliases configured: ${deprecatedAliases.join(", ")}. Prefer deepseek-v4-flash/pro.`,
+      describeDeprecatedDeepSeekAliases(models),
       true,
     ),
   );

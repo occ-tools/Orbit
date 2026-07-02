@@ -38,11 +38,56 @@ describe("WebSearchTool", () => {
       { cwd: process.cwd(), sessionId: "test" },
     );
     expect(res.ok).toBe(true);
+    expect(res.display).toContain("quality:");
     expect(res.data).toContain("https://example.com/test-result");
     expect(res.data).toContain("Test Page Title");
     expect(res.data).toContain(
       "This is a description snippet of the test result.",
     );
+  });
+
+  it("marks weak generic search results without hiding them", async () => {
+    global.fetch = vi.fn(async () => {
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => `
+          <ol>
+            <li class="b_algo">
+              <h2><a href="https://example.com/unrelated">Unrelated Result</a></h2>
+              <p>Short.</p>
+            </li>
+          </ol>
+        `,
+      } as any;
+    }) as any;
+
+    const tool = new WebSearchTool();
+    const res = await tool.execute(
+      { query: "deepseek context caching prompt_cache_hit_tokens", maxResults: 1 },
+      {
+        cwd: process.cwd(),
+        sessionId: "test",
+        config: {
+          tools: {
+            webSearch: {
+              enabled: true,
+              provider: "bing",
+              searxngUrls: [],
+              tavilyApiKeyEnv: "TAVILY_API_KEY",
+              tavilyBaseUrl: "https://api.tavily.com/search",
+              timeoutMs: 8000,
+              maxResults: 5,
+            },
+          },
+        } as any,
+      },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(res.data).toContain("Unrelated Result");
+    expect(res.display).toContain("quality: low");
   });
 
   it("uses configured SearXNG JSON endpoint before HTML fallbacks", async () => {

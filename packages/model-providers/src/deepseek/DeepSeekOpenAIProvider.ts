@@ -499,6 +499,12 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
     if (!body.stream) {
       const data: any = await response.json();
       const choice = data.choices?.[0];
+      if (choice?.message?.reasoning_content) {
+        yield {
+          type: "thinking_delta",
+          text: choice.message.reasoning_content,
+        };
+      }
       if (choice?.message?.content) {
         yield { type: "text_delta", text: choice.message.content };
       }

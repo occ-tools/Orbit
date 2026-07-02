@@ -116,14 +116,15 @@ function buildCacheProfilePrompt(): string {
   return `${Array.from({ length: 180 }, () => stablePrefix).join("\n")}\n\nReply with exactly: ok`;
 }
 
-export function formatCacheProfileSummary(
-  results: ProviderBenchmarkResult[],
-): string {
+export function evaluateCacheProfile(results: ProviderBenchmarkResult[]): {
+  successful: ProviderBenchmarkResult[];
+  cold?: ProviderBenchmarkResult;
+  warm: ProviderBenchmarkResult[];
+  bestWarm?: ProviderBenchmarkResult;
+  warmAvgHit: number;
+  speedup: string;
+} {
   const successful = results.filter((item) => !item.error);
-  if (successful.length === 0) {
-    return picocolors.yellow("Cache Profile: no successful samples.");
-  }
-
   const cold = successful[0];
   const warm = successful.slice(1);
   const bestWarm = [...warm].sort(
@@ -135,14 +136,31 @@ export function formatCacheProfileSummary(
     warm.length > 0
       ? warm.reduce((sum, item) => sum + item.cacheHitRate, 0) / warm.length
       : 0;
-  const coldFirst = cold.firstDeltaMs ?? "n/a";
-  const bestWarmFirst = bestWarm?.firstDeltaMs ?? "n/a";
   const speedup =
-    typeof cold.firstDeltaMs === "number" &&
+    typeof cold?.firstDeltaMs === "number" &&
     typeof bestWarm?.firstDeltaMs === "number" &&
     bestWarm.firstDeltaMs > 0
       ? `${(cold.firstDeltaMs / bestWarm.firstDeltaMs).toFixed(1)}x`
       : "n/a";
+
+  return { successful, cold, warm, bestWarm, warmAvgHit, speedup };
+}
+
+export function formatCacheProfileSummary(
+  results: ProviderBenchmarkResult[],
+): string {
+  const profile = evaluateCacheProfile(results);
+  const successful = profile.successful;
+  if (successful.length === 0) {
+    return picocolors.yellow("Cache Profile: no successful samples.");
+  }
+
+  const cold = profile.cold!;
+  const warm = profile.warm;
+  const bestWarm = profile.bestWarm;
+  const warmAvgHit = profile.warmAvgHit;
+  const coldFirst = cold.firstDeltaMs ?? "n/a";
+  const bestWarmFirst = bestWarm?.firstDeltaMs ?? "n/a";
   const verdict =
     warmAvgHit >= 0.75
       ? picocolors.green("cache warm")
@@ -156,7 +174,7 @@ export function formatCacheProfileSummary(
     `Cold first delta: ${coldFirst}ms · cache=${Math.round(cold.cacheHitRate * 100)}% (${cold.cacheReadTokens}/${cold.cacheInputTokens})`,
     `Best warm first delta: ${bestWarmFirst}ms · warm avg cache=${Math.round(
       warmAvgHit * 100,
-    )}% · speedup=${speedup}`,
+    )}% · speedup=${profile.speedup}`,
     `Prompt hash: ${cold.promptHash} · prompt chars=${cold.promptChars}`,
     "Interpretation: DeepSeek cache is expected to be cold on round 1; warm rounds should show high cacheReadTokens for the same stable prefix.",
   ].join("\n");
@@ -190,6 +208,13 @@ function printBenchResult(
   }
 }
 
+function clampCacheHitThreshold(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.max(0, Math.min(1, parsed > 1 ? parsed / 100 : parsed));
+}
+
 export async function runBench(
   cwd: string,
   options: {
@@ -200,6 +225,7 @@ export async function runBench(
     repeat?: number;
     maxTokens?: number;
     cacheProfile?: boolean;
+    minCacheHit?: number | string;
     json?: boolean;
   } = {},
 ): Promise<void> {
@@ -220,6 +246,7 @@ export async function runBench(
     ? Math.max(3, clampRepeat(options.repeat))
     : clampRepeat(options.repeat);
   const maxTokens = clampMaxTokens(options.maxTokens);
+  const minCacheHit = clampCacheHitThreshold(options.minCacheHit);
   const results: ProviderBenchmarkResult[] = [];
   const cacheProfileGroups = new Map<string, ProviderBenchmarkResult[]>();
 
@@ -272,5 +299,39 @@ export async function runBench(
   } else if (models.length > 1 || repeat > 1) {
     console.log("");
     console.log(compareProviderBenchmarkResults(results));
+  }
+
+  if (options.cacheProfile && minCacheHit !== undefined) {
+    const failures = [...cacheProfileGroups.values()]
+      .map((group) => {
+        const profile = evaluateCacheProfile(group);
+        const sample = group[0];
+        return {
+          providerId: sample?.providerId || "unknown",
+          model: sample?.model || "unknown",
+          warmAvgHit: profile.warmAvgHit,
+          warmSamples: profile.warm.length,
+        };
+      })
+      .filter(
+        (item) => item.warmSamples === 0 || item.warmAvgHit < minCacheHit,
+      );
+
+    if (failures.length > 0) {
+      process.exitCode = 1;
+      const lines = failures.map(
+        (item) =>
+          `${item.providerId} / ${item.model}: warm cache=${Math.round(
+            item.warmAvgHit * 100,
+          )}% samples=${item.warmSamples}`,
+      );
+      console.error(
+        picocolors.red(
+          `Cache profile threshold failed: expected warm cache >= ${Math.round(
+            minCacheHit * 100,
+          )}%. ${lines.join("; ")}`,
+        ),
+      );
+    }
   }
 }

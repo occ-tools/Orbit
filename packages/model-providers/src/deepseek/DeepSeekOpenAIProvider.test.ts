@@ -294,6 +294,56 @@ describe("DeepSeekOpenAIProvider messages mapping", () => {
     expect(body.temperature).toBeUndefined();
   });
 
+  it("emits non-stream DeepSeek reasoning_content before final content", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          choices: [
+            {
+              message: {
+                reasoning_content: "hidden reasoning",
+                content: "final answer",
+              },
+            },
+          ],
+          usage: {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+          },
+        }),
+    }) as any;
+    const provider = new DeepSeekOpenAIProvider(
+      "test-key",
+      "https://api.deepseek.com",
+      {
+        disablePreheat: true,
+        maxRetries: 0,
+      },
+    );
+    const events = [];
+
+    for await (const event of provider.chat({
+      model: "deepseek-v4-pro",
+      messages: [
+        {
+          role: "user" as const,
+          content: [{ type: "text" as const, text: "think" }],
+        },
+      ],
+      stream: false,
+    })) {
+      events.push(event);
+    }
+
+    expect(events[0]).toEqual({
+      type: "thinking_delta",
+      text: "hidden reasoning",
+    });
+    expect(events[1]).toEqual({ type: "text_delta", text: "final answer" });
+  });
+
   it("flushes each OpenAI-compatible SSE frame without waiting for the read chunk", async () => {
     const encoder = new TextEncoder();
     global.fetch = vi.fn().mockResolvedValue({

@@ -36,6 +36,13 @@ interface SearchStrategy {
   timeoutMs: number;
 }
 
+interface SearchQuality {
+  score: number;
+  label: "high" | "medium" | "low";
+  matchedTerms: number;
+  withSnippets: number;
+}
+
 interface OpenMeteoLocation {
   name?: string;
   country?: string;
@@ -110,6 +117,66 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
       if (deduped.length >= maxResults) break;
     }
     return deduped;
+  }
+
+  private queryTerms(query: string): string[] {
+    const stop = new Set([
+      "the",
+      "and",
+      "for",
+      "with",
+      "today",
+      "tomorrow",
+      "weather",
+      "search",
+      "query",
+      "请",
+      "帮我",
+      "查询",
+      "搜索",
+      "一下",
+      "今天",
+      "明天",
+      "天气",
+    ]);
+    return Array.from(
+      new Set(
+        query
+          .toLowerCase()
+          .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+          .split(/\s+/)
+          .map((term) => term.trim())
+          .filter((term) => term.length >= 2 && !stop.has(term)),
+      ),
+    ).slice(0, 8);
+  }
+
+  private scoreSearchQuality(query: string, results: SearchResult[]): SearchQuality {
+    const terms = this.queryTerms(query);
+    const withSnippets = results.filter((result) => result.snippet.length > 20)
+      .length;
+    const matched = new Set<string>();
+    for (const result of results) {
+      const haystack = `${result.title} ${result.snippet} ${result.link}`.toLowerCase();
+      for (const term of terms) {
+        if (haystack.includes(term)) {
+          matched.add(term);
+        }
+      }
+    }
+
+    const snippetScore =
+      results.length > 0 ? Math.min(1, withSnippets / results.length) : 0;
+    const termScore =
+      terms.length > 0 ? Math.min(1, matched.size / terms.length) : 0.5;
+    const score = Math.max(0, Math.min(1, termScore * 0.65 + snippetScore * 0.35));
+    const label = score >= 0.7 ? "high" : score >= 0.4 ? "medium" : "low";
+    return {
+      score,
+      label,
+      matchedTerms: matched.size,
+      withSnippets,
+    };
   }
 
   private isWeatherQuery(query: string): boolean {
@@ -859,6 +926,7 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
         }
         if (item.value.ok) {
           const { strategy, results } = item.value;
+          const quality = this.scoreSearchQuality(input.query, results);
           const formatted = results
             .map(
               (r, i) =>
@@ -869,7 +937,7 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
           return {
             ok: true,
             data: formatted,
-            display: `Web search returned ${results.length} results via ${strategy.name}.`,
+            display: `Web search returned ${results.length} results via ${strategy.name} (quality: ${quality.label}, score=${quality.score.toFixed(2)}, matchedTerms=${quality.matchedTerms}, snippets=${quality.withSnippets}).`,
           };
         }
         errors.push(item.value.error);

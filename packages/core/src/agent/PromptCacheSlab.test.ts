@@ -13,7 +13,10 @@ describe("PromptCacheSlabBuilder", () => {
     }
   });
 
-  function makeContext(codebaseContext: string): ContextPack {
+  function makeContext(
+    codebaseContext: string,
+    overrides: Partial<ContextPack> = {},
+  ): ContextPack {
     return {
       projectIndex: {
         detectedLanguages: ["typescript"],
@@ -51,6 +54,7 @@ describe("PromptCacheSlabBuilder", () => {
       previousErrors: "",
       codebaseContext,
       tokenBudget: { max: 128000, usedEstimate: 100 },
+      ...overrides,
     };
   }
 
@@ -83,6 +87,46 @@ describe("PromptCacheSlabBuilder", () => {
     expect(first.text).not.toContain("RAG result one");
     expect(first.text).not.toContain("console.log(Date.now())");
     expect(fs.existsSync(first.path)).toBe(true);
+  });
+
+  it("keeps the cache key stable for reordered stable project metadata", () => {
+    const first = PromptCacheSlabBuilder.build({
+      cwd,
+      model: "deepseek-v4-flash",
+      baseSystemPrompt: "Base rules",
+      toolsPrompt: "Tool schema A",
+      repoMapText: "Repo map A",
+      contextPack: makeContext("RAG result one", {
+        projectIndex: {
+          detectedLanguages: ["typescript", "javascript"],
+          frameworks: ["vitest", "react"],
+          entrypoints: ["src/index.ts", "src/cli.ts"],
+          packageManager: "pnpm",
+          files: {},
+        },
+      }),
+    });
+    const second = PromptCacheSlabBuilder.build({
+      cwd,
+      model: "deepseek-v4-flash",
+      baseSystemPrompt: "Base rules",
+      toolsPrompt: "Tool schema A",
+      repoMapText: "Repo map A",
+      contextPack: makeContext("RAG result two", {
+        projectIndex: {
+          detectedLanguages: ["javascript", "typescript"],
+          frameworks: ["react", "vitest"],
+          entrypoints: ["src/cli.ts", "src/index.ts"],
+          packageManager: "pnpm",
+          files: {},
+        },
+      }),
+    });
+
+    expect(first.hash).toBe(second.hash);
+    expect(first.text).toContain("Language profile: javascript, typescript");
+    expect(first.text).toContain("Framework profile: react, vitest");
+    expect(first.text).toContain("Entrypoints: src/cli.ts, src/index.ts");
   });
 
   it("records cache telemetry and builds diagnostics", () => {

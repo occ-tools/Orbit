@@ -8,7 +8,10 @@ import {
   readProviderBenchmarks,
   recordProviderBenchmark,
 } from "./ProviderBenchmarks.js";
-import { formatCacheProfileSummary } from "../commands/bench.js";
+import {
+  evaluateCacheProfile,
+  formatCacheProfileSummary,
+} from "../commands/bench.js";
 
 describe("ProviderBenchmarks", () => {
   const dirs: string[] = [];
@@ -94,7 +97,7 @@ describe("ProviderBenchmarks", () => {
   });
 
   it("summarizes cache profile cold and warm rounds", () => {
-    const summary = formatCacheProfileSummary([
+    const samples = [
       {
         providerId: "deepseek-openai",
         model: "deepseek-v4-flash",
@@ -127,11 +130,15 @@ describe("ProviderBenchmarks", () => {
         cacheInputTokens: 900,
         cacheHitRate: 0.94,
       },
-    ]);
+    ];
+    const summary = formatCacheProfileSummary(samples);
+    const profile = evaluateCacheProfile(samples);
 
     expect(summary).toContain("Cache Profile");
     expect(summary).toContain("cache warm");
     expect(summary).toContain("speedup=5.6x");
     expect(summary).toContain("Prompt hash: stable");
+    expect(profile.warmAvgHit).toBe(0.94);
+    expect(profile.speedup).toBe("5.6x");
   });
 });

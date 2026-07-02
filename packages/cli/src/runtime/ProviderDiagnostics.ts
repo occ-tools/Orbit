@@ -20,6 +20,8 @@ export interface ProviderProbeResult {
   observed: {
     streamStarted: boolean;
     usageReturned: boolean;
+    cacheUsageReturned?: boolean;
+    totalTokensReturned?: boolean;
     error?: string;
     firstDeltaMs?: number;
   };
@@ -96,6 +98,8 @@ export async function probeProviderCapabilities(
     observed: {
       streamStarted: false,
       usageReturned: false,
+      cacheUsageReturned: false,
+      totalTokensReturned: false,
     },
   };
 
@@ -124,6 +128,13 @@ export async function probeProviderCapabilities(
         }
       } else if (event.type === "usage") {
         result.observed.usageReturned = true;
+        result.observed.totalTokensReturned =
+          typeof event.usage.totalTokens === "number" &&
+          event.usage.totalTokens > 0;
+        result.observed.cacheUsageReturned =
+          typeof event.usage.cacheReadTokens === "number" ||
+          typeof event.usage.cacheMissTokens === "number" ||
+          typeof event.usage.cacheWriteTokens === "number";
       } else if (event.type === "error") {
         result.observed.error = event.error?.message || String(event.error);
         break;
@@ -144,10 +155,37 @@ export async function probeProviderCapabilities(
 
 export function formatProviderProbe(result: ProviderProbeResult): string {
   const observed = result.observed;
+  const cacheUsage =
+    typeof observed.cacheUsageReturned === "boolean"
+      ? observed.cacheUsageReturned
+        ? "yes"
+        : "no"
+      : "n/a";
+  const totalTokens =
+    typeof observed.totalTokensReturned === "boolean"
+      ? observed.totalTokensReturned
+        ? "yes"
+        : "no"
+      : "n/a";
+  const warnings: string[] = [];
+  if (result.declared.streaming && !observed.streamStarted) {
+    warnings.push("declared streaming but no stream delta observed");
+  }
+  if (!observed.usageReturned) {
+    warnings.push("usage metadata missing");
+  }
+  if (
+    result.declared.promptCaching &&
+    observed.cacheUsageReturned === false
+  ) {
+    warnings.push("declared cache support but no cache usage fields observed");
+  }
+
   return [
     `Provider probe: ${result.providerId} / ${result.model}`,
     `- declared: streaming=${result.declared.streaming} tools=${result.declared.toolCalls} thinking=${result.declared.thinking} cache=${result.declared.promptCaching}`,
-    `- observed: stream=${observed.streamStarted ? "yes" : "no"} usage=${observed.usageReturned ? "yes" : "no"} firstDelta=${observed.firstDeltaMs ?? "n/a"}ms`,
+    `- observed: stream=${observed.streamStarted ? "yes" : "no"} usage=${observed.usageReturned ? "yes" : "no"} cacheUsage=${cacheUsage} totalTokens=${totalTokens} firstDelta=${observed.firstDeltaMs ?? "n/a"}ms`,
+    warnings.length > 0 ? `- warnings: ${warnings.join("; ")}` : "",
     observed.error ? `- error: ${observed.error}` : "",
   ]
     .filter(Boolean)

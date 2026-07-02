@@ -83,6 +83,10 @@ program
   .option("--repeat <n>", "number of benchmark samples to record")
   .option("--max-tokens <n>", "maximum completion tokens for each sample")
   .option("--cache-profile", "run a cold/warm DeepSeek cache profile")
+  .option(
+    "--min-cache-hit <ratio>",
+    "fail cache profile when warm average cache hit is below ratio, e.g. 0.75 or 75",
+  )
   .option("--json", "print benchmark samples as JSON")
   .action(async (options) => {
     await runBench(process.cwd(), {
@@ -93,6 +97,7 @@ program
       repeat: options.repeat,
       maxTokens: options.maxTokens,
       cacheProfile: !!options.cacheProfile,
+      minCacheHit: options.minCacheHit,
       json: !!options.json,
     });
   });

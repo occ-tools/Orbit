@@ -3439,21 +3439,58 @@ function generateXMLToolsPrompt(tools: any[]): string {
     const schema = tool.inputSchema as any;
     if (schema && schema.shape) {
       for (const [key, prop] of Object.entries(schema.shape)) {
-        const isOptional = (prop as any) instanceof z.ZodOptional;
-        let typeName = "string";
-        try {
-          typeName = (prop as any)._def.typeName
-            .replace("Zod", "")
-            .toLowerCase();
-        } catch {
-          // ignore
-        }
-        prompt += `    - \`${key}\`: (type: ${typeName}${isOptional ? ", optional" : ""})\n`;
+        const field = describeZodPromptField(prop);
+        const values = field.values ? `, values: ${field.values}` : "";
+        const description = field.description
+          ? ` - ${field.description.replace(/\s+/g, " ").trim()}`
+          : "";
+        prompt += `    - \`${key}\`: (type: ${field.typeName}${field.isOptional ? ", optional" : ""}${values})${description}\n`;
       }
     }
     prompt += `\n`;
   }
   return prompt;
+}
+
+function describeZodPromptField(schema: any): {
+  typeName: string;
+  isOptional: boolean;
+  values?: string;
+  description?: string;
+} {
+  const description = schema?.description || schema?._def?.description;
+  let current = schema;
+  let isOptional = false;
+
+  while (current?._def) {
+    const typeName = current._def.typeName;
+    if (typeName === "ZodOptional" || typeName === "ZodDefault") {
+      isOptional = true;
+      current = current._def.innerType;
+      continue;
+    }
+    if (typeName === "ZodNullable" || typeName === "ZodEffects") {
+      current = current._def.innerType || current._def.schema;
+      continue;
+    }
+    break;
+  }
+
+  const typeName = String(current?._def?.typeName || "ZodString")
+    .replace("Zod", "")
+    .toLowerCase();
+  const values =
+    current instanceof z.ZodEnum
+      ? (current as any)._def.values.join(", ")
+      : undefined;
+
+  return {
+    typeName,
+    isOptional,
+    values,
+    description:
+      description || current?.description || current?._def?.description,
+  };
 }
 
 function parseXMLToolCalls(text: string): OrbitToolCall[] {

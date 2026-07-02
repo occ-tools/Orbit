@@ -385,6 +385,61 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     }
   });
 
+  it("includes tool parameter descriptions in the XML fallback prompt", async () => {
+    const originalWebSearch = toolRegistry.get("web_search");
+    toolRegistry.register({
+      name: "web_search",
+      description: "mock live lookup",
+      inputSchema: z.object({
+        query: z.string().describe("Search query with runtime dates."),
+        maxResults: z
+          .number()
+          .describe("Maximum number of search results.")
+          .optional(),
+      }),
+      risk: "network",
+      execute: vi.fn(),
+    });
+
+    const chatMock = vi.fn().mockImplementation(async function* () {
+      yield { type: "text_delta", text: "done" };
+    });
+
+    const mockProvider: ModelProvider = {
+      id: "openai",
+      chat: chatMock,
+    } as any;
+
+    try {
+      const loop = new AgentLoop(
+        testDir,
+        {
+          ...dummyConfig,
+          tools: {
+            ...dummyConfig.tools,
+            webSearch: { enabled: true },
+          },
+        } as any,
+        mockProvider,
+        "search current docs",
+        dummyInteraction,
+        { disableStatusBar: true, allowedTools: ["web_search"] },
+      );
+
+      await loop.run();
+
+      const system = chatMock.mock.calls[0][0].system;
+      expect(system).toContain("`query`: (type: string)");
+      expect(system).toContain("Search query with runtime dates");
+      expect(system).toContain("`maxResults`: (type: number, optional)");
+      expect(system).toContain("Maximum number of search results");
+    } finally {
+      if (originalWebSearch) {
+        toolRegistry.register(originalWebSearch);
+      }
+    }
+  });
+
   it("should prime DeepSeek cache slab before the main request", async () => {
     const chatMock = vi.fn().mockImplementation(async function* (input: any) {
       if (input.maxTokens === 1) {

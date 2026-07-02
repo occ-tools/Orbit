@@ -7,7 +7,13 @@ export const WebSearchInputSchema = z.object({
     .describe(
       "Search query. Resolve relative dates using the Runtime Context current date before adding date terms; do not add stale years from model memory.",
     ),
-  maxResults: z.number().int().min(1).max(20).optional(),
+  maxResults: z
+    .number()
+    .int()
+    .min(1)
+    .max(20)
+    .describe("Maximum number of search results to return, from 1 to 20.")
+    .optional(),
 });
 
 export type WebSearchInput = z.infer<typeof WebSearchInputSchema>;

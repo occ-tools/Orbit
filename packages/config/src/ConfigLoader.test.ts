@@ -9,6 +9,12 @@ describe("ConfigLoader tests", () => {
     expect(config.models.default).toBe("deepseek-v4-flash");
     expect(config.agent.maxIterations).toBe(8);
     expect(config.tools.webSearch.maxResults).toBe(8);
+    expect(config.skills.directories).toEqual([
+      ".orbit/skills",
+      ".agents/skills",
+      ".claude/skills",
+      "~/.claude/skills",
+    ]);
   });
 
   it("should apply CLI overrides", () => {

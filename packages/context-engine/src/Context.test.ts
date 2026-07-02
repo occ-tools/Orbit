@@ -98,6 +98,31 @@ describe("ContextPackBuilder tests", () => {
     expect(pack.activeSkills?.[0].truncated).toBe(true);
   });
 
+  it("discovers Claude-compatible project skills by default", async () => {
+    const skillDir = join(tempDir, ".claude", "skills", "code-review");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      join(skillDir, "SKILL.md"),
+      [
+        "---",
+        "name: code-review",
+        "description: Review code for regressions",
+        "---",
+        "",
+        "Prioritize bugs, regressions, and missing tests.",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const builder = new ContextPackBuilder(tempDir);
+    const pack = await builder.build([], "please run $code-review");
+
+    expect(pack.skillsIndex?.map((skill) => skill.name)).toContain(
+      "code-review",
+    );
+    expect(pack.activeSkills?.[0].content).toContain("Prioritize bugs");
+  });
+
   it("honors maxAutoSkillBytes when selecting automatic skills", () => {
     const builder = new ContextPackBuilder(tempDir);
     const active = (builder as any).selectActiveSkills(

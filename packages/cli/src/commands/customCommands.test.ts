@@ -38,6 +38,55 @@ describe("custom slash commands", () => {
     });
   });
 
+  it("loads Claude-compatible project commands recursively", () => {
+    const commandDir = join(cwd, ".claude", "commands", "review");
+    mkdirSync(commandDir, { recursive: true });
+    writeFileSync(
+      join(commandDir, "fix-issue.md"),
+      [
+        "---",
+        "description: Fix a GitHub issue",
+        "argument-hint: [issue-number] [priority]",
+        "---",
+        "Fix issue #$0 with priority $1.",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const commands = loadCustomCommands(cwd);
+    const command = commands.find((item) => item.name === "fix-issue");
+
+    expect(command).toMatchObject({
+      name: "fix-issue",
+      description: "Fix a GitHub issue",
+      argumentHint: "[issue-number] [priority]",
+      source: "project",
+    });
+    expect(expandCustomCommand(command!, "123 high")).toBe(
+      "Fix issue #123 with priority high.",
+    );
+  });
+
+  it("lets native Orbit commands override Claude-compatible commands", () => {
+    mkdirSync(join(cwd, ".claude", "commands"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".claude", "commands", "review.md"),
+      "Claude review workflow",
+      "utf8",
+    );
+    writeFileSync(
+      join(cwd, ".orbit", "commands", "review.md"),
+      "Orbit review workflow",
+      "utf8",
+    );
+
+    const command = loadCustomCommands(cwd).find(
+      (item) => item.name === "review",
+    );
+
+    expect(command?.template).toBe("Orbit review workflow");
+  });
+
   it("does not allow custom commands to shadow reserved built-ins", () => {
     writeFileSync(
       join(cwd, ".orbit", "commands", "help.md"),

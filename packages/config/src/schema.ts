@@ -206,7 +206,12 @@ export const ConfigSchema = z.object({
       enabled: z.boolean().default(true),
       directories: z
         .array(z.string())
-        .default([".orbit/skills", ".agents/skills"]),
+        .default([
+          ".orbit/skills",
+          ".agents/skills",
+          ".claude/skills",
+          "~/.claude/skills",
+        ]),
       activation: z.enum(["explicit", "auto"]).default("auto"),
       maxActive: z.number().int().min(0).max(8).default(3),
       maxSkillBytes: z.number().int().min(512).max(200000).default(24000),

@@ -120,7 +120,12 @@ export const DEFAULT_CONFIG: OrbitConfig = {
   },
   skills: {
     enabled: true,
-    directories: [".orbit/skills", ".agents/skills"],
+    directories: [
+      ".orbit/skills",
+      ".agents/skills",
+      ".claude/skills",
+      "~/.claude/skills",
+    ],
     activation: "auto",
     maxActive: 3,
     maxSkillBytes: 24000,

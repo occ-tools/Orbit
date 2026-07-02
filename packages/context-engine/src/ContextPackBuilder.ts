@@ -203,7 +203,12 @@ export class ContextPackBuilder {
   ): Promise<{ index: SkillSummary[]; active: ActiveSkill[] }> {
     const skillsConfig = {
       enabled: true,
-      directories: [".orbit/skills", ".agents/skills"],
+      directories: [
+        ".orbit/skills",
+        ".agents/skills",
+        ".claude/skills",
+        "~/.claude/skills",
+      ],
       activation: "auto",
       maxActive: 3,
       maxSkillBytes: 24000,
@@ -214,9 +219,12 @@ export class ContextPackBuilder {
       return { index: [], active: [] };
     }
 
-    const directories = Array.isArray(skillsConfig.directories)
+    const configuredDirectories = Array.isArray(skillsConfig.directories)
       ? skillsConfig.directories
       : [];
+    const directories = Array.from(
+      new Set([...configuredDirectories, ".claude/skills", "~/.claude/skills"]),
+    );
     if (directories.length === 0) {
       return { index: [], active: [] };
     }

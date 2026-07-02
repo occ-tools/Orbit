@@ -98,12 +98,15 @@ describe("WebUiServer", () => {
       }),
     }).then((response) => response.json());
 
-    expect(html).toContain("ORBIT");
+    expect(html).toContain("<h1>Orbit</h1>");
     expect(html).toContain("/api/chat");
     expect(status.workspace).toBe("D:/repo");
     expect(status.provider.id).toBe("deepseek-openai");
     expect(status.session.activeId).toBe("sess-test");
     expect(status.context.relevantFiles).toBe(1);
+    expect(status.modelOptions.map((item: { id: string }) => item.id)).toContain(
+      "deepseek-v4-flash",
+    );
     expect(messages.messages[0].text).toBe("hello");
     expect(chat.ok).toBe(true);
     expect(submitted).toEqual(["hi from web"]);

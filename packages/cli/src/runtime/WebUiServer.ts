@@ -3,6 +3,10 @@ import { spawn } from "child_process";
 import type { OrbitConfig } from "@orbit-build/config";
 import { eventBus } from "@orbit-build/core";
 import { buildCacheDiagnostics } from "./CacheDiagnostics.js";
+import {
+  formatModelOptionLabel,
+  getProviderModelCandidates,
+} from "./ModelCatalog.js";
 
 type WebUiLoopSnapshot = {
   getSessionId?: () => string;
@@ -100,6 +104,20 @@ function collectStatus(options: WebUiOptions) {
   const provider = config.providers[providerId] || {};
   const activeModel =
     safeCall(() => loop?.getModelOverride?.()) || config.models.default;
+  const modelOptions = Array.from(
+    new Set([
+      activeModel,
+      config.models.default,
+      config.models.fast,
+      config.models.planner,
+      config.models.coder,
+      config.models.reviewer,
+      config.models.summarizer,
+      ...getProviderModelCandidates(config, providerId),
+    ]),
+  )
+    .map((model) => model?.trim())
+    .filter((model): model is string => Boolean(model));
 
   return {
     workspace: cwd,
@@ -110,6 +128,10 @@ function collectStatus(options: WebUiOptions) {
     },
     models: config.models,
     activeModel,
+    modelOptions: modelOptions.map((model) => ({
+      id: model,
+      label: formatModelOptionLabel(model),
+    })),
     permissions: config.permissions,
     tools: {
       webSearch: config.tools.webSearch,
@@ -172,8 +194,29 @@ function extractText(content: unknown): string {
 
 function getSettings(options: WebUiOptions) {
   const { config, loop } = options;
+  const providerId = config.provider.default;
+  const activeModel =
+    safeCall(() => loop?.getModelOverride?.()) || config.models.default;
+  const modelOptions = Array.from(
+    new Set([
+      activeModel,
+      config.models.default,
+      config.models.fast,
+      config.models.planner,
+      config.models.coder,
+      config.models.reviewer,
+      config.models.summarizer,
+      ...getProviderModelCandidates(config, providerId),
+    ]),
+  )
+    .map((model) => model?.trim())
+    .filter((model): model is string => Boolean(model));
   return {
-    model: safeCall(() => loop?.getModelOverride?.()) || config.models.default,
+    model: activeModel,
+    modelOptions: modelOptions.map((model) => ({
+      id: model,
+      label: formatModelOptionLabel(model),
+    })),
     permissionMode: config.permissions.mode,
     webSearchEnabled: config.tools.webSearch.enabled,
     webSearchProvider: config.tools.webSearch.provider,
@@ -227,18 +270,57 @@ function renderHtml(): string {
   <title>Orbit Web UI</title>
   <style>
     :root {
+      color-scheme: light;
+      --bg: #f6f6f4;
+      --rail: #ededeb;
+      --surface: #ffffff;
+      --surface-2: #f3f3f1;
+      --line: #dededb;
+      --line-strong: #c9c9c5;
+      --text: #242423;
+      --muted: #676b70;
+      --soft: #91959a;
+      --green: #15803d;
+      --cyan: #2563eb;
+      --yellow: #b7791f;
+      --red: #c24141;
+      --shadow: 0 18px 45px rgba(35, 35, 35, 0.08);
+    }
+    :root[data-theme="dark"] {
       color-scheme: dark;
-      --bg: #08090b;
-      --surface: #101317;
-      --surface-2: #151a20;
-      --line: #303844;
-      --text: #e7eaee;
-      --muted: #b7c0ca;
-      --soft: #8b98a6;
+      --bg: #090a0c;
+      --rail: #111316;
+      --surface: #16191d;
+      --surface-2: #20242a;
+      --line: #303640;
+      --line-strong: #4b5563;
+      --text: #e6e8eb;
+      --muted: #b8c0ca;
+      --soft: #8c96a3;
       --green: #9dca9b;
-      --cyan: #9fcbdb;
+      --cyan: #9fc8db;
       --yellow: #dfc372;
       --red: #df8c8c;
+      --shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        color-scheme: dark;
+        --bg: #090a0c;
+        --rail: #111316;
+        --surface: #16191d;
+        --surface-2: #20242a;
+        --line: #303640;
+        --line-strong: #4b5563;
+        --text: #e6e8eb;
+        --muted: #b8c0ca;
+        --soft: #8c96a3;
+        --green: #9dca9b;
+        --cyan: #9fc8db;
+        --yellow: #dfc372;
+        --red: #df8c8c;
+        --shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+      }
     }
     * { box-sizing: border-box; }
     body {
@@ -246,48 +328,105 @@ function renderHtml(): string {
       min-height: 100vh;
       background: var(--bg);
       color: var(--text);
-      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     header {
-      height: 54px;
+      height: 56px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      padding: 0 18px;
+      padding: 0 20px;
       border-bottom: 1px solid var(--line);
-      background: #0d1013;
+      background: color-mix(in srgb, var(--surface) 84%, transparent);
+      backdrop-filter: blur(14px);
     }
-    h1 { margin: 0; font-size: 17px; letter-spacing: 0.08em; }
-    .status { display: flex; gap: 14px; color: var(--muted); white-space: nowrap; }
+    h1 { margin: 0; font-size: 16px; letter-spacing: 0; }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface);
+    }
     .layout {
       height: calc(100vh - 54px);
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 320px;
+      grid-template-columns: 250px minmax(0, 1fr) 356px;
+    }
+    .sidebar {
+      min-width: 0;
+      overflow: auto;
+      border-right: 1px solid var(--line);
+      background: var(--rail);
+      padding: 14px 12px;
+    }
+    .nav-title {
+      color: var(--soft);
+      font-size: 12px;
+      margin: 16px 10px 8px;
+    }
+    .nav-item {
+      width: 100%;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--text);
+      background: transparent;
+      border: 0;
+      border-radius: 9px;
+      padding: 0 10px;
+      text-align: left;
+    }
+    .nav-item.active,
+    .nav-item:hover {
+      background: color-mix(in srgb, var(--surface) 78%, transparent);
     }
     main {
       min-width: 0;
       display: grid;
       grid-template-rows: minmax(0, 1fr) auto;
+      background: var(--surface);
     }
     #messages {
       overflow: auto;
-      padding: 18px;
+      padding: 24px 32px 18px;
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 18px;
     }
     .message {
-      max-width: 980px;
-      border-left: 3px solid var(--line);
-      padding: 2px 0 2px 12px;
+      max-width: 920px;
+      padding: 0;
     }
-    .message.user { border-left-color: var(--cyan); }
-    .message.assistant { border-left-color: var(--green); }
+    .message.user { margin-left: auto; max-width: min(760px, 92%); }
+    .message.user .bubble {
+      background: color-mix(in srgb, var(--cyan) 10%, var(--surface));
+      border-color: color-mix(in srgb, var(--cyan) 22%, var(--line));
+    }
+    .message.assistant .bubble {
+      background: var(--surface);
+      border-color: transparent;
+    }
     .role {
       color: var(--muted);
-      font-weight: 700;
-      margin-bottom: 5px;
+      font-weight: 650;
+      margin-bottom: 6px;
+    }
+    .bubble {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
     }
     .body {
       white-space: pre-wrap;
@@ -295,35 +434,47 @@ function renderHtml(): string {
     }
     .composer {
       border-top: 1px solid var(--line);
-      padding: 12px;
-      background: #0d1013;
+      padding: 14px 18px 16px;
+      background: var(--surface);
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 10px;
     }
     textarea {
       width: 100%;
-      min-height: 48px;
+      min-height: 58px;
       max-height: 180px;
       resize: vertical;
       color: var(--text);
       background: var(--surface);
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 10px;
+      border-radius: 14px;
+      padding: 12px 14px;
       font: inherit;
+      box-shadow: var(--shadow);
     }
     button, select, input {
       color: var(--text);
       background: var(--surface-2);
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 9px;
       padding: 8px 10px;
       font: inherit;
     }
     button { cursor: pointer; }
     button:hover { border-color: var(--cyan); }
     button:disabled { cursor: not-allowed; opacity: 0.55; }
+    #send {
+      width: 44px;
+      height: 44px;
+      align-self: end;
+      border-radius: 999px;
+      background: #1f2937;
+      color: #fff;
+      border-color: #1f2937;
+      font-size: 18px;
+      line-height: 1;
+    }
     aside {
       min-width: 0;
       overflow: auto;
@@ -340,6 +491,21 @@ function renderHtml(): string {
       margin: 0 0 10px;
       color: var(--cyan);
       font-size: 13px;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+      padding: 14px;
+      box-shadow: var(--shadow);
+    }
+    .panel + .panel { margin-top: 12px; }
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
     }
     label {
       display: grid;
@@ -369,11 +535,27 @@ function renderHtml(): string {
       display: grid;
       gap: 6px;
     }
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .segment.active {
+      color: #fff;
+      background: #1f2937;
+      border-color: #1f2937;
+    }
+    .model-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+    }
     .ok { color: var(--green); }
     .warn { color: var(--yellow); }
     .error { color: var(--red); }
     @media (max-width: 900px) {
-      .layout { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+      .layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) auto; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--line); max-height: 180px; }
       aside { border-left: 0; border-top: 1px solid var(--line); max-height: 42vh; }
       .status { display: none; }
     }
@@ -381,37 +563,64 @@ function renderHtml(): string {
 </head>
 <body>
   <header>
-    <h1>ORBIT</h1>
+    <h1>Orbit</h1>
     <div class="status">
-      <span id="modelLine">model</span>
-      <span id="cacheLine">cache</span>
-      <span id="sessionLine">session</span>
+      <span class="pill" id="modelLine">model</span>
+      <span class="pill" id="cacheLine">cache</span>
+      <span class="pill" id="sessionLine">session</span>
     </div>
   </header>
   <div class="layout">
+    <nav class="sidebar">
+      <button class="nav-item active" data-command="/status">⌘  Current chat</button>
+      <button class="nav-item" data-fill="/chat ">▣  Sessions</button>
+      <button class="nav-item" data-command="/doctor">◌  Diagnostics</button>
+      <button class="nav-item" data-command="/copy">□  Copy last reply</button>
+      <div class="nav-title">Workspace</div>
+      <button class="nav-item" data-fill="/add ">＋  Add context</button>
+      <button class="nav-item" data-fill="/drop ">－  Drop context</button>
+      <button class="nav-item" data-fill="/mode ">◎  Permission mode</button>
+      <div class="nav-title">Orbit</div>
+      <button class="nav-item" data-command="/help">?  Commands</button>
+    </nav>
     <main>
       <div id="messages"></div>
       <form id="composer" class="composer">
-        <textarea id="prompt" placeholder="Ask Orbit..." autocomplete="off"></textarea>
-        <button id="send" type="submit">Send</button>
+        <textarea id="prompt" placeholder="Ask Orbit or type /command..." autocomplete="off"></textarea>
+        <button id="send" type="submit" title="Send">↑</button>
       </form>
     </main>
     <aside>
-      <section>
+      <section class="panel">
         <h2>Runtime</h2>
         <dl id="runtime"></dl>
       </section>
-      <section>
+      <section class="panel">
+        <h2>Model</h2>
+        <label>Active model
+          <select id="modelSelect"></select>
+        </label>
+        <div class="model-grid">
+          <input id="customModel" placeholder="custom model id" />
+          <button id="applyModel" type="button">Use</button>
+        </div>
+      </section>
+      <section class="panel">
         <h2>Controls</h2>
-        <label>Model <input id="model" /></label>
-        <label>Permission
-          <select id="permission">
-            <option value="strict">strict</option>
-            <option value="normal">normal</option>
-            <option value="auto">auto</option>
-            <option value="plan">plan</option>
+        <label>Theme
+          <select id="theme">
+            <option value="system">system</option>
+            <option value="light">light</option>
+            <option value="dark">dark</option>
           </select>
         </label>
+        <div class="row"><span>Permission</span></div>
+        <div class="segmented" id="permissionSegments">
+          <button class="segment" type="button" data-mode="strict">strict</button>
+          <button class="segment" type="button" data-mode="normal">normal</button>
+          <button class="segment" type="button" data-mode="auto">auto</button>
+          <button class="segment" type="button" data-mode="plan">plan</button>
+        </div>
         <label>Search provider
           <select id="searchProvider">
             <option value="auto">auto</option>
@@ -422,14 +631,16 @@ function renderHtml(): string {
           </select>
         </label>
         <label>Search max results <input id="searchMax" type="number" min="1" max="20" /></label>
-        <label>Web search <input id="searchEnabled" type="checkbox" /></label>
-        <button id="saveSettings" type="button">Save Settings</button>
+        <div class="row">
+          <span>Web search</span>
+          <input id="searchEnabled" type="checkbox" />
+        </div>
       </section>
-      <section>
+      <section class="panel">
         <h2>Live Events</h2>
         <div id="events"></div>
       </section>
-      <section>
+      <section class="panel">
         <h2>DeepSeek Cache</h2>
         <pre id="cache">Loading...</pre>
       </section>
@@ -440,8 +651,23 @@ function renderHtml(): string {
     const eventsEl = document.getElementById('events');
     const promptEl = document.getElementById('prompt');
     const sendEl = document.getElementById('send');
+    const modelSelectEl = document.getElementById('modelSelect');
+    const customModelEl = document.getElementById('customModel');
+    const themeEl = document.getElementById('theme');
     let streamingEl = null;
     let busy = false;
+
+    const applyTheme = (theme) => {
+      if (theme === 'dark' || theme === 'light') {
+        document.documentElement.dataset.theme = theme;
+      } else {
+        delete document.documentElement.dataset.theme;
+      }
+      localStorage.setItem('orbit.theme', theme);
+      themeEl.value = theme;
+    };
+
+    applyTheme(localStorage.getItem('orbit.theme') || 'system');
 
     const api = async (url, options) => {
       const response = await fetch(url, options);
@@ -466,10 +692,13 @@ function renderHtml(): string {
       const title = document.createElement('div');
       title.className = 'role';
       title.textContent = role === 'user' ? 'User' : role === 'assistant' ? 'Orbit' : role;
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
       const body = document.createElement('div');
       body.className = 'body';
       body.textContent = text || '';
-      root.append(title, body);
+      bubble.append(body);
+      root.append(title, bubble);
       return { root, body };
     };
 
@@ -509,11 +738,45 @@ function renderHtml(): string {
         ['Context files', data.context.relevantFiles],
       ]);
       document.getElementById('cache').textContent = data.cacheDiagnostics;
-      document.getElementById('model').value = data.activeModel || '';
-      document.getElementById('permission').value = data.permissions.mode;
+      modelSelectEl.replaceChildren();
+      for (const option of data.modelOptions || []) {
+        const node = document.createElement('option');
+        node.value = option.id;
+        node.textContent = option.label;
+        modelSelectEl.append(node);
+      }
+      if (![...modelSelectEl.options].some((option) => option.value === data.activeModel)) {
+        const custom = document.createElement('option');
+        custom.value = data.activeModel || '';
+        custom.textContent = data.activeModel || 'custom';
+        modelSelectEl.prepend(custom);
+      }
+      modelSelectEl.value = data.activeModel || '';
+      customModelEl.value = '';
+      for (const button of document.querySelectorAll('.segment')) {
+        button.classList.toggle('active', button.dataset.mode === data.permissions.mode);
+      }
       document.getElementById('searchEnabled').checked = !!data.tools.webSearch.enabled;
       document.getElementById('searchProvider').value = data.tools.webSearch.provider || 'auto';
       document.getElementById('searchMax').value = data.tools.webSearch.maxResults || 8;
+    };
+
+    const applySettings = async (patch) => {
+      await api('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      appendEvent('settings updated', 'ok');
+      await loadStatus();
+    };
+
+    const submitPrompt = async (prompt) => {
+      return api('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      });
     };
 
     document.getElementById('composer').addEventListener('submit', async (event) => {
@@ -528,11 +791,7 @@ function renderHtml(): string {
       messagesEl.append(streamingEl.root);
       messagesEl.scrollTop = messagesEl.scrollHeight;
       try {
-        await api('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt }),
-        });
+        await submitPrompt(prompt);
       } catch (error) {
         appendEvent(String(error), 'error');
       } finally {
@@ -544,25 +803,82 @@ function renderHtml(): string {
       }
     });
 
-    document.getElementById('saveSettings').addEventListener('click', async () => {
+    modelSelectEl.addEventListener('change', async () => {
       try {
-        await api('/api/settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: document.getElementById('model').value.trim(),
-            permissionMode: document.getElementById('permission').value,
-            webSearchEnabled: document.getElementById('searchEnabled').checked,
-            webSearchProvider: document.getElementById('searchProvider').value,
-            webSearchMaxResults: Number(document.getElementById('searchMax').value),
-          }),
-        });
-        appendEvent('Settings saved', 'ok');
-        await loadStatus();
+        await applySettings({ model: modelSelectEl.value });
       } catch (error) {
         appendEvent(String(error), 'error');
       }
     });
+
+    document.getElementById('applyModel').addEventListener('click', async () => {
+      const model = customModelEl.value.trim();
+      if (!model) return;
+      try {
+        await applySettings({ model });
+      } catch (error) {
+        appendEvent(String(error), 'error');
+      }
+    });
+
+    for (const button of document.querySelectorAll('.segment')) {
+      button.addEventListener('click', async () => {
+        try {
+          await applySettings({ permissionMode: button.dataset.mode });
+        } catch (error) {
+          appendEvent(String(error), 'error');
+        }
+      });
+    }
+
+    document.getElementById('searchProvider').addEventListener('change', async (event) => {
+      try {
+        await applySettings({ webSearchProvider: event.target.value });
+      } catch (error) {
+        appendEvent(String(error), 'error');
+      }
+    });
+
+    document.getElementById('searchMax').addEventListener('change', async (event) => {
+      try {
+        await applySettings({ webSearchMaxResults: Number(event.target.value) });
+      } catch (error) {
+        appendEvent(String(error), 'error');
+      }
+    });
+
+    document.getElementById('searchEnabled').addEventListener('change', async (event) => {
+      try {
+        await applySettings({ webSearchEnabled: event.target.checked });
+      } catch (error) {
+        appendEvent(String(error), 'error');
+      }
+    });
+
+    themeEl.addEventListener('change', (event) => {
+      applyTheme(event.target.value);
+      appendEvent('theme ' + event.target.value, 'ok');
+    });
+
+    for (const item of document.querySelectorAll('.nav-item')) {
+      item.addEventListener('click', async () => {
+        document.querySelectorAll('.nav-item').forEach((node) => node.classList.remove('active'));
+        item.classList.add('active');
+        if (item.dataset.fill) {
+          promptEl.value = item.dataset.fill;
+          promptEl.focus();
+          return;
+        }
+        if (!item.dataset.command || busy) return;
+        try {
+          await submitPrompt(item.dataset.command);
+          await renderMessages();
+          await loadStatus();
+        } catch (error) {
+          appendEvent(String(error), 'error');
+        }
+      });
+    }
 
     const events = new EventSource('/api/events');
     events.onmessage = (message) => {

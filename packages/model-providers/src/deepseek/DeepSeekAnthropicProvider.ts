@@ -538,6 +538,14 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
             } catch {
               // Parse error on incomplete chunk
             }
+            if (accumulatedText) {
+              yield { type: "text_delta", text: accumulatedText };
+              accumulatedText = "";
+            }
+            if (accumulatedThinking) {
+              yield { type: "thinking_delta", text: accumulatedThinking };
+              accumulatedThinking = "";
+            }
           }
         }
         buffer = buffer.substring(lineStart);

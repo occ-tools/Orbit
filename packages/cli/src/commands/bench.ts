@@ -107,6 +107,61 @@ function parseModels(options: { model?: string; models?: string }): string[] {
     .filter(Boolean);
 }
 
+function buildCacheProfilePrompt(): string {
+  const stablePrefix = [
+    "Orbit DeepSeek cache profile stable prefix.",
+    "This block is intentionally repeated to test provider-side context caching.",
+    "Keep this prefix byte-stable across benchmark rounds.",
+  ].join(" ");
+  return `${Array.from({ length: 180 }, () => stablePrefix).join("\n")}\n\nReply with exactly: ok`;
+}
+
+export function formatCacheProfileSummary(
+  results: ProviderBenchmarkResult[],
+): string {
+  const successful = results.filter((item) => !item.error);
+  if (successful.length === 0) {
+    return picocolors.yellow("Cache Profile: no successful samples.");
+  }
+
+  const cold = successful[0];
+  const warm = successful.slice(1);
+  const bestWarm = [...warm].sort(
+    (a, b) =>
+      (a.firstDeltaMs ?? Number.POSITIVE_INFINITY) -
+      (b.firstDeltaMs ?? Number.POSITIVE_INFINITY),
+  )[0];
+  const warmAvgHit =
+    warm.length > 0
+      ? warm.reduce((sum, item) => sum + item.cacheHitRate, 0) / warm.length
+      : 0;
+  const coldFirst = cold.firstDeltaMs ?? "n/a";
+  const bestWarmFirst = bestWarm?.firstDeltaMs ?? "n/a";
+  const speedup =
+    typeof cold.firstDeltaMs === "number" &&
+    typeof bestWarm?.firstDeltaMs === "number" &&
+    bestWarm.firstDeltaMs > 0
+      ? `${(cold.firstDeltaMs / bestWarm.firstDeltaMs).toFixed(1)}x`
+      : "n/a";
+  const verdict =
+    warmAvgHit >= 0.75
+      ? picocolors.green("cache warm")
+      : warm.length > 0
+        ? picocolors.yellow("cache weak")
+        : picocolors.yellow("cache not measured");
+
+  return [
+    picocolors.bold("Cache Profile"),
+    `Status: ${verdict}`,
+    `Cold first delta: ${coldFirst}ms · cache=${Math.round(cold.cacheHitRate * 100)}% (${cold.cacheReadTokens}/${cold.cacheInputTokens})`,
+    `Best warm first delta: ${bestWarmFirst}ms · warm avg cache=${Math.round(
+      warmAvgHit * 100,
+    )}% · speedup=${speedup}`,
+    `Prompt hash: ${cold.promptHash} · prompt chars=${cold.promptChars}`,
+    "Interpretation: DeepSeek cache is expected to be cold on round 1; warm rounds should show high cacheReadTokens for the same stable prefix.",
+  ].join("\n");
+}
+
 function printBenchResult(
   result: ProviderBenchmarkResult,
   index: number,
@@ -144,6 +199,7 @@ export async function runBench(
     models?: string;
     repeat?: number;
     maxTokens?: number;
+    cacheProfile?: boolean;
     json?: boolean;
   } = {},
 ): Promise<void> {
@@ -156,18 +212,28 @@ export async function runBench(
   if (models.length === 0) {
     models.push(config.models.fast || config.models.default);
   }
-  const prompt =
-    options.prompt ||
-    "Reply with one concise sentence explaining what Orbit is.";
-  const repeat = clampRepeat(options.repeat);
+  const prompt = options.cacheProfile
+    ? options.prompt || buildCacheProfilePrompt()
+    : options.prompt ||
+      "Reply with one concise sentence explaining what Orbit is.";
+  const repeat = options.cacheProfile
+    ? Math.max(3, clampRepeat(options.repeat))
+    : clampRepeat(options.repeat);
   const maxTokens = clampMaxTokens(options.maxTokens);
   const results: ProviderBenchmarkResult[] = [];
+  const cacheProfileGroups = new Map<string, ProviderBenchmarkResult[]>();
 
   for (const model of models) {
     for (let i = 0; i < repeat; i++) {
       const result = await runSingleBench(provider, model, prompt, maxTokens);
       recordProviderBenchmark(cwd, result);
       results.push(result);
+      if (options.cacheProfile) {
+        const key = `${result.providerId}\0${result.model}`;
+        const group = cacheProfileGroups.get(key) || [];
+        group.push(result);
+        cacheProfileGroups.set(key, group);
+      }
       if (!options.json) {
         printBenchResult(result, i + 1);
         if (i < repeat - 1 || models.length > 1) {
@@ -184,7 +250,25 @@ export async function runBench(
   }
 
   if (options.json) {
-    console.log(JSON.stringify({ results }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          results,
+          ...(options.cacheProfile
+            ? { cacheProfile: { promptHash: results[0]?.promptHash } }
+            : {}),
+        },
+        null,
+        2,
+      ),
+    );
+  } else if (options.cacheProfile) {
+    console.log("");
+    console.log(
+      [...cacheProfileGroups.values()]
+        .map((group) => formatCacheProfileSummary(group))
+        .join("\n\n"),
+    );
   } else if (models.length > 1 || repeat > 1) {
     console.log("");
     console.log(compareProviderBenchmarkResults(results));

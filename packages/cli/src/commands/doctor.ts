@@ -4,7 +4,10 @@ import { join } from "path";
 import picocolors from "picocolors";
 import { ConfigLoader, type OrbitConfig } from "@orbit-build/config";
 import { buildCacheDiagnostics } from "../runtime/CacheDiagnostics.js";
-import { formatProviderBenchmarkSummary } from "../runtime/ProviderBenchmarks.js";
+import {
+  formatProviderBenchmarkSummary,
+  readProviderBenchmarks,
+} from "../runtime/ProviderBenchmarks.js";
 import {
   formatProviderProbe,
   probeProviderCapabilities,
@@ -21,6 +24,7 @@ interface DoctorReportOptions {
   exec?: DoctorExec;
   env?: NodeJS.ProcessEnv;
   providerProbeText?: string;
+  deepseek?: boolean;
 }
 
 function defaultExec(command: string, options: Record<string, unknown> = {}) {
@@ -86,6 +90,130 @@ function apiKeyLoaded(providerId: string, config: OrbitConfig) {
   } catch {
     return false;
   }
+}
+
+function allConfiguredModelNames(config: OrbitConfig): string[] {
+  return Array.from(
+    new Set(
+      Object.values(config.models)
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function buildDeepSeekDoctorSection(
+  cwd: string,
+  config: OrbitConfig,
+  providerProbeText?: string,
+): string {
+  const providerId = config.provider.default;
+  const provider = config.providers[providerId];
+  const models = allConfiguredModelNames(config);
+  const deprecatedAliases = models.filter((model) =>
+    /^(deepseek-chat|deepseek-reasoner)$/i.test(model),
+  );
+  const deepseekV4Models = models.filter((model) =>
+    /deepseek-v4-(flash|pro)/i.test(model),
+  );
+  const benchmarks = readProviderBenchmarks(cwd).filter(
+    (item) => item.providerId === providerId && models.includes(item.model),
+  );
+  const successfulBenchmarks = benchmarks.filter((item) => !item.error);
+  const recentCacheHits = successfulBenchmarks
+    .slice(0, 20)
+    .filter((item) => item.cacheInputTokens >= 512);
+  const avgCacheHit =
+    recentCacheHits.length > 0
+      ? recentCacheHits.reduce((sum, item) => sum + item.cacheHitRate, 0) /
+        recentCacheHits.length
+      : undefined;
+  const latestFirstDelta = successfulBenchmarks.find(
+    (item) => typeof item.firstDeltaMs === "number",
+  )?.firstDeltaMs;
+  const lines = ["", picocolors.bold("DeepSeek Official Alignment")];
+
+  lines.push(
+    statusLine(
+      providerLooksLikeDeepSeek(providerId, config),
+      "Default provider/model profile targets DeepSeek.",
+      true,
+    ),
+  );
+  lines.push(
+    statusLine(
+      Boolean(provider?.baseUrl?.includes("api.deepseek.com")),
+      provider?.baseUrl
+        ? `Base URL is ${provider.baseUrl}.`
+        : "Provider base URL is not configured.",
+      true,
+    ),
+  );
+  lines.push(
+    statusLine(
+      deprecatedAliases.length === 0,
+      deprecatedAliases.length === 0
+        ? "No deprecated deepseek-chat/deepseek-reasoner aliases in configured model roles."
+        : `Deprecated aliases configured: ${deprecatedAliases.join(", ")}. Prefer deepseek-v4-flash/pro.`,
+      true,
+    ),
+  );
+  lines.push(
+    statusLine(
+      deepseekV4Models.length > 0,
+      deepseekV4Models.length > 0
+        ? `DeepSeek V4 model roles: ${deepseekV4Models.join(", ")}.`
+        : "No DeepSeek V4 flash/pro model role detected.",
+      true,
+    ),
+  );
+  lines.push(
+    statusLine(
+      provider?.type === "openai-compatible" ||
+        provider?.type === "anthropic-compatible",
+      `Provider type ${provider?.type || "missing"} supports DeepSeek-compatible routing.`,
+      true,
+    ),
+  );
+  lines.push(
+    statusLine(
+      Boolean(config.tools.webSearch.enabled),
+      "Realtime web lookup is enabled for current facts; weather still uses Open-Meteo through web_search.",
+      true,
+    ),
+  );
+  lines.push(
+    latestFirstDelta !== undefined
+      ? statusLine(
+          latestFirstDelta < 1200,
+          `Recent first-token benchmark: ${latestFirstDelta}ms.`,
+          true,
+        )
+      : picocolors.gray(
+          "● No recent first-token benchmark. Run `orbit bench --cache-profile --repeat 3`.",
+        ),
+  );
+  lines.push(
+    avgCacheHit !== undefined
+      ? statusLine(
+          avgCacheHit >= 0.75,
+          `Recent large-prompt cache hit average: ${Math.round(avgCacheHit * 100)}%.`,
+          true,
+        )
+      : picocolors.gray(
+          "● No large-prompt cache samples yet. Run `orbit bench --cache-profile --repeat 3`.",
+        ),
+  );
+  if (providerProbeText) {
+    lines.push(picocolors.gray(providerProbeText));
+  }
+  lines.push(
+    picocolors.gray(
+      "● Official-fit checks: streaming should be on, usage should be returned, repeated stable prefixes should warm cache, and user_id should remain stable per workspace.",
+    ),
+  );
+  return lines.join("\n");
 }
 
 export function buildDoctorReport(
@@ -266,13 +394,18 @@ export function buildDoctorReport(
   lines.push("");
   lines.push(picocolors.bold("DeepSeek Cache"));
   lines.push(buildCacheDiagnostics(cwd));
+  if (options.deepseek) {
+    lines.push(
+      buildDeepSeekDoctorSection(cwd, config, options.providerProbeText),
+    );
+  }
 
   return lines.join("\n");
 }
 
 export async function runDoctor(
   cwd: string,
-  options: { probe?: boolean } = {},
+  options: { probe?: boolean; deepseek?: boolean } = {},
 ): Promise<void> {
   const config = ConfigLoader.loadSync(cwd);
   let providerProbeText: string | undefined;
@@ -288,5 +421,10 @@ export async function runDoctor(
       );
     }
   }
-  console.log(buildDoctorReport(cwd, config, { providerProbeText }));
+  console.log(
+    buildDoctorReport(cwd, config, {
+      providerProbeText,
+      deepseek: !!options.deepseek,
+    }),
+  );
 }

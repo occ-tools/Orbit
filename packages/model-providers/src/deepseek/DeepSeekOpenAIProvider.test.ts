@@ -259,4 +259,89 @@ describe("DeepSeekOpenAIProvider messages mapping", () => {
     expect(body.thinking).toBeUndefined();
     expect(body.temperature).toBeUndefined();
   });
+
+  it("uses official DeepSeek thinking parameters for V4 Pro", async () => {
+    const provider = new DeepSeekOpenAIProvider(
+      "test-key",
+      "https://api.deepseek.com",
+      {
+        disablePreheat: true,
+        maxRetries: 0,
+      },
+    );
+
+    for await (const event of provider.chat({
+      model: "deepseek-v4-pro",
+      messages: [
+        {
+          role: "user" as const,
+          content: [{ type: "text" as const, text: "think carefully" }],
+        },
+      ],
+      stream: false,
+      maxTokens: 1234,
+      thinking: { enabled: true, budgetTokens: 8192 },
+    })) {
+      void event;
+    }
+
+    const postCall = (global.fetch as any).mock.calls.find(
+      (call: any) => call[1]?.method === "POST",
+    );
+    const body = JSON.parse(postCall[1].body);
+    expect(body.thinking).toEqual({ type: "enabled" });
+    expect(body.reasoning_effort).toBe("max");
+    expect(body.temperature).toBeUndefined();
+  });
+
+  it("flushes each OpenAI-compatible SSE frame without waiting for the read chunk", async () => {
+    const encoder = new TextEncoder();
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              [
+                'data: {"choices":[{"delta":{"content":"a"}}]}',
+                "",
+                'data: {"choices":[{"delta":{"content":"b"}}]}',
+                "",
+                "data: [DONE]",
+                "",
+              ].join("\n"),
+            ),
+          );
+          controller.close();
+        },
+      }),
+    }) as any;
+
+    const provider = new DeepSeekOpenAIProvider(
+      "test-key",
+      "https://api.deepseek.com",
+      {
+        disablePreheat: true,
+        maxRetries: 0,
+      },
+    );
+    const deltas: string[] = [];
+
+    for await (const event of provider.chat({
+      model: "deepseek-v4-flash",
+      messages: [
+        {
+          role: "user" as const,
+          content: [{ type: "text" as const, text: "hi" }],
+        },
+      ],
+      stream: true,
+    })) {
+      if (event.type === "text_delta") {
+        deltas.push(event.text);
+      }
+    }
+
+    expect(deltas).toEqual(["a", "b"]);
+  });
 });

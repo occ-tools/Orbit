@@ -8,6 +8,7 @@ import {
   readProviderBenchmarks,
   recordProviderBenchmark,
 } from "./ProviderBenchmarks.js";
+import { formatCacheProfileSummary } from "../commands/bench.js";
 
 describe("ProviderBenchmarks", () => {
   const dirs: string[] = [];
@@ -90,5 +91,47 @@ describe("ProviderBenchmarks", () => {
 
     expect(comparison).toContain("1. best gateway / fast");
     expect(comparison.indexOf("fast")).toBeLessThan(comparison.indexOf("slow"));
+  });
+
+  it("summarizes cache profile cold and warm rounds", () => {
+    const summary = formatCacheProfileSummary([
+      {
+        providerId: "deepseek-openai",
+        model: "deepseek-v4-flash",
+        checkedAt: "2026-07-01T00:00:00.000Z",
+        promptHash: "stable",
+        promptChars: 4096,
+        maxTokens: 8,
+        firstDeltaMs: 2800,
+        totalMs: 3000,
+        outputTokens: 8,
+        textChars: 16,
+        throughputTokensPerSec: 2.7,
+        cacheReadTokens: 0,
+        cacheInputTokens: 900,
+        cacheHitRate: 0,
+      },
+      {
+        providerId: "deepseek-openai",
+        model: "deepseek-v4-flash",
+        checkedAt: "2026-07-01T00:00:01.000Z",
+        promptHash: "stable",
+        promptChars: 4096,
+        maxTokens: 8,
+        firstDeltaMs: 500,
+        totalMs: 700,
+        outputTokens: 8,
+        textChars: 16,
+        throughputTokensPerSec: 11,
+        cacheReadTokens: 850,
+        cacheInputTokens: 900,
+        cacheHitRate: 0.94,
+      },
+    ]);
+
+    expect(summary).toContain("Cache Profile");
+    expect(summary).toContain("cache warm");
+    expect(summary).toContain("speedup=5.6x");
+    expect(summary).toContain("Prompt hash: stable");
   });
 });

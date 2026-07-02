@@ -51,6 +51,21 @@ export function buildCacheDiagnostics(cwd: string): string {
   }
 
   const lines: string[] = [];
+  if (slabs.length > 1) {
+    const latest = slabs[0];
+    const previous = slabs[1];
+    const tokenDelta =
+      (latest.tokenEstimate || 0) - (previous.tokenEstimate || 0);
+    const tokenDeltaText =
+      tokenDelta === 0 ? "0t" : `${tokenDelta > 0 ? "+" : ""}${tokenDelta}t`;
+    const sameHash =
+      Boolean(latest.hash && previous.hash) && latest.hash === previous.hash;
+    lines.push(
+      picocolors.gray(
+        `● Cache slab churn: ${slabs.length} retained, latest vs previous stable delta ${tokenDeltaText}, hash ${sameHash ? "unchanged" : "changed"}.`,
+      ),
+    );
+  }
   for (const slab of slabs) {
     const samples = (slab.telemetry || []).slice(-5);
     const latest = samples.at(-1);

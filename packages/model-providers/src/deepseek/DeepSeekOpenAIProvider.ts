@@ -223,6 +223,10 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
     return new RegExp(`^${escaped}$`).test(value);
   }
 
+  private getDeepSeekReasoningEffort(budgetTokens = 4096): "high" | "max" {
+    return budgetTokens >= 8192 ? "max" : "high";
+  }
+
   public getModelCapabilities(model: string): ModelCapabilities {
     const lowercase = model.toLowerCase();
     const isReasoner =
@@ -403,7 +407,12 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
     }
 
     if (input.thinking?.enabled) {
-      if (!isOpenAIReasoner && !isOfficialDeepSeek) {
+      if (isOfficialDeepSeek) {
+        body.thinking = { type: "enabled" };
+        body.reasoning_effort = this.getDeepSeekReasoningEffort(
+          input.thinking.budgetTokens,
+        );
+      } else if (!isOpenAIReasoner) {
         body.thinking = {
           type: "enabled",
           budget_tokens: input.thinking.budgetTokens || 1024,
@@ -642,6 +651,14 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
               }
             } catch {
               // Parse error on incomplete chunk
+            }
+            if (accumulatedText) {
+              yield { type: "text_delta", text: accumulatedText };
+              accumulatedText = "";
+            }
+            if (accumulatedThinking) {
+              yield { type: "thinking_delta", text: accumulatedThinking };
+              accumulatedThinking = "";
             }
           }
         }

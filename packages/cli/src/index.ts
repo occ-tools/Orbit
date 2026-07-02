@@ -63,8 +63,12 @@ program
   .command("doctor")
   .description("diagnose local environment and API configs")
   .option("--probe", "perform a lightweight live provider capability probe")
+  .option("--deepseek", "include DeepSeek official-alignment diagnostics")
   .action(async (options) => {
-    await runDoctor(process.cwd(), { probe: !!options.probe });
+    await runDoctor(process.cwd(), {
+      probe: !!options.probe,
+      deepseek: !!options.deepseek,
+    });
   });
 
 program
@@ -78,6 +82,7 @@ program
   .option("--prompt <prompt>", "custom benchmark prompt")
   .option("--repeat <n>", "number of benchmark samples to record")
   .option("--max-tokens <n>", "maximum completion tokens for each sample")
+  .option("--cache-profile", "run a cold/warm DeepSeek cache profile")
   .option("--json", "print benchmark samples as JSON")
   .action(async (options) => {
     await runBench(process.cwd(), {
@@ -87,6 +92,7 @@ program
       prompt: options.prompt,
       repeat: options.repeat,
       maxTokens: options.maxTokens,
+      cacheProfile: !!options.cacheProfile,
       json: !!options.json,
     });
   });

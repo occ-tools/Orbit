@@ -90,10 +90,16 @@ describe("doctor diagnostics", () => {
       env: {
         TAVILY_API_KEY: "secret-tavily-key",
       },
+      deepseek: true,
     });
 
     expect(report).toContain("Orbit Diagnostics");
     expect(report).toContain("DeepSeek cache-first profile is active");
+    expect(report).toContain("DeepSeek Official Alignment");
+    expect(report).toContain(
+      "No deprecated deepseek-chat/deepseek-reasoner aliases",
+    );
+    expect(report).toContain("DeepSeek V4 model roles");
     expect(report).toContain("Provider benchmark");
     expect(report).toContain("Realtime lookup enabled");
     expect(report).toContain("Skills:");

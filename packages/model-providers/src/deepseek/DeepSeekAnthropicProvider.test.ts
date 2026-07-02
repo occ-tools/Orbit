@@ -150,4 +150,57 @@ describe("DeepSeekAnthropicProvider compatibility options", () => {
       },
     ]);
   });
+
+  it("flushes each Anthropic SSE frame without waiting for the read chunk", async () => {
+    const encoder = new TextEncoder();
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              [
+                'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"a"}}',
+                "",
+                'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"b"}}',
+                "",
+                'data: {"type":"message_delta","usage":{"output_tokens":2}}',
+                "",
+              ].join("\n"),
+            ),
+          );
+          controller.close();
+        },
+      }),
+    }) as any;
+
+    const provider = new DeepSeekAnthropicProvider(
+      "test-key",
+      "https://anthropic.example.com",
+      {
+        disablePreheat: true,
+        maxRetries: 0,
+      },
+    );
+    const deltas: string[] = [];
+
+    for await (const event of provider.chat({
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          id: "msg-1",
+          role: "user",
+          createdAt: new Date().toISOString(),
+          content: [{ type: "text", text: "hi" }],
+        },
+      ],
+      stream: true,
+    })) {
+      if (event.type === "text_delta") {
+        deltas.push(event.text);
+      }
+    }
+
+    expect(deltas).toEqual(["a", "b"]);
+  });
 });

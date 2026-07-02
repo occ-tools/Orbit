@@ -37,6 +37,15 @@ describe("ModelCatalog", () => {
     ).toContain("claude-sonnet-4-6");
   });
 
+  it("only exposes official DeepSeek V4 candidates by default", () => {
+    const models = getProviderModelCandidates({
+      provider: { default: "deepseek-openai" },
+      providers: { "deepseek-openai": { type: "openai-compatible" } },
+    });
+
+    expect(models).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
+  });
+
   it("describes DeepSeek legacy aliases with V4 replacements", () => {
     expect(isDeprecatedDeepSeekAlias("deepseek-chat")).toBe(true);
     expect(getDeepSeekAliasReplacement("deepseek-reasoner")).toBe(

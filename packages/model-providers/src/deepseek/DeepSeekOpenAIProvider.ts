@@ -244,8 +244,12 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
       (lowercase.startsWith("o1") || lowercase.includes("o1-"));
 
     const isOfficialDeepSeek = this.baseUrl.includes("api.deepseek.com");
+    const isDeepSeekV4 =
+      lowercase.includes("deepseek-v4-flash") ||
+      lowercase.includes("deepseek-v4-pro") ||
+      lowercase === "deepseek-chat" ||
+      lowercase === "deepseek-reasoner";
     const supportsNativeTools = !(
-      (isOfficialDeepSeek && isReasoner) ||
       lowercase.includes("o1-preview") ||
       lowercase.includes("o1-mini")
     );
@@ -253,13 +257,19 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
     const inferred: ModelCapabilities = {
       streaming: !isLegacyNonStreamingOpenAIReasoner,
       toolCalls: supportsNativeTools,
-      jsonMode: !isReasoner,
+      jsonMode: isOfficialDeepSeek ? true : !isReasoner,
       thinking: isReasoner || isOpenAIReasoner,
       vision:
         lowercase.includes("vision") ||
         lowercase.includes("gpt-4o") ||
         lowercase.includes("claude-3"),
       promptCaching: true,
+      ...(isOfficialDeepSeek && isDeepSeekV4
+        ? {
+            maxContextTokens: 1_000_000,
+            maxOutputTokens: 384_000,
+          }
+        : {}),
     };
     return {
       ...inferred,

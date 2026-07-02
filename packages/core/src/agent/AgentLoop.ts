@@ -2969,8 +2969,7 @@ ${errLog}`;
     return (
       providerId.includes("deepseek") ||
       configuredProvider.includes("deepseek") ||
-      (isCompatibleProvider &&
-        (modelName.includes("deepseek") || modelName.includes("dspark")))
+      (isCompatibleProvider && modelName.includes("deepseek"))
     );
   }
 

@@ -270,6 +270,15 @@ describe("DeepSeekOpenAIProvider messages mapping", () => {
       },
     );
 
+    expect(provider.getModelCapabilities("deepseek-v4-pro")).toMatchObject({
+      toolCalls: true,
+      jsonMode: true,
+      thinking: true,
+      promptCaching: true,
+      maxContextTokens: 1_000_000,
+      maxOutputTokens: 384_000,
+    });
+
     for await (const event of provider.chat({
       model: "deepseek-v4-pro",
       messages: [

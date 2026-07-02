@@ -11,8 +11,6 @@ type ConfigLike = {
 const DEEPSEEK_MODELS = [
   "deepseek-v4-flash",
   "deepseek-v4-pro",
-  "deepseek-ai/DeepSeek-V4-Flash-DSpark",
-  "deepseek-ai/DeepSeek-V4-Pro-DSpark",
 ];
 
 export const DEEPSEEK_LEGACY_ALIAS_DEPRECATION = "2026-07-24T15:59:00Z";

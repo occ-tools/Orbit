@@ -215,12 +215,10 @@ describe("FullscreenTui prompt interactions", () => {
 
     const result = tui.askInput();
 
-    typeText("/model dspark pro");
+    typeText("/model deep pro");
     press("", { name: "return" });
 
-    await expect(result).resolves.toBe(
-      "/model deepseek-ai/DeepSeek-V4-Pro-DSpark",
-    );
+    await expect(result).resolves.toBe("/model deepseek-v4-pro");
   });
 
   it("can submit control commands without echoing them into chat history", async () => {

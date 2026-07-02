@@ -179,12 +179,7 @@ describe("REPL Autocomplete Completer Tests", () => {
         } else if (providerType === "openai") {
           models = ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"];
         } else {
-          models = [
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-            "deepseek-ai/DeepSeek-V4-Flash-DSpark",
-            "deepseek-ai/DeepSeek-V4-Pro-DSpark",
-          ];
+          models = ["deepseek-v4-flash", "deepseek-v4-pro"];
         }
         const hits = models
           .filter((m) => m.toLowerCase().includes(query.toLowerCase()))
@@ -277,16 +272,12 @@ describe("REPL Autocomplete Completer Tests", () => {
       expect(anthropicMatches).toContain("/model claude-3-5-sonnet-latest");
       expect(anthropicMatches).not.toContain("/model gpt-4o");
 
-      const dsparkMatches = simulateGetActiveMatches(
-        "/model dspark",
+      const deepseekMatches = simulateGetActiveMatches(
+        "/model deepseek",
         "openai-compatible",
       );
-      expect(dsparkMatches).toContain(
-        "/model deepseek-ai/DeepSeek-V4-Flash-DSpark",
-      );
-      expect(dsparkMatches).toContain(
-        "/model deepseek-ai/DeepSeek-V4-Pro-DSpark",
-      );
+      expect(deepseekMatches).toContain("/model deepseek-v4-flash");
+      expect(deepseekMatches).toContain("/model deepseek-v4-pro");
     });
 
     it("should submit the selected slash suggestion on Enter", () => {
@@ -357,8 +348,6 @@ describe("slash command ranked matching", () => {
   const candidates = [
     "/model deepseek-v4-flash",
     "/model deepseek-v4-pro",
-    "/model deepseek-ai/DeepSeek-V4-Flash-DSpark",
-    "/model deepseek-ai/DeepSeek-V4-Pro-DSpark",
     "/chat switch sess_friendly-panda-102",
   ];
 
@@ -376,8 +365,8 @@ describe("slash command ranked matching", () => {
   });
 
   it("matches multiple unordered terms inside command candidates", () => {
-    expect(rankSlashCandidates(candidates, "/model dspark pro")[0]).toBe(
-      "/model deepseek-ai/DeepSeek-V4-Pro-DSpark",
+    expect(rankSlashCandidates(candidates, "/model deep pro")[0]).toBe(
+      "/model deepseek-v4-pro",
     );
     expect(rankSlashCandidates(candidates, "/model flash deep")[0]).toBe(
       "/model deepseek-v4-flash",

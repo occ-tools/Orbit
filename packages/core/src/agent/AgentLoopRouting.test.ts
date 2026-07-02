@@ -510,7 +510,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     expect(mainArgs.system).toContain("### Volatile Context");
   });
 
-  it("should prime cache for self-hosted DSpark models by model name", async () => {
+  it("should prime cache for self-hosted DeepSeek models by model name", async () => {
     const chatMock = vi.fn().mockImplementation(async function* (input: any) {
       if (input.maxTokens === 1) {
         yield {
@@ -549,13 +549,13 @@ describe("AgentLoop Fin Heuristic Routing", () => {
       testDir,
       {
         ...dummyConfig,
-        provider: { default: "local-dspark" },
+        provider: { default: "local-deepseek" },
         models: {
-          default: "deepseek-ai/DeepSeek-V4-Flash-DSpark",
-          fast: "deepseek-ai/DeepSeek-V4-Flash-DSpark",
+          default: "vendor/deepseek-v4-flash",
+          fast: "vendor/deepseek-v4-flash",
         },
         providers: {
-          "local-dspark": {
+          "local-deepseek": {
             type: "openai-compatible",
             baseUrl: "http://localhost:8000/v1",
           },
@@ -572,9 +572,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     expect(chatMock).toHaveBeenCalledTimes(3);
     expect(chatMock.mock.calls[0][0].maxTokens).toBe(1);
     expect(chatMock.mock.calls[1][0].maxTokens).toBe(1);
-    expect(chatMock.mock.calls[2][0].model).toBe(
-      "deepseek-ai/DeepSeek-V4-Flash-DSpark",
-    );
+    expect(chatMock.mock.calls[2][0].model).toBe("vendor/deepseek-v4-flash");
   });
 
   it("keeps DeepSeek cache alive with the stable slab only", async () => {

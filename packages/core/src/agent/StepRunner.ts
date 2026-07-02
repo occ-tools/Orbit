@@ -21,10 +21,31 @@ export class StepRunner {
       };
     }
 
-    // Set a hard timeout limit of 45 seconds for execution commands (bash/run_tests) to avoid hanging the sandbox
+    let parsedArgs: unknown;
+    let validated: { success: true; data: any } | { success: false; error: any };
+    try {
+      parsedArgs = JSON.parse(toolCall.arguments);
+      validated = tool.inputSchema.safeParse(parsedArgs);
+    } catch (e: any) {
+      return {
+        ok: false,
+        error: `Tool input JSON parse failed: ${e.message}`,
+      };
+    }
+
+    if (!validated.success) {
+      return {
+        ok: false,
+        error: `Tool input validation failed: ${validated.error.message}`,
+      };
+    }
+
+    // Use configured command timeout as the execution upper bound.
     const isExecutionCommand =
       toolCall.name === "bash" || toolCall.name === "run_tests";
-    const timeoutMs = isExecutionCommand ? 45000 : 120000;
+    const timeoutMs = isExecutionCommand
+      ? this.getExecutionTimeoutMs(validated.data)
+      : 120000;
 
     const timeoutController = new AbortController();
 
@@ -41,15 +62,6 @@ export class StepRunner {
     }, timeoutMs);
 
     try {
-      const parsedArgs = JSON.parse(toolCall.arguments);
-      const validated = tool.inputSchema.safeParse(parsedArgs);
-      if (!validated.success) {
-        return {
-          ok: false,
-          error: `Tool input validation failed: ${validated.error.message}`,
-        };
-      }
-
       const result = await tool.execute(validated.data, {
         cwd: this.cwd,
         sessionId: this.sessionId,
@@ -78,5 +90,18 @@ export class StepRunner {
         abortSignal.removeEventListener("abort", onAbort);
       }
     }
+  }
+
+  private getExecutionTimeoutMs(validatedArgs: any): number {
+    const configured = this.config?.tools?.bash?.timeoutMs;
+    const configuredTimeout =
+      typeof configured === "number" && Number.isFinite(configured)
+        ? Math.max(1000, configured)
+        : 120000;
+    const requested = validatedArgs?.timeoutMs;
+    if (typeof requested === "number" && Number.isFinite(requested)) {
+      return Math.max(1000, Math.min(requested, configuredTimeout));
+    }
+    return configuredTimeout;
   }
 }

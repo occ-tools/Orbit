@@ -27,7 +27,15 @@ export class BashTool implements OrbitTool<BashInput, BashOutput> {
     input: BashInput,
     ctx: ToolContext,
   ): Promise<ToolResult<BashOutput>> {
-    const timeout = input.timeoutMs || 120000;
+    const configuredTimeout = ctx.config?.tools?.bash?.timeoutMs;
+    const timeoutCap =
+      typeof configuredTimeout === "number" && Number.isFinite(configuredTimeout)
+        ? Math.max(1000, configuredTimeout)
+        : 120000;
+    const timeout =
+      typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs)
+        ? Math.max(1000, Math.min(input.timeoutMs, timeoutCap))
+        : timeoutCap;
     try {
       const result = await execa(input.command, {
         shell: true,

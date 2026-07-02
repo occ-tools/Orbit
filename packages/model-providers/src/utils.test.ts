@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { zodToJsonSchema } from "./utils.js";
+import { fetchWithRetry, zodToJsonSchema } from "./utils.js";
 
 describe("zodToJsonSchema", () => {
   it("preserves descriptions, required fields, enums, and numeric bounds", () => {
@@ -46,5 +46,45 @@ describe("zodToJsonSchema", () => {
         },
       },
     });
+  });
+});
+
+describe("fetchWithRetry", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("honors Retry-After seconds on transient provider responses", async () => {
+    vi.useFakeTimers();
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("rate limited", {
+          status: 429,
+          headers: { "retry-after": "2" },
+        }),
+      )
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const responsePromise = fetchWithRetry(
+      "https://provider.example.test/chat",
+      { timeout: 10000 },
+      1,
+    );
+
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const response = await responsePromise;
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

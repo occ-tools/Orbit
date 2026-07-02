@@ -135,6 +135,7 @@ export async function fetchWithRetry(
   while (true) {
     const controller = new AbortController();
     const signal = controller.signal;
+    let retryResponse: Response | undefined;
 
     let externalSignalAborted = false;
     const onExternalAbort = () => {
@@ -172,6 +173,7 @@ export async function fetchWithRetry(
       if (!isTransient || attempt >= maxRetries) {
         return response;
       }
+      retryResponse = response;
       await response.body?.cancel();
     } catch (err: any) {
       const isExternalAbort = externalSignalAborted || init.signal?.aborted;
@@ -197,10 +199,36 @@ export async function fetchWithRetry(
     }
 
     attempt++;
-    const delay = Math.min(
-      3000,
-      Math.pow(2, attempt) * 250 + Math.random() * 250,
-    );
+    const delay = getRetryDelayMs(retryResponse, attempt);
     await new Promise((resolve) => setTimeout(resolve, delay));
   }
+}
+
+const MAX_RETRY_AFTER_MS = 10000;
+
+function getRetryDelayMs(response: Response | undefined, attempt: number): number {
+  const retryAfter = parseRetryAfterMs(response?.headers.get("retry-after"));
+  if (retryAfter !== undefined) {
+    return Math.min(MAX_RETRY_AFTER_MS, retryAfter);
+  }
+
+  return Math.min(3000, Math.pow(2, attempt) * 250 + Math.random() * 250);
+}
+
+function parseRetryAfterMs(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+
+  const dateMs = Date.parse(trimmed);
+  if (Number.isFinite(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+
+  return undefined;
 }

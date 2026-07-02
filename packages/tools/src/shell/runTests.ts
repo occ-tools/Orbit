@@ -30,6 +30,11 @@ export class RunTestsTool implements OrbitTool<
     if (!testCommand) {
       testCommand = this.inferTestCommand(ctx.cwd);
     }
+    const configuredTimeout = ctx.config?.tools?.bash?.timeoutMs;
+    const timeout =
+      typeof configuredTimeout === "number" && Number.isFinite(configuredTimeout)
+        ? Math.max(1000, configuredTimeout)
+        : 120000;
 
     try {
       const result = await execa(testCommand, {
@@ -37,7 +42,7 @@ export class RunTestsTool implements OrbitTool<
         cwd: ctx.cwd,
         reject: false,
         signal: ctx.abortSignal,
-        timeout: 60000,
+        timeout,
       });
 
       const stdout = result.stdout || "";

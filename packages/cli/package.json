@@ -23,7 +23,7 @@
     "url": "https://github.com/Hephaestus-DevKit/Orbit/issues"
   },
   "bin": {
-    "orbit": "./dist/index.js"
+    "orbit": "dist/index.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

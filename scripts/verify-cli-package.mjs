@@ -13,7 +13,9 @@ const ManifestSchema = z
     name: z.literal("@orbit-build/cli"),
     version: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/),
     description: z.string().min(20),
-    bin: z.object({ orbit: z.literal("./dist/index.js") }).strict(),
+    // npm strips invalid executable paths while publishing. Keep this exact
+    // npm-normalized value so global installs always expose the orbit command.
+    bin: z.object({ orbit: z.literal("dist/index.js") }).strict(),
     files: z.array(z.string()).min(1),
     engines: z.object({ node: z.string().min(1) }),
     repository: z.object({

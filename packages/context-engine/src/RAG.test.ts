@@ -1,15 +1,26 @@
-import { describe, it, expect } from "vitest";
+import { afterAll, describe, it, expect } from "vitest";
 import { JSVectorStore, Document } from "./VectorStore.js";
 import { BM25Store, tokenize } from "./BM25.js";
 import { HybridSearch } from "./HybridSearch.js";
 import { ASTChunker } from "./ASTChunker.js";
 import { join } from "path";
-import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { ReferencesRetriever } from "./ReferencesRetriever.js";
 import { getOrbitCachePath } from "./cachePaths.js";
 
 describe("RAG Core Engine Tests", () => {
-  const tempCwd = "./rag-test-temp";
+  const tempCwd = mkdtempSync(join(tmpdir(), "orbit-rag-"));
+
+  function createStoreWorkspace(name: string): string {
+    const workspace = join(tempCwd, name);
+    mkdirSync(workspace, { recursive: true });
+    return workspace;
+  }
+
+  afterAll(() => {
+    rmSync(tempCwd, { recursive: true, force: true });
+  });
 
   describe("Tokenizer & BM25 Store", () => {
     it("should tokenize identifiers correctly and remove keywords", () => {
@@ -25,7 +36,7 @@ describe("RAG Core Engine Tests", () => {
     });
 
     it("should store and retrieve BM25 records correctly", async () => {
-      const store = new BM25Store(join(tempCwd, "bm25"));
+      const store = new BM25Store(createStoreWorkspace("bm25"));
       await store.clear();
 
       const doc1: Document = {
@@ -58,7 +69,7 @@ describe("RAG Core Engine Tests", () => {
 
   describe("Vector Store (JSVectorStore)", () => {
     it("should compute Cosine Similarity accurately and retrieve docs", async () => {
-      const store = new JSVectorStore(join(tempCwd, "vector"));
+      const store = new JSVectorStore(createStoreWorkspace("vector"));
       await store.clear();
 
       const doc1: Document = {
@@ -132,7 +143,7 @@ export function test() {
 
   describe("Hybrid Search (RRF)", () => {
     it("should perform Reciprocal Rank Fusion of vector and BM25 results", async () => {
-      const hs = new HybridSearch(join(tempCwd, "hybrid"));
+      const hs = new HybridSearch(createStoreWorkspace("hybrid"));
       await hs.clear();
 
       const doc1: Document = {
@@ -289,7 +300,7 @@ const a = new List<string>();
   describe("Vector Store DBAdaptability", () => {
     it("should handle embedding model name and dimension changes resiliently", async () => {
       const fs = await import("fs");
-      const storePath = join(tempCwd, "vector_adapt");
+      const storePath = createStoreWorkspace("vector_adapt");
 
       // 1. Write documents with Model A (dimension 3)
       const storeA = new JSVectorStore(storePath, "model-A");

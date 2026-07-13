@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { AgentLoop } from "./AgentLoop.js";
-import { OrbitConfig } from "@orbit-build/config";
+import { DEFAULT_CONFIG, type OrbitConfig } from "@orbit-build/config";
 import { ModelProvider } from "@orbit-build/model-providers";
 import { Prompt } from "@orbit-build/tui";
 import fs from "fs";
@@ -11,11 +11,17 @@ describe("AgentLoop Hunk Acceptance Flow", () => {
   const testFile = path.join(testDir, "test.txt");
 
   const dummyConfig: OrbitConfig = {
+    ...DEFAULT_CONFIG,
     name: "test",
     provider: { default: "openai" },
-    models: { default: "gpt-4" },
+    models: {
+      ...DEFAULT_CONFIG.models,
+      default: "gpt-4",
+      fast: "gpt-4",
+    },
     providers: { openai: { type: "openai", apiKey: "test" } },
     permissions: {
+      ...DEFAULT_CONFIG.permissions,
       mode: "auto",
       allowRead: true,
       requireApprovalForWrite: false,
@@ -25,6 +31,7 @@ describe("AgentLoop Hunk Acceptance Flow", () => {
       protectedPaths: [],
     },
     context: {
+      ...DEFAULT_CONFIG.context,
       maxFilesToIndex: 10,
       maxFileSizeKb: 10,
       ignore: [],
@@ -32,9 +39,14 @@ describe("AgentLoop Hunk Acceptance Flow", () => {
       compactThreshold: 0.75,
     },
     tools: {
-      bash: { enabled: false, timeoutMs: 1000 },
-      webSearch: { enabled: false },
-      mcp: { enabled: false },
+      ...DEFAULT_CONFIG.tools,
+      bash: {
+        ...DEFAULT_CONFIG.tools.bash,
+        enabled: false,
+        timeoutMs: 1000,
+      },
+      webSearch: { ...DEFAULT_CONFIG.tools.webSearch, enabled: false },
+      mcp: { ...DEFAULT_CONFIG.tools.mcp, enabled: false },
     },
     mcpServers: {},
     hooks: {},

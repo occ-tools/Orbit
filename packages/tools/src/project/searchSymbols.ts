@@ -1,11 +1,44 @@
 import { z } from "zod";
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
-import { OrbitTool, ToolContext, ToolResult } from "../types.js";
+import { resolveSafePath } from "@orbit-build/shared";
+import type { OrbitTool, ToolContext, ToolResult } from "../types.js";
+
+const IndexedSymbolSchema = z.object({
+  name: z.string().min(1),
+  type: z.enum(["class", "interface", "function", "constant", "type"]),
+  line: z.number().int().positive(),
+});
+
+const IndexedFileSchema = z.object({
+  mtime: z.number().finite(),
+  symbols: z.array(IndexedSymbolSchema),
+  imports: z.array(z.string()).optional(),
+});
+
+/** Validates the persisted workspace symbol index before tools consume it. */
+export const SymbolIndexSchema = z.object({
+  files: z.record(IndexedFileSchema),
+  indexedAt: z.string().min(1),
+});
+
+export type SymbolIndex = z.infer<typeof SymbolIndexSchema>;
+
+/** Parses a persisted symbol index without allowing corrupt cache data to fail a tool call. */
+export function parseSymbolIndex(raw: string): SymbolIndex | null {
+  try {
+    const parsed = SymbolIndexSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
 
 export const SearchSymbolsInputSchema = z.object({
   query: z
     .string()
+    .trim()
+    .min(1)
+    .max(512)
     .describe("The symbol name or part of the name to search for."),
 });
 
@@ -33,7 +66,7 @@ export class SearchSymbolsTool implements OrbitTool<
     ctx: ToolContext,
   ): Promise<ToolResult<SymbolSearchResult[]>> {
     try {
-      const indexPath = join(ctx.cwd, ".orbit", "symbols.json");
+      const indexPath = resolveSafePath(ctx.cwd, ".orbit/symbols.json");
       if (!existsSync(indexPath)) {
         return {
           ok: true,
@@ -43,10 +76,8 @@ export class SearchSymbolsTool implements OrbitTool<
         };
       }
 
-      const raw = readFileSync(indexPath, "utf8");
-      const index = JSON.parse(raw);
-
-      if (!index.files || typeof index.files !== "object") {
+      const index = parseSymbolIndex(readFileSync(indexPath, "utf8"));
+      if (!index) {
         return {
           ok: true,
           data: [],
@@ -58,17 +89,19 @@ export class SearchSymbolsTool implements OrbitTool<
       const queryLower = input.query.toLowerCase();
 
       for (const [filePath, fileData] of Object.entries(index.files)) {
-        const data = fileData as any;
-        if (data && Array.isArray(data.symbols)) {
-          for (const sym of data.symbols) {
-            if (sym.name && sym.name.toLowerCase().includes(queryLower)) {
-              results.push({
-                name: sym.name,
-                type: sym.type,
-                filePath,
-                line: sym.line,
-              });
-            }
+        try {
+          resolveSafePath(ctx.cwd, filePath);
+        } catch {
+          continue;
+        }
+        for (const symbol of fileData.symbols) {
+          if (symbol.name.toLowerCase().includes(queryLower)) {
+            results.push({
+              name: symbol.name,
+              type: symbol.type,
+              filePath,
+              line: symbol.line,
+            });
           }
         }
       }
@@ -89,10 +122,10 @@ export class SearchSymbolsTool implements OrbitTool<
         data: results,
         display,
       };
-    } catch (e: any) {
+    } catch (error: unknown) {
       return {
         ok: false,
-        error: `Failed to search symbols: ${e.message}`,
+        error: `Failed to search symbols: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }

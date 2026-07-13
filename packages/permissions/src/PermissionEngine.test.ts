@@ -5,6 +5,7 @@ import { OrbitConfig } from "@orbit-build/config";
 const mockConfig = (
   mode: "strict" | "normal" | "auto" | "plan",
 ): OrbitConfig => ({
+  schemaVersion: 1,
   name: "test",
   provider: { default: "deepseek-openai" },
   models: {
@@ -107,18 +108,55 @@ describe("PermissionEngine tests", () => {
     const strictEngine = new PermissionEngine(mockConfig("strict"));
 
     expect(
-      normalEngine.evaluate(
-        "web_search",
-        { query: "Orbit docs" },
-        "network",
-      ).action,
+      normalEngine.evaluate("web_search", { query: "Orbit docs" }, "network")
+        .action,
     ).toBe("ask");
     expect(
-      strictEngine.evaluate(
-        "web_search",
-        { query: "Orbit docs" },
-        "network",
-      ).action,
+      strictEngine.evaluate("web_search", { query: "Orbit docs" }, "network")
+        .action,
     ).toBe("deny");
+  });
+
+  it("honors approval flags even in auto mode", () => {
+    const config = mockConfig("auto");
+    const engine = new PermissionEngine(config);
+
+    expect(engine.evaluate("write_file", { path: "src/main.ts" }).action).toBe(
+      "ask",
+    );
+    expect(engine.evaluate("bash", { command: "npm test" }).action).toBe("ask");
+  });
+
+  it("classifies a custom run_tests command using bash safety rules", () => {
+    const config = mockConfig("auto");
+    config.permissions.requireApprovalForBash = false;
+    const engine = new PermissionEngine(config);
+
+    expect(engine.evaluate("run_tests", { command: "rm -rf /" }).action).toBe(
+      "deny",
+    );
+  });
+
+  it("honors read and secret protection flags", () => {
+    const config = mockConfig("auto");
+    config.permissions.allowRead = false;
+    expect(
+      new PermissionEngine(config).evaluate("read_file", { path: "README.md" })
+        .action,
+    ).toBe("deny");
+
+    config.permissions.allowRead = true;
+    config.permissions.protectSecrets = false;
+    expect(
+      new PermissionEngine(config).evaluate("read_file", { path: ".env" })
+        .action,
+    ).toBe("allow");
+  });
+
+  it("handles malformed tool arguments without crashing", () => {
+    const engine = new PermissionEngine(mockConfig("normal"));
+
+    expect(engine.evaluate("read_file", null).action).toBe("allow");
+    expect(engine.evaluate("bash", "not-an-object").action).toBe("ask");
   });
 });

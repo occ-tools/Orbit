@@ -2,7 +2,7 @@
   "name": "orbit-autocomplete",
   "displayName": "Orbit Autocomplete",
   "description": "VS Code inline completions provider powered by local Orbit Autocomplete server",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "publisher": "orbit-ai",
   "engines": {
     "vscode": "^1.75.0"
@@ -14,8 +14,12 @@
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
   "contributes": {},
   "scripts": {
+    "build": "tsc -p ./",
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./"

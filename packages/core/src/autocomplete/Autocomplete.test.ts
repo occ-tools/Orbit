@@ -41,7 +41,11 @@ vi.mock("@orbit-build/model-providers", async (importOriginal) => {
           });
         });
       }
-      if (prompt.includes("<｜fim begin｜>") || (options?.suffix !== undefined && (options?.model || "").toLowerCase().includes("deepseek"))) {
+      if (
+        prompt.includes("<｜fim begin｜>") ||
+        (options?.suffix !== undefined &&
+          (options?.model || "").toLowerCase().includes("deepseek"))
+      ) {
         return "DeepSeek_Completion_Middle";
       }
       if (prompt.includes("<|fim_prefix|>")) {
@@ -146,24 +150,51 @@ describe("AutocompleteEngine Tests", () => {
       const engine = new AutocompleteEngine("/workspace");
 
       // 1. TS file
-      await engine.autocomplete("const a = 1;", "", config, "file:///workspace/src/utils.ts");
+      await engine.autocomplete(
+        "const a = 1;",
+        "",
+        config,
+        "file:///workspace/src/utils.ts",
+      );
       expect(mockLastPrompt).toContain("// Path: src/utils.ts\nconst a = 1;");
 
       // 2. Python file
-      await engine.autocomplete("a = 1", "", config, "file:///workspace/scripts/run.py");
+      await engine.autocomplete(
+        "a = 1",
+        "",
+        config,
+        "file:///workspace/scripts/run.py",
+      );
       expect(mockLastPrompt).toContain("# Path: scripts/run.py\na = 1");
 
       // 3. HTML file
-      await engine.autocomplete("<div>", "", config, "file:///workspace/index.html");
+      await engine.autocomplete(
+        "<div>",
+        "",
+        config,
+        "file:///workspace/index.html",
+      );
       expect(mockLastPrompt).toContain("<!-- Path: index.html -->\n<div>");
 
       // 4. CSS file
-      await engine.autocomplete("body {", "", config, "file:///workspace/styles.css");
+      await engine.autocomplete(
+        "body {",
+        "",
+        config,
+        "file:///workspace/styles.css",
+      );
       expect(mockLastPrompt).toContain("/* Path: styles.css */\nbody {");
 
       // 5. Malformed percent-encoded URI (should fall back safely)
-      await engine.autocomplete("const x = 1;", "", config, "file:///workspace/src/%invalid.ts");
-      expect(mockLastPrompt).toContain("// Path: src/%invalid.ts\nconst x = 1;");
+      await engine.autocomplete(
+        "const x = 1;",
+        "",
+        config,
+        "file:///workspace/src/%invalid.ts",
+      );
+      expect(mockLastPrompt).toContain(
+        "// Path: src/%invalid.ts\nconst x = 1;",
+      );
     });
   });
 

@@ -28,7 +28,7 @@ describe("EditFileTool Fuzzy Hunk Merging Cascade", () => {
         oldText: "line1\nline2\nline3",
         newText: "line1\nlineX\nline3",
       },
-      { cwd: tempDir },
+      { cwd: tempDir, sessionId: "test" },
     );
 
     expect(result.ok).toBe(true);
@@ -48,7 +48,7 @@ describe("EditFileTool Fuzzy Hunk Merging Cascade", () => {
         oldText: "class Test {\n  constructor() {}\n}",
         newText: "class Test {\n  constructor() {}\n  init() {}\n}",
       },
-      { cwd: tempDir },
+      { cwd: tempDir, sessionId: "test" },
     );
 
     expect(result.ok).toBe(true);
@@ -75,7 +75,7 @@ describe("EditFileTool Fuzzy Hunk Merging Cascade", () => {
         newText:
           'import { a } from "module";\n// different comment\nconst x = 20;',
       },
-      { cwd: tempDir },
+      { cwd: tempDir, sessionId: "test" },
     );
 
     expect(result.ok).toBe(true);
@@ -92,7 +92,7 @@ describe("EditFileTool Fuzzy Hunk Merging Cascade", () => {
         oldText: "const z = 99;\nconst w = 88;",
         newText: "const z = 100;",
       },
-      { cwd: tempDir },
+      { cwd: tempDir, sessionId: "test" },
     );
 
     expect(result.ok).toBe(false);
@@ -109,47 +109,53 @@ describe("EditFileTool Fuzzy Hunk Merging Cascade", () => {
         oldText: '"key": "value"',
         newText: '"key": "value",', // trailing comma makes it invalid JSON
       },
-      { cwd: tempDir },
+      { cwd: tempDir, sessionId: "test" },
     );
 
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("Applying this edit would introduce the following syntax error");
+    expect(result.error).toContain(
+      "Applying this edit would introduce the following syntax error",
+    );
     expect(result.error).toContain("JSON Syntax Error");
   });
 
   it("should block edits that introduce JS syntax errors", async () => {
     const jsPath = join(tempDir, "sample.js");
-    writeFileSync(jsPath, 'const a = 10;\nconsole.log(a);', "utf8");
+    writeFileSync(jsPath, "const a = 10;\nconsole.log(a);", "utf8");
 
     const result = await tool.execute(
       {
         path: "sample.js",
-        oldText: 'const a = 10;',
-        newText: 'const a = {;', // unclosed brace
+        oldText: "const a = 10;",
+        newText: "const a = {;", // unclosed brace
       },
-      { cwd: tempDir },
+      { cwd: tempDir, sessionId: "test" },
     );
 
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("Applying this edit would introduce the following syntax error");
+    expect(result.error).toContain(
+      "Applying this edit would introduce the following syntax error",
+    );
     expect(result.error).toContain("JavaScript Syntax Error");
   });
 
   it("should block edits that introduce TS syntax errors", async () => {
     const tsPath = join(tempDir, "sample.ts");
-    writeFileSync(tsPath, 'const x: number = 10;\nconsole.log(x);', "utf8");
+    writeFileSync(tsPath, "const x: number = 10;\nconsole.log(x);", "utf8");
 
     const result = await tool.execute(
       {
         path: "sample.ts",
-        oldText: 'const x: number = 10;',
-        newText: 'const x: number = ;', // incomplete assignment
+        oldText: "const x: number = 10;",
+        newText: "const x: number = ;", // incomplete assignment
       },
-      { cwd: tempDir },
+      { cwd: tempDir, sessionId: "test" },
     );
 
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("Applying this edit would introduce the following syntax error");
+    expect(result.error).toContain(
+      "Applying this edit would introduce the following syntax error",
+    );
     expect(result.error).toContain("TypeScript Syntax Error");
   }, 15_000);
 
@@ -178,7 +184,7 @@ describe("EditFileTool Fuzzy Hunk Merging Cascade", () => {
   return a + b + 1;
 }`,
       },
-      { cwd: tempDir },
+      { cwd: tempDir, sessionId: "test" },
     );
 
     expect(result.ok).toBe(true);
@@ -196,7 +202,7 @@ describe("EditFileTool Fuzzy Hunk Merging Cascade", () => {
         oldText: 'print("hello")',
         newText: 'print("hello"', // missing closing paren
       },
-      { cwd: tempDir },
+      { cwd: tempDir, sessionId: "test" },
     );
 
     try {
@@ -232,7 +238,7 @@ describe("EditFileTool Fuzzy Hunk Merging Cascade", () => {
         newText: `def add(self, a, b):
         return a + b + 100`,
       },
-      { cwd: tempDir },
+      { cwd: tempDir, sessionId: "test" },
     );
 
     try {

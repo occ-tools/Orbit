@@ -10,6 +10,7 @@ import { createHash } from "crypto";
 import { dirname, join } from "path";
 import { estimateTokenCount } from "@orbit-build/shared";
 import { ContextPack } from "@orbit-build/context-engine";
+import { z } from "zod";
 
 export interface PromptCacheSlabInput {
   cwd: string;
@@ -26,7 +27,6 @@ export interface PromptCacheSlab {
   text: string;
   tokenEstimate: number;
   path: string;
-  lastPrimedAt?: string;
 }
 
 export interface PromptCacheTelemetrySample {
@@ -42,9 +42,29 @@ interface PromptCacheSlabMetadata {
   hash?: string;
   model?: string;
   tokenEstimate?: number;
+  /** Legacy field retained only to sort metadata written by older releases. */
   lastPrimedAt?: string;
   telemetry?: PromptCacheTelemetrySample[];
 }
+
+const PromptCacheTelemetrySampleSchema = z.object({
+  recordedAt: z.string(),
+  inputTokens: z.number().int().nonnegative(),
+  hitTokens: z.number().int().nonnegative(),
+  missTokens: z.number().int().nonnegative(),
+  hitRate: z.number().min(0).max(1),
+  degraded: z.boolean(),
+});
+
+const PromptCacheSlabMetadataSchema = z
+  .object({
+    hash: z.string().optional(),
+    model: z.string().optional(),
+    tokenEstimate: z.number().int().nonnegative().optional(),
+    lastPrimedAt: z.string().optional(),
+    telemetry: z.array(PromptCacheTelemetrySampleSchema).max(100).optional(),
+  })
+  .passthrough();
 
 export class PromptCacheSlabBuilder {
   public static build(input: PromptCacheSlabInput): PromptCacheSlab {
@@ -57,34 +77,13 @@ export class PromptCacheSlabBuilder {
       `${hash.slice(0, 24)}.json`,
     );
 
-    const existing = this.readMetadata(slabPath);
-    const lastPrimedAt =
-      existing?.hash === hash && typeof existing.lastPrimedAt === "string"
-        ? existing.lastPrimedAt
-        : undefined;
-
-    const slab: PromptCacheSlab = {
+    return {
       hash,
       model: input.model,
       text: stableText,
       tokenEstimate: estimateTokenCount(stableText),
       path: slabPath,
-      lastPrimedAt,
     };
-    this.save(slab);
-    return slab;
-  }
-
-  public static markPrimed(
-    slab: PromptCacheSlab,
-    date = new Date(),
-  ): PromptCacheSlab {
-    const updated = {
-      ...slab,
-      lastPrimedAt: date.toISOString(),
-    };
-    this.save(updated);
-    return updated;
   }
 
   public static recordTelemetry(
@@ -101,6 +100,10 @@ export class PromptCacheSlabBuilder {
       },
     ].slice(-20);
     this.save(slab, telemetry);
+  }
+
+  public static hasTelemetry(slab: PromptCacheSlab): boolean {
+    return (this.readMetadata(slab.path)?.telemetry?.length || 0) > 0;
   }
 
   public static buildDiagnostics(cwd: string): string {
@@ -144,7 +147,7 @@ export class PromptCacheSlabBuilder {
             samples.length
           : undefined;
       lines.push(
-        `- slab ${String(slab.hash).slice(0, 8)} model=${slab.model || "unknown"} tokens=${slab.tokenEstimate || 0} primed=${slab.lastPrimedAt || "never"}`,
+        `- slab ${String(slab.hash).slice(0, 8)} model=${slab.model || "unknown"} tokens=${slab.tokenEstimate || 0} observations=${samples.length}`,
       );
       if (recent) {
         lines.push(
@@ -178,7 +181,6 @@ export class PromptCacheSlabBuilder {
             hash: slab.hash,
             model: slab.model,
             tokenEstimate: slab.tokenEstimate,
-            lastPrimedAt: slab.lastPrimedAt,
             telemetry: telemetry || existing?.telemetry || [],
           },
           null,
@@ -197,7 +199,9 @@ export class PromptCacheSlabBuilder {
   ): PromptCacheSlabMetadata | undefined {
     if (!existsSync(path)) return undefined;
     try {
-      return JSON.parse(readFileSync(path, "utf8"));
+      return PromptCacheSlabMetadataSchema.parse(
+        JSON.parse(readFileSync(path, "utf8")),
+      );
     } catch {
       return undefined;
     }
@@ -218,9 +222,9 @@ export class PromptCacheSlabBuilder {
       .join("\n");
 
     const stableWorkspace = [
-      "### DeepSeek Cache Slab",
+      "### Orbit Stable Prompt Profile",
       `Model lane: ${input.model}`,
-      "Cache policy: Keep everything above VOLATILE_CONTEXT byte-stable across turns.",
+      "Cache policy: Keep this system prefix byte-stable across turns; persist turn context in message history.",
       "",
       "### Workspace Stable Profile",
       `Language profile: ${sortedLanguages.join(", ")}`,
@@ -231,7 +235,6 @@ export class PromptCacheSlabBuilder {
       ctx.projectInstructions
         ? `\n### Project Instructions\n${ctx.projectInstructions}`
         : "",
-      input.repoMapText ? `\n### Stable Repo Map\n${input.repoMapText}` : "",
     ]
       .filter(Boolean)
       .join("\n");
@@ -240,7 +243,6 @@ export class PromptCacheSlabBuilder {
       input.baseSystemPrompt.trimEnd(),
       input.toolsPrompt.trimEnd(),
       stableWorkspace.trimEnd(),
-      "<!-- VOLATILE_CONTEXT -->",
     ].join("\n\n");
   }
 }

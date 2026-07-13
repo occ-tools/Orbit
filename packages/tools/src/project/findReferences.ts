@@ -1,10 +1,16 @@
 import { z } from "zod";
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
-import { OrbitTool, ToolContext, ToolResult } from "../types.js";
+import { existsSync, readFileSync, statSync } from "fs";
+import { resolveSafePath } from "@orbit-build/shared";
+import type { OrbitTool, ToolContext, ToolResult } from "../types.js";
+import { parseSymbolIndex } from "./searchSymbols.js";
 
 export const FindSymbolReferencesInputSchema = z.object({
-  symbol: z.string().describe("The symbol name to search references for."),
+  symbol: z
+    .string()
+    .trim()
+    .min(1)
+    .max(512)
+    .describe("The symbol name to search references for."),
 });
 
 export type FindSymbolReferencesInput = z.infer<
@@ -15,6 +21,10 @@ export interface SymbolReferenceEntry {
   file: string;
   line: number;
   content: string;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export class FindSymbolReferencesTool implements OrbitTool<
@@ -32,7 +42,7 @@ export class FindSymbolReferencesTool implements OrbitTool<
     ctx: ToolContext,
   ): Promise<ToolResult<SymbolReferenceEntry[]>> {
     try {
-      const indexPath = join(ctx.cwd, ".orbit", "symbols.json");
+      const indexPath = resolveSafePath(ctx.cwd, ".orbit/symbols.json");
       if (!existsSync(indexPath)) {
         return {
           ok: true,
@@ -42,10 +52,8 @@ export class FindSymbolReferencesTool implements OrbitTool<
         };
       }
 
-      const raw = readFileSync(indexPath, "utf8");
-      const index = JSON.parse(raw);
-
-      if (!index.files || typeof index.files !== "object") {
+      const index = parseSymbolIndex(readFileSync(indexPath, "utf8"));
+      if (!index) {
         return {
           ok: true,
           data: [],
@@ -54,12 +62,27 @@ export class FindSymbolReferencesTool implements OrbitTool<
       }
 
       const results: SymbolReferenceEntry[] = [];
-      const symbolRegex = new RegExp(`\\b${input.symbol}\\b`);
+      const escapedSymbol = escapeRegExp(input.symbol);
+      const symbolRegex = new RegExp(
+        `(?<![\\p{ID_Continue}$\\u200C\\u200D])${escapedSymbol}(?![\\p{ID_Continue}$\\u200C\\u200D])`,
+        "u",
+      );
 
       for (const file of Object.keys(index.files)) {
-        const absPath = join(ctx.cwd, file);
+        let absPath: string;
+        try {
+          absPath = resolveSafePath(ctx.cwd, file);
+        } catch {
+          continue;
+        }
         if (existsSync(absPath)) {
-          const lines = readFileSync(absPath, "utf8").split("\n");
+          let lines: string[];
+          try {
+            if (!statSync(absPath).isFile()) continue;
+            lines = readFileSync(absPath, "utf8").split("\n");
+          } catch {
+            continue;
+          }
           for (let idx = 0; idx < lines.length; idx++) {
             const line = lines[idx];
             const trimmed = line.trim();
@@ -104,10 +127,10 @@ export class FindSymbolReferencesTool implements OrbitTool<
         data: results,
         display,
       };
-    } catch (e: any) {
+    } catch (error: unknown) {
       return {
         ok: false,
-        error: `Failed to find references: ${e.message}`,
+        error: `Failed to find references: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }

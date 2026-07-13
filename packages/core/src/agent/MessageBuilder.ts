@@ -4,6 +4,15 @@ import { AgentState } from "./AgentState.js";
 
 export interface MessageBuilderOptions {
   now?: Date;
+  repoMapText?: string;
+}
+
+export const VOLATILE_CONTEXT_MESSAGE_KIND = "orbit_volatile_context";
+
+export interface BuiltModelMessages {
+  system: string;
+  messages: OrbitMessage[];
+  contextMessageAdded: boolean;
 }
 
 export class MessageBuilder {
@@ -12,17 +21,51 @@ export class MessageBuilder {
     state: AgentState,
     contextPack: ContextPack,
     options: MessageBuilderOptions = {},
-  ): { system: string; messages: OrbitMessage[] } {
+  ): BuiltModelMessages {
     const dynamicContextStr = this.buildVolatileContext(contextPack, {
       ...options,
       task: state.task,
     });
 
-    const system = `${systemPrompt}\n${dynamicContextStr}`;
+    const messages = [...state.history];
+    let targetUserIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index];
+      if (
+        message.role === "user" &&
+        message.metadata?.kind !== VOLATILE_CONTEXT_MESSAGE_KIND
+      ) {
+        targetUserIndex = index;
+        break;
+      }
+    }
+    const targetUser = messages[targetUserIndex];
+    const contextAlreadyPresent = targetUser
+      ? messages.some(
+          (message) =>
+            message.metadata?.kind === VOLATILE_CONTEXT_MESSAGE_KIND &&
+            message.metadata?.forMessageId === targetUser.id,
+        )
+      : true;
+    const contextMessageAdded = Boolean(targetUser && !contextAlreadyPresent);
+
+    if (targetUser && !contextAlreadyPresent) {
+      messages.splice(targetUserIndex, 0, {
+        id: `msg_context_${targetUser.id}`,
+        role: "user",
+        createdAt: options.now?.toISOString() || new Date().toISOString(),
+        content: [{ type: "text", text: dynamicContextStr }],
+        metadata: {
+          kind: VOLATILE_CONTEXT_MESSAGE_KIND,
+          forMessageId: targetUser.id,
+        },
+      });
+    }
 
     return {
-      system,
-      messages: [...state.history],
+      system: systemPrompt,
+      messages,
+      contextMessageAdded,
     };
   }
 
@@ -106,6 +149,9 @@ export class MessageBuilder {
       `\n### Relevant Files Excerpts:\n\n${filesContent || "No files indexed yet."}`,
       contextPack.codebaseContext
         ? `\n### Codebase Context:\n\n${this.normalizeContextText(contextPack.codebaseContext)}`
+        : "",
+      options.repoMapText
+        ? `\n### Repository Map:\n\n${this.normalizeContextText(options.repoMapText)}`
         : "",
       this.buildRuntimeContext(options.now || new Date(), {
         precise: this.isTimeSensitiveTask(options.task || ""),

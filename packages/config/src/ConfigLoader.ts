@@ -1,49 +1,230 @@
 import { homedir } from "os";
-import { join, dirname } from "path";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { join } from "path";
+import { existsSync, readFileSync } from "fs";
 import { parse } from "yaml";
-import { ConfigSchema, OrbitConfig } from "./schema.js";
+import {
+  ConfigSchema,
+  ORBIT_CONFIG_SCHEMA_VERSION,
+  OrbitConfig,
+  PricingTableSchema,
+} from "./schema.js";
 import { DEFAULT_CONFIG } from "./defaults.js";
 import { CredentialsManager } from "./Credentials.js";
 
-export class ConfigLoader {
-  private static merge(target: any, source: any): any {
-    if (!source) return target;
-    const result = { ...target };
-    for (const key of Object.keys(source)) {
-      if (
-        source[key] &&
-        typeof source[key] === "object" &&
-        !Array.isArray(source[key])
-      ) {
-        result[key] = this.merge(result[key] || {}, source[key]);
-      } else if (source[key] !== undefined) {
-        result[key] = source[key];
+export interface ConfigLoadOptions {
+  homeDir?: string;
+  env?: NodeJS.ProcessEnv;
+  credentialsManager?: CredentialsManager;
+  trustProjectExecutables?: boolean;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sanitizeUntrustedProjectConfig(
+  source: unknown,
+  baseline: OrbitConfig,
+): Record<string, unknown> {
+  if (!isRecord(source)) return {};
+  const safe: Record<string, unknown> = {};
+
+  for (const key of ["name", "language", "tui"] as const) {
+    if (source[key] !== undefined) safe[key] = source[key];
+  }
+
+  if (isRecord(source.context)) {
+    const context = { ...source.context };
+    delete context.testCommands;
+    if (context.autoRepair !== false) delete context.autoRepair;
+    if (typeof context.maxFilesToIndex === "number") {
+      context.maxFilesToIndex = Math.min(
+        context.maxFilesToIndex,
+        baseline.context.maxFilesToIndex,
+      );
+    }
+    if (typeof context.maxFileSizeKb === "number") {
+      context.maxFileSizeKb = Math.min(
+        context.maxFileSizeKb,
+        baseline.context.maxFileSizeKb,
+      );
+    }
+    safe.context = context;
+  }
+
+  if (
+    isRecord(source.agent) &&
+    typeof source.agent.maxIterations === "number"
+  ) {
+    safe.agent = {
+      maxIterations: Math.min(
+        source.agent.maxIterations,
+        baseline.agent.maxIterations,
+      ),
+    };
+  }
+
+  if (isRecord(source.permissions)) {
+    const permissions: Record<string, unknown> = {};
+    const requestedMode = source.permissions.mode;
+    if (
+      typeof requestedMode === "string" &&
+      permissionSafetyRank(requestedMode) >=
+        permissionSafetyRank(baseline.permissions.mode)
+    ) {
+      permissions.mode = requestedMode;
+    }
+    if (source.permissions.allowRead === false) permissions.allowRead = false;
+    for (const key of [
+      "requireApprovalForWrite",
+      "requireApprovalForBash",
+      "blockDangerousCommands",
+      "protectSecrets",
+    ] as const) {
+      if (source.permissions[key] === true) permissions[key] = true;
+    }
+    if (Array.isArray(source.permissions.protectedPaths)) {
+      permissions.protectedPaths = Array.from(
+        new Set([
+          ...baseline.permissions.protectedPaths,
+          ...source.permissions.protectedPaths.filter(
+            (item): item is string => typeof item === "string",
+          ),
+        ]),
+      );
+    }
+    safe.permissions = permissions;
+  }
+
+  if (isRecord(source.tools)) {
+    const tools: Record<string, unknown> = {};
+    if (isRecord(source.tools.bash)) {
+      const bash: Record<string, unknown> = {};
+      if (source.tools.bash.enabled === false) bash.enabled = false;
+      if (typeof source.tools.bash.timeoutMs === "number") {
+        bash.timeoutMs = Math.min(
+          source.tools.bash.timeoutMs,
+          baseline.tools.bash.timeoutMs,
+        );
+      }
+      tools.bash = bash;
+    }
+    if (isRecord(source.tools.webSearch)) {
+      tools.webSearch = {
+        ...(source.tools.webSearch.enabled === false ? { enabled: false } : {}),
+      };
+    }
+    if (isRecord(source.tools.mcp)) {
+      tools.mcp = {
+        ...(source.tools.mcp.enabled === false ? { enabled: false } : {}),
+      };
+    }
+    safe.tools = tools;
+  }
+
+  if (isRecord(source.skills)) {
+    const skills: Record<string, unknown> = {};
+    if (source.skills.enabled === false) skills.enabled = false;
+    if (source.skills.activation === "explicit") skills.activation = "explicit";
+    for (const key of [
+      "maxActive",
+      "maxSkillBytes",
+      "maxAutoSkillBytes",
+    ] as const) {
+      if (typeof source.skills[key] === "number") {
+        skills[key] = Math.min(source.skills[key], baseline.skills[key]);
       }
     }
-    return result;
+    safe.skills = skills;
+  }
+
+  return safe;
+}
+
+function permissionSafetyRank(mode: string): number {
+  switch (mode) {
+    case "plan":
+      return 3;
+    case "strict":
+      return 2;
+    case "normal":
+      return 1;
+    case "auto":
+      return 0;
+    default:
+      return -1;
+  }
+}
+
+function warnIgnoredConfiguration(filePath: string): void {
+  // Parser errors can echo nearby YAML source, which may contain credentials.
+  console.warn(`Warning: Invalid configuration at ${filePath}; file ignored.`);
+}
+
+function hasUnsupportedSchemaVersion(source: unknown): boolean {
+  if (!isRecord(source) || source.schemaVersion === undefined) return false;
+  return source.schemaVersion !== ORBIT_CONFIG_SCHEMA_VERSION;
+}
+
+function warnUnsupportedConfiguration(filePath: string): void {
+  console.warn(
+    `Warning: Configuration at ${filePath} uses an unsupported schema version; Orbit supports version ${ORBIT_CONFIG_SCHEMA_VERSION}. File ignored.`,
+  );
+}
+
+export class ConfigLoader {
+  private static merge<T>(target: T, source: unknown): T {
+    if (!isRecord(source)) return target;
+    const result: Record<string, unknown> = isRecord(target)
+      ? { ...target }
+      : {};
+    for (const key of Object.keys(source)) {
+      if (key === "__proto__" || key === "constructor" || key === "prototype") {
+        continue;
+      }
+      const sourceValue = source[key];
+      if (isRecord(sourceValue)) {
+        result[key] = this.merge(result[key] ?? {}, sourceValue);
+      } else if (sourceValue !== undefined) {
+        result[key] = sourceValue;
+      }
+    }
+    return result as T;
   }
 
   public static loadSync(
     cwd: string,
     cliOverrides?: Partial<OrbitConfig>,
+    options: ConfigLoadOptions = {},
   ): OrbitConfig {
-    let config = JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as OrbitConfig;
+    let config = structuredClone(DEFAULT_CONFIG);
+    const homeDirectory = options.homeDir ?? homedir();
+    const env = options.env ?? process.env;
 
     // 1. Load User Global Config (~/.orbit/config.yaml)
-    const globalConfigPath = join(homedir(), ".orbit", "config.yaml");
+    const globalConfigPath = join(homeDirectory, ".orbit", "config.yaml");
     if (existsSync(globalConfigPath)) {
       try {
         const raw = readFileSync(globalConfigPath, "utf8");
         const parsed = parse(raw);
-        config = this.merge(config, parsed);
-      } catch (e) {
-        console.warn(
-          `Warning: Failed to load global config at ${globalConfigPath}:`,
-          e,
-        );
+        if (hasUnsupportedSchemaVersion(parsed)) {
+          warnUnsupportedConfiguration(globalConfigPath);
+        } else {
+          const merged = ConfigSchema.safeParse(this.merge(config, parsed));
+          if (merged.success) {
+            config = merged.data;
+          } else {
+            warnIgnoredConfiguration(globalConfigPath);
+          }
+        }
+      } catch {
+        warnIgnoredConfiguration(globalConfigPath);
       }
     }
+    const trustProjectExecutables =
+      options.trustProjectExecutables ??
+      config.security?.trustProjectExecutables ??
+      false;
 
     // 2. Load Project Config (cwd/orbit.config.yaml)
     const projectConfigPath = join(cwd, "orbit.config.yaml");
@@ -51,44 +232,42 @@ export class ConfigLoader {
       try {
         const raw = readFileSync(projectConfigPath, "utf8");
         const parsed = parse(raw);
-        config = this.merge(config, parsed);
-      } catch (e) {
-        console.warn(
-          `Warning: Failed to load project config at ${projectConfigPath}:`,
-          e,
-        );
+        if (hasUnsupportedSchemaVersion(parsed)) {
+          warnUnsupportedConfiguration(projectConfigPath);
+        } else {
+          const projectConfig = trustProjectExecutables
+            ? parsed
+            : sanitizeUntrustedProjectConfig(parsed, config);
+          const merged = ConfigSchema.safeParse(
+            this.merge(config, projectConfig),
+          );
+          if (merged.success) {
+            config = merged.data;
+          } else {
+            warnIgnoredConfiguration(projectConfigPath);
+          }
+        }
+      } catch {
+        warnIgnoredConfiguration(projectConfigPath);
       }
     }
 
     // 3. Apply Environment Variable overrides
-    config = this.applyEnvOverrides(config);
+    config = this.applyEnvOverrides(config, env);
 
     // Load external pricing directory if it exists (~/.orbit/pricing.json)
-    const pricingPath = join(homedir(), ".orbit", "pricing.json");
+    const pricingPath = join(homeDirectory, ".orbit", "pricing.json");
     if (existsSync(pricingPath)) {
       try {
         const raw = readFileSync(pricingPath, "utf8");
-        const parsed = JSON.parse(raw);
-        config.pricing = { ...config.pricing, ...parsed };
-      } catch (e) {
-        console.warn(
-          `Warning: Failed to load pricing config at ${pricingPath}:`,
-          e,
-        );
-      }
-    } else {
-      try {
-        const dir = dirname(pricingPath);
-        if (!existsSync(dir)) {
-          mkdirSync(dir, { recursive: true });
+        const parsed = PricingTableSchema.safeParse(JSON.parse(raw));
+        if (parsed.success) {
+          config.pricing = { ...config.pricing, ...parsed.data };
+        } else {
+          warnIgnoredConfiguration(pricingPath);
         }
-        writeFileSync(
-          pricingPath,
-          JSON.stringify(config.pricing, null, 2),
-          "utf8",
-        );
       } catch {
-        // Ignore
+        warnIgnoredConfiguration(pricingPath);
       }
     }
 
@@ -107,7 +286,9 @@ export class ConfigLoader {
 
     // 6. Dynamically resolve apiKey using apiKeyEnv if apiKey not directly set
     const finalConfig = validated.data;
-    const credsManager = new CredentialsManager();
+    const credsManager =
+      options.credentialsManager ??
+      new CredentialsManager({ orbitDir: join(homeDirectory, ".orbit") });
     for (const key of Object.keys(finalConfig.providers)) {
       const provider = finalConfig.providers[key];
       if (!provider.apiKey && provider.apiKeyEnv) {
@@ -116,7 +297,7 @@ export class ConfigLoader {
         Object.defineProperty(provider, "apiKey", {
           get() {
             if (resolved) return cachedKey;
-            let keyVal = process.env[provider.apiKeyEnv!];
+            let keyVal = env[provider.apiKeyEnv!];
             if (!keyVal) {
               keyVal = credsManager.getSecret(provider.apiKeyEnv!) || undefined;
             }
@@ -129,7 +310,7 @@ export class ConfigLoader {
             resolved = true;
           },
           configurable: true,
-          enumerable: true,
+          enumerable: false,
         });
       }
     }
@@ -137,119 +318,109 @@ export class ConfigLoader {
     return finalConfig;
   }
 
-  private static applyEnvOverrides(config: OrbitConfig): OrbitConfig {
+  private static applyEnvOverrides(
+    config: OrbitConfig,
+    env: NodeJS.ProcessEnv,
+  ): OrbitConfig {
     const nextConfig = { ...config };
 
-    const language = process.env.ORBIT_LANGUAGE || process.env.ORBIT_LANG;
+    const language = env.ORBIT_LANGUAGE || env.ORBIT_LANG;
     if (language === "en" || language === "zh") {
       nextConfig.language = language;
     }
 
-    if (process.env.DEEPSEEK_BASE_URL) {
+    if (env.DEEPSEEK_BASE_URL) {
       if (nextConfig.providers["deepseek-openai"]) {
-        nextConfig.providers["deepseek-openai"].baseUrl =
-          process.env.DEEPSEEK_BASE_URL;
+        nextConfig.providers["deepseek-openai"].baseUrl = env.DEEPSEEK_BASE_URL;
       }
     }
-    if (process.env.DEEPSEEK_API_KEY) {
+    if (env.DEEPSEEK_API_KEY) {
       if (nextConfig.providers["deepseek-openai"]) {
-        nextConfig.providers["deepseek-openai"].apiKey =
-          process.env.DEEPSEEK_API_KEY;
+        nextConfig.providers["deepseek-openai"].apiKey = env.DEEPSEEK_API_KEY;
       }
     }
 
-    if (process.env.ANTHROPIC_BASE_URL) {
+    if (env.ANTHROPIC_BASE_URL) {
       if (nextConfig.providers["deepseek-anthropic"]) {
         nextConfig.providers["deepseek-anthropic"].baseUrl =
-          process.env.ANTHROPIC_BASE_URL;
+          env.ANTHROPIC_BASE_URL;
       }
       if (nextConfig.providers["anthropic"]) {
-        nextConfig.providers["anthropic"].baseUrl =
-          process.env.ANTHROPIC_BASE_URL;
+        nextConfig.providers["anthropic"].baseUrl = env.ANTHROPIC_BASE_URL;
       }
     }
-    if (process.env.ANTHROPIC_AUTH_TOKEN) {
+    if (env.ANTHROPIC_AUTH_TOKEN) {
       if (nextConfig.providers["deepseek-anthropic"]) {
         nextConfig.providers["deepseek-anthropic"].apiKey =
-          process.env.ANTHROPIC_AUTH_TOKEN;
+          env.ANTHROPIC_AUTH_TOKEN;
       }
     }
-    if (process.env.ANTHROPIC_API_KEY) {
+    if (env.ANTHROPIC_API_KEY) {
       if (nextConfig.providers["anthropic"]) {
-        nextConfig.providers["anthropic"].apiKey =
-          process.env.ANTHROPIC_API_KEY;
+        nextConfig.providers["anthropic"].apiKey = env.ANTHROPIC_API_KEY;
       }
     }
 
-    if (process.env.OPENAI_BASE_URL) {
+    if (env.OPENAI_BASE_URL) {
       if (nextConfig.providers["openai"]) {
-        nextConfig.providers["openai"].baseUrl = process.env.OPENAI_BASE_URL;
+        nextConfig.providers["openai"].baseUrl = env.OPENAI_BASE_URL;
       }
     }
-    if (process.env.OPENAI_API_KEY) {
+    if (env.OPENAI_API_KEY) {
       if (nextConfig.providers["openai"]) {
-        nextConfig.providers["openai"].apiKey = process.env.OPENAI_API_KEY;
+        nextConfig.providers["openai"].apiKey = env.OPENAI_API_KEY;
       }
     }
 
-    if (process.env.OLLAMA_BASE_URL) {
+    if (env.OLLAMA_BASE_URL) {
       if (nextConfig.providers["ollama"]) {
-        nextConfig.providers["ollama"].baseUrl = process.env.OLLAMA_BASE_URL;
+        nextConfig.providers["ollama"].baseUrl = env.OLLAMA_BASE_URL;
       }
     }
 
-    if (process.env.DEEPSEEK_MODEL) {
-      nextConfig.models.default = process.env.DEEPSEEK_MODEL;
+    if (env.DEEPSEEK_MODEL) {
+      nextConfig.models.default = env.DEEPSEEK_MODEL;
     }
-    if (process.env.ANTHROPIC_MODEL) {
-      nextConfig.models.default = process.env.ANTHROPIC_MODEL;
+    if (env.ANTHROPIC_MODEL) {
+      nextConfig.models.default = env.ANTHROPIC_MODEL;
     }
-    if (process.env.OPENAI_MODEL) {
-      nextConfig.models.default = process.env.OPENAI_MODEL;
+    if (env.OPENAI_MODEL) {
+      nextConfig.models.default = env.OPENAI_MODEL;
     }
-    if (process.env.OLLAMA_MODEL) {
-      nextConfig.models.default = process.env.OLLAMA_MODEL;
+    if (env.OLLAMA_MODEL) {
+      nextConfig.models.default = env.OLLAMA_MODEL;
     }
 
     const defaultProviderConfig =
       nextConfig.providers?.[nextConfig.provider?.default || ""];
     if (defaultProviderConfig) {
-      if (process.env.ORBIT_PROVIDER_MODELS) {
-        defaultProviderConfig.models = process.env.ORBIT_PROVIDER_MODELS.split(
-          ",",
-        )
+      if (env.ORBIT_PROVIDER_MODELS) {
+        defaultProviderConfig.models = env.ORBIT_PROVIDER_MODELS.split(",")
           .map((model) => model.trim())
           .filter(Boolean);
       }
-      if (process.env.ORBIT_PROVIDER_API_KEY_HEADER) {
-        defaultProviderConfig.apiKeyHeader =
-          process.env.ORBIT_PROVIDER_API_KEY_HEADER;
+      if (env.ORBIT_PROVIDER_API_KEY_HEADER) {
+        defaultProviderConfig.apiKeyHeader = env.ORBIT_PROVIDER_API_KEY_HEADER;
       }
-      if (process.env.ORBIT_PROVIDER_API_KEY_PREFIX !== undefined) {
-        defaultProviderConfig.apiKeyPrefix =
-          process.env.ORBIT_PROVIDER_API_KEY_PREFIX;
+      if (env.ORBIT_PROVIDER_API_KEY_PREFIX !== undefined) {
+        defaultProviderConfig.apiKeyPrefix = env.ORBIT_PROVIDER_API_KEY_PREFIX;
       }
-      const requestTimeoutMs = Number(
-        process.env.ORBIT_PROVIDER_REQUEST_TIMEOUT_MS,
-      );
+      const requestTimeoutMs = Number(env.ORBIT_PROVIDER_REQUEST_TIMEOUT_MS);
       if (Number.isFinite(requestTimeoutMs) && requestTimeoutMs > 0) {
         defaultProviderConfig.requestTimeoutMs = requestTimeoutMs;
       }
-      const streamTimeoutMs = Number(
-        process.env.ORBIT_PROVIDER_STREAM_TIMEOUT_MS,
-      );
+      const streamTimeoutMs = Number(env.ORBIT_PROVIDER_STREAM_TIMEOUT_MS);
       if (Number.isFinite(streamTimeoutMs) && streamTimeoutMs > 0) {
         defaultProviderConfig.streamTimeoutMs = streamTimeoutMs;
       }
-      const maxRetries = Number(process.env.ORBIT_PROVIDER_MAX_RETRIES);
+      const maxRetries = Number(env.ORBIT_PROVIDER_MAX_RETRIES);
       if (Number.isFinite(maxRetries) && maxRetries >= 0) {
         defaultProviderConfig.maxRetries = maxRetries;
       }
     }
 
     const maxIterations = Number(
-      process.env.ORBIT_AGENT_MAX_ITERATIONS ||
-        process.env.ORBIT_MAX_ITERATIONS,
+      env.ORBIT_AGENT_MAX_ITERATIONS || env.ORBIT_MAX_ITERATIONS,
     );
     if (Number.isFinite(maxIterations) && maxIterations > 0) {
       nextConfig.agent = {
@@ -260,12 +431,12 @@ export class ConfigLoader {
 
     const webSearch = nextConfig.tools?.webSearch;
     if (webSearch) {
-      if (process.env.ORBIT_WEB_SEARCH_ENABLED) {
+      if (env.ORBIT_WEB_SEARCH_ENABLED) {
         webSearch.enabled =
-          process.env.ORBIT_WEB_SEARCH_ENABLED.toLowerCase() !== "false" &&
-          process.env.ORBIT_WEB_SEARCH_ENABLED !== "0";
+          env.ORBIT_WEB_SEARCH_ENABLED.toLowerCase() !== "false" &&
+          env.ORBIT_WEB_SEARCH_ENABLED !== "0";
       }
-      const provider = process.env.ORBIT_WEB_SEARCH_PROVIDER;
+      const provider = env.ORBIT_WEB_SEARCH_PROVIDER;
       if (
         provider === "auto" ||
         provider === "searxng" ||
@@ -275,56 +446,54 @@ export class ConfigLoader {
       ) {
         webSearch.provider = provider;
       }
-      const searxngUrls =
-        process.env.ORBIT_SEARXNG_URL || process.env.SEARXNG_URL;
+      const searxngUrls = env.ORBIT_SEARXNG_URL || env.SEARXNG_URL;
       if (searxngUrls) {
         webSearch.searxngUrls = searxngUrls
           .split(",")
           .map((url) => url.trim())
           .filter(Boolean);
       }
-      if (process.env.ORBIT_TAVILY_API_URL) {
-        webSearch.tavilyBaseUrl = process.env.ORBIT_TAVILY_API_URL;
+      if (env.ORBIT_TAVILY_API_URL) {
+        webSearch.tavilyBaseUrl = env.ORBIT_TAVILY_API_URL;
       }
-      const timeoutMs = Number(process.env.ORBIT_WEB_SEARCH_TIMEOUT_MS);
+      const timeoutMs = Number(env.ORBIT_WEB_SEARCH_TIMEOUT_MS);
       if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
         webSearch.timeoutMs = timeoutMs;
       }
-      const maxResults = Number(process.env.ORBIT_WEB_SEARCH_MAX_RESULTS);
+      const maxResults = Number(env.ORBIT_WEB_SEARCH_MAX_RESULTS);
       if (Number.isFinite(maxResults) && maxResults > 0) {
         webSearch.maxResults = maxResults;
       }
     }
 
     if (nextConfig.skills) {
-      if (process.env.ORBIT_SKILLS_ENABLED) {
+      if (env.ORBIT_SKILLS_ENABLED) {
         nextConfig.skills.enabled =
-          process.env.ORBIT_SKILLS_ENABLED.toLowerCase() !== "false" &&
-          process.env.ORBIT_SKILLS_ENABLED !== "0";
+          env.ORBIT_SKILLS_ENABLED.toLowerCase() !== "false" &&
+          env.ORBIT_SKILLS_ENABLED !== "0";
       }
-      if (process.env.ORBIT_SKILLS_DIRS || process.env.ORBIT_SKILLS_DIR) {
-        const raw =
-          process.env.ORBIT_SKILLS_DIRS || process.env.ORBIT_SKILLS_DIR || "";
+      if (env.ORBIT_SKILLS_DIRS || env.ORBIT_SKILLS_DIR) {
+        const raw = env.ORBIT_SKILLS_DIRS || env.ORBIT_SKILLS_DIR || "";
         nextConfig.skills.directories = raw
           .split(/[;,]/)
           .map((dir) => dir.trim())
           .filter(Boolean);
       }
       if (
-        process.env.ORBIT_SKILLS_ACTIVATION === "explicit" ||
-        process.env.ORBIT_SKILLS_ACTIVATION === "auto"
+        env.ORBIT_SKILLS_ACTIVATION === "explicit" ||
+        env.ORBIT_SKILLS_ACTIVATION === "auto"
       ) {
-        nextConfig.skills.activation = process.env.ORBIT_SKILLS_ACTIVATION;
+        nextConfig.skills.activation = env.ORBIT_SKILLS_ACTIVATION;
       }
-      const maxActive = Number(process.env.ORBIT_SKILLS_MAX_ACTIVE);
+      const maxActive = Number(env.ORBIT_SKILLS_MAX_ACTIVE);
       if (Number.isFinite(maxActive) && maxActive >= 0) {
         nextConfig.skills.maxActive = maxActive;
       }
-      const maxSkillBytes = Number(process.env.ORBIT_SKILLS_MAX_BYTES);
+      const maxSkillBytes = Number(env.ORBIT_SKILLS_MAX_BYTES);
       if (Number.isFinite(maxSkillBytes) && maxSkillBytes > 0) {
         nextConfig.skills.maxSkillBytes = maxSkillBytes;
       }
-      const maxAutoSkillBytes = Number(process.env.ORBIT_SKILLS_MAX_AUTO_BYTES);
+      const maxAutoSkillBytes = Number(env.ORBIT_SKILLS_MAX_AUTO_BYTES);
       if (Number.isFinite(maxAutoSkillBytes) && maxAutoSkillBytes > 0) {
         nextConfig.skills.maxAutoSkillBytes = maxAutoSkillBytes;
       }

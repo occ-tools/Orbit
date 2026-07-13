@@ -1,0 +1,86 @@
+import picocolors from "picocolors";
+
+/** Slash commands reserved by Orbit and unavailable to custom commands. */
+export const BUILTIN_SLASH_COMMANDS = [
+  "/help",
+  "/status",
+  "/doctor",
+  "/config",
+  "/model",
+  "/chat",
+  "/commit",
+  "/exit",
+  "/quit",
+  "/rollback",
+  "/clear",
+  "/add",
+  "/drop",
+  "/mode",
+  "/copy",
+  "/run",
+  "/update",
+  "/webui",
+] as const;
+
+/** Builds the localized help screen for Orbit's built-in slash commands. */
+export function buildSlashCommandHelp(isZh: boolean): string {
+  if (isZh) {
+    return [
+      picocolors.bold(picocolors.yellow("[ 上下文管理 (Context) ]")),
+      `  ${picocolors.green("/add")}   ${picocolors.cyan("<file>")}     - 添加文件/目录至上下文 (使用 -r 设为只读)`,
+      `  ${picocolors.green("/drop")}  ${picocolors.cyan("<file>")}     - 从活动上下文中移除指定文件或通配符`,
+      `  ${picocolors.green("/clear")}            - 重置对话历史与屏幕缓存`,
+      "",
+      picocolors.bold(picocolors.yellow("[ 会话与历史 (Session) ]")),
+      `  ${picocolors.green("/chat")}   ${picocolors.cyan("[action]")}   - 管理对话会话 (list/ls, new, delete/rm, switch)`,
+      `  ${picocolors.green("/rollback")}         - 回滚最近的文件修改检查点`,
+      `  ${picocolors.green("/copy")}             - 拷贝 AI 的最新回复至系统剪贴板`,
+      "",
+      picocolors.bold(picocolors.yellow("[ 配置与状态 (Settings) ]")),
+      `  ${picocolors.green("/status")}           - 诊断并展示当前会话、模型与消耗`,
+      `  ${picocolors.green("/doctor")}           - 全面诊断运行环境、模型、联网、skills 与安全配置`,
+      `  ${picocolors.green("/config")}   ${picocolors.cyan("[k=v]")}    - 查看或直接修改配置参数`,
+      `  ${picocolors.green("/model")}    ${picocolors.cyan("[name]")}   - 动态查询或切换正在使用的语言大模型`,
+      `  ${picocolors.green("/mode")}     ${picocolors.cyan("[mode]")}   - 切换安全确认模式 (strict, normal, auto, plan)`,
+      `  ${picocolors.green("/update")}           - 检测并更新项目依赖包`,
+      `  ${picocolors.green("/webui")}    ${picocolors.cyan("[port]")}   - 启动并打开 Orbit 图形控制台`,
+      "",
+      picocolors.bold(picocolors.yellow("[ Git 提交 (Git) ]")),
+      `  ${picocolors.green("/commit")}   ${picocolors.cyan("[msg]")}    - 暂存工作区修改并生成提交`,
+      "",
+      picocolors.bold(picocolors.yellow("[ 系统控制 (System) ]")),
+      `  ${picocolors.green("/help")}             - 显示此帮助信息`,
+      `  ${picocolors.green("/exit")} / ${picocolors.green("/quit")}     - 安全退出交互式终端`,
+      `  ${picocolors.green("!<cmd>")} / ${picocolors.green("/run")} ${picocolors.cyan("<cmd>")} - 直接执行系统原生 Shell 命令`,
+    ].join("\n");
+  }
+
+  return [
+    picocolors.bold(picocolors.yellow("[ Context Management ]")),
+    `  ${picocolors.green("/add")}   ${picocolors.cyan("<file>")}     - Add file/directory to context (use -r for read-only)`,
+    `  ${picocolors.green("/drop")}  ${picocolors.cyan("<file>")}     - Drop file/pattern from active context`,
+    `  ${picocolors.green("/clear")}            - Reset dialogue history and clear TUI screen`,
+    "",
+    picocolors.bold(picocolors.yellow("[ Session & History ]")),
+    `  ${picocolors.green("/chat")}   ${picocolors.cyan("[action]")}   - Manage sessions (list/ls, new, delete/rm, switch)`,
+    `  ${picocolors.green("/rollback")}         - Rollback to last file modification checkpoint`,
+    `  ${picocolors.green("/copy")}             - Copy last AI message to clipboard`,
+    "",
+    picocolors.bold(picocolors.yellow("[ Configuration & Status ]")),
+    `  ${picocolors.green("/status")}           - Show current session, model, and cost`,
+    `  ${picocolors.green("/doctor")}           - Diagnose runtime, models, web, skills, and safety config`,
+    `  ${picocolors.green("/config")}   ${picocolors.cyan("[k=v]")}    - View or modify configurations`,
+    `  ${picocolors.green("/model")}    ${picocolors.cyan("[name]")}   - Show or switch active model`,
+    `  ${picocolors.green("/mode")}     ${picocolors.cyan("[mode]")}   - Switch permission mode (strict, normal, auto, plan)`,
+    `  ${picocolors.green("/update")}           - Check and update dependencies`,
+    `  ${picocolors.green("/webui")}    ${picocolors.cyan("[port]")}   - Start and open the Orbit graphical console`,
+    "",
+    picocolors.bold(picocolors.yellow("[ Git Version Control ]")),
+    `  ${picocolors.green("/commit")}   ${picocolors.cyan("[msg]")}    - Stage files and commit with auto-generated message`,
+    "",
+    picocolors.bold(picocolors.yellow("[ System Control ]")),
+    `  ${picocolors.green("/help")}             - Show this help screen`,
+    `  ${picocolors.green("/exit")} / ${picocolors.green("/quit")}     - Exit interactive shell`,
+    `  ${picocolors.green("!<cmd>")} / ${picocolors.green("/run")} ${picocolors.cyan("<cmd>")} - Execute native shell command`,
+  ].join("\n");
+}

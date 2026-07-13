@@ -2,9 +2,14 @@ import {
   OpenAIProvider,
   DeepSeekOpenAIProvider,
   OllamaProvider,
+  type ModelProvider,
 } from "@orbit-build/model-providers";
+import type { OrbitConfig } from "@orbit-build/config";
 
-function getAutocompleteProvider(providerId: string, config: any) {
+function getAutocompleteProvider(
+  providerId: string,
+  config: OrbitConfig,
+): ModelProvider {
   const providerConfig = config.providers?.[providerId];
   if (!providerConfig) {
     if (providerId === "ollama") {
@@ -110,35 +115,27 @@ export class AutocompleteEngine {
   private activeRequests = new Map<string, AbortController>();
   private debounceTimers = new Map<string, NodeJS.Timeout>();
   private debounceResolvers = new Map<string, (val: string) => void>();
-  private providerCache = new Map<string, any>();
+  private providerCache = new WeakMap<
+    OrbitConfig,
+    Map<string, ModelProvider>
+  >();
 
   constructor(private cwd: string = process.cwd()) {}
 
-  private getCachedProvider(providerId: string, config: any) {
-    const providerConfig = config.providers?.[providerId];
-    const key = JSON.stringify({
-      providerId,
-      apiKey:
-        providerConfig?.apiKey ||
-        (providerConfig?.apiKeyEnv
-          ? process.env[providerConfig.apiKeyEnv]
-          : undefined),
-      baseUrl: providerConfig?.baseUrl,
-      type: providerConfig?.type,
-      apiKeyHeader: providerConfig?.apiKeyHeader,
-      apiKeyPrefix: providerConfig?.apiKeyPrefix,
-      headers: providerConfig?.headers,
-      requestTimeoutMs: providerConfig?.requestTimeoutMs,
-      streamTimeoutMs: providerConfig?.streamTimeoutMs,
-      maxRetries: providerConfig?.maxRetries,
-      extraBody: providerConfig?.extraBody,
-      capabilities: providerConfig?.capabilities,
-      modelCapabilities: providerConfig?.modelCapabilities,
-    });
-    if (!this.providerCache.has(key)) {
-      this.providerCache.set(key, getAutocompleteProvider(providerId, config));
+  private getCachedProvider(
+    providerId: string,
+    config: OrbitConfig,
+  ): ModelProvider {
+    let providers = this.providerCache.get(config);
+    if (!providers) {
+      providers = new Map<string, ModelProvider>();
+      this.providerCache.set(config, providers);
     }
-    return this.providerCache.get(key);
+    const key = providerId;
+    if (!providers.has(key)) {
+      providers.set(key, getAutocompleteProvider(providerId, config));
+    }
+    return providers.get(key)!;
   }
 
   /**
@@ -147,7 +144,7 @@ export class AutocompleteEngine {
   public async autocomplete(
     prefix: string,
     suffix: string,
-    config: any,
+    config: OrbitConfig,
     windowId = "default",
   ): Promise<string> {
     if (!config.autocomplete?.enabled) {
@@ -249,13 +246,11 @@ export class AutocompleteEngine {
           let localPromise: Promise<string> = Promise.resolve("");
           let cloudPromise: Promise<string> = Promise.resolve("");
 
-          const speculativeEnabled =
-            config.autocomplete.speculative?.enabled === true;
-          if (speculativeEnabled) {
-            const specProviderId =
-              config.autocomplete.speculative.provider || "ollama";
-            const specModelName =
-              config.autocomplete.speculative.model || "qwen2.5-coder:0.5b";
+          const speculative = config.autocomplete.speculative;
+          const speculativeEnabled = speculative?.enabled === true;
+          if (speculativeEnabled && speculative) {
+            const specProviderId = speculative.provider || "ollama";
+            const specModelName = speculative.model || "qwen2.5-coder:0.5b";
             const isSpecOfficialDeepSeek =
               specProviderId === "deepseek-openai" ||
               (config.providers?.[specProviderId]?.baseUrl || "").includes(
@@ -310,11 +305,9 @@ export class AutocompleteEngine {
             });
           }
 
-          if (speculativeEnabled) {
+          if (speculativeEnabled && speculative) {
             const specTimeout =
-              config.autocomplete.speculative.timeoutMs !== undefined
-                ? config.autocomplete.speculative.timeoutMs
-                : 150;
+              speculative.timeoutMs !== undefined ? speculative.timeoutMs : 150;
             const timeoutPromise = new Promise<string>((r) =>
               setTimeout(() => r("__TIMEOUT__"), specTimeout),
             );
@@ -348,5 +341,16 @@ export class AutocompleteEngine {
 
       this.debounceTimers.set(windowId, timer);
     });
+  }
+
+  /** Cancel outstanding completions and release timers held by the engine. */
+  public dispose(): void {
+    for (const timer of this.debounceTimers.values()) clearTimeout(timer);
+    for (const resolve of this.debounceResolvers.values()) resolve("");
+    for (const controller of this.activeRequests.values()) controller.abort();
+    this.debounceTimers.clear();
+    this.debounceResolvers.clear();
+    this.activeRequests.clear();
+    this.providerCache = new WeakMap();
   }
 }

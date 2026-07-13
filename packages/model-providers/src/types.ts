@@ -85,6 +85,7 @@ export interface TokenUsage {
   cacheReadTokens?: number;
   cacheMissTokens?: number;
   cacheWriteTokens?: number;
+  reasoningTokens?: number;
 }
 
 export type ModelEvent =
@@ -104,6 +105,7 @@ export interface ModelProvider {
     | "anthropic-compatible"
     | "ollama";
   capabilities: ModelCapabilities;
+  initialize?(): Promise<void>;
   chat(input: ModelChatInput): AsyncIterable<ModelEvent>;
   countTokens?(input: ModelChatInput): Promise<number>;
   embed?(texts: string[], options?: { model?: string }): Promise<number[][]>;

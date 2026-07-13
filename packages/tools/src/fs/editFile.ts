@@ -43,7 +43,12 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
           };
         }
         const updated = fileContent.split(oldTextNorm).join(newTextNorm);
-        const writeError = await this.checkAndWrite(input.path, safePath, updated, originalContent);
+        const writeError = await this.checkAndWrite(
+          input.path,
+          safePath,
+          updated,
+          originalContent,
+        );
         if (writeError) return writeError;
         return {
           ok: true,
@@ -95,7 +100,12 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
 
         fileLines.splice(matchedIndex, M, ...adjustedNewLines);
         const updated = fileLines.join("\n");
-        const writeError = await this.checkAndWrite(input.path, safePath, updated, originalContent);
+        const writeError = await this.checkAndWrite(
+          input.path,
+          safePath,
+          updated,
+          originalContent,
+        );
         if (writeError) return writeError;
         return {
           ok: true,
@@ -137,7 +147,12 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
 
           fileLines.splice(bestIndex, M, ...adjustedNewLines);
           const updated = fileLines.join("\n");
-          const writeError = await this.checkAndWrite(input.path, safePath, updated, originalContent);
+          const writeError = await this.checkAndWrite(
+            input.path,
+            safePath,
+            updated,
+            originalContent,
+          );
           if (writeError) return writeError;
           return {
             ok: true,
@@ -147,9 +162,19 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
       }
 
       // 5. AST-based Match Fallback
-      const astUpdated = await astMatchAndReplace(input.path, fileContent, oldTextNorm, newTextNorm);
+      const astUpdated = await astMatchAndReplace(
+        input.path,
+        fileContent,
+        oldTextNorm,
+        newTextNorm,
+      );
       if (astUpdated) {
-        const writeError = await this.checkAndWrite(input.path, safePath, astUpdated, originalContent);
+        const writeError = await this.checkAndWrite(
+          input.path,
+          safePath,
+          astUpdated,
+          originalContent,
+        );
         if (writeError) return writeError;
         return {
           ok: true,
@@ -173,7 +198,7 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
     filePath: string,
     safePath: string,
     updated: string,
-    originalContent: string
+    originalContent: string,
   ): Promise<ToolResult<void> | null> {
     const syntaxError = await verifySyntax(filePath, updated);
     if (syntaxError) {
@@ -190,7 +215,10 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
   }
 }
 
-async function verifySyntax(filePath: string, content: string): Promise<string | null> {
+async function verifySyntax(
+  filePath: string,
+  content: string,
+): Promise<string | null> {
   const ext = filePath.split(".").pop()?.toLowerCase();
   if (ext === "json") {
     try {
@@ -220,13 +248,18 @@ async function verifySyntax(filePath: string, content: string): Promise<string |
         filePath,
         content,
         ts.ScriptTarget.Latest,
-        true
+        true,
       );
       const diagnostics = (sourceFile as any).parseDiagnostics || [];
       if (diagnostics.length > 0) {
         const errors = diagnostics.map((d: any) => {
-          const { line, character } = sourceFile.getLineAndCharacterOfPosition(d.start);
-          const message = typeof d.messageText === "string" ? d.messageText : d.messageText.messageText;
+          const { line, character } = sourceFile.getLineAndCharacterOfPosition(
+            d.start,
+          );
+          const message =
+            typeof d.messageText === "string"
+              ? d.messageText
+              : d.messageText.messageText;
           return `Line ${line + 1}, Char ${character + 1}: ${message}`;
         });
         return `TypeScript Syntax Error:\n${errors.join("\n")}`;
@@ -241,10 +274,14 @@ async function verifySyntax(filePath: string, content: string): Promise<string |
   if (ext === "py") {
     try {
       const cp = await import("child_process");
-      const result = cp.spawnSync("python", ["-c", "import sys; compile(sys.stdin.read(), 'file.py', 'exec')"], {
-        input: content,
-        encoding: "utf8",
-      });
+      const result = cp.spawnSync(
+        "python",
+        ["-c", "import sys; compile(sys.stdin.read(), 'file.py', 'exec')"],
+        {
+          input: content,
+          encoding: "utf8",
+        },
+      );
       if (result.status !== 0) {
         return `Python Syntax Error:\n${result.stderr || result.stdout}`;
       }
@@ -321,9 +358,9 @@ function levenshteinDistance(s1: string, s2: string): number {
         currRow[j] = prevRow[j - 1];
       } else {
         currRow[j] = Math.min(
-          prevRow[j] + 1,      // Deletion
-          currRow[j - 1] + 1,  // Insertion
-          prevRow[j - 1] + 1   // Substitution
+          prevRow[j] + 1, // Deletion
+          currRow[j - 1] + 1, // Insertion
+          prevRow[j - 1] + 1, // Substitution
         );
       }
     }
@@ -357,7 +394,13 @@ async function astMatchAndReplace(
   newText: string,
 ): Promise<string | null> {
   const ext = filePath.split(".").pop()?.toLowerCase();
-  if (ext !== "ts" && ext !== "tsx" && ext !== "js" && ext !== "jsx" && ext !== "py") {
+  if (
+    ext !== "ts" &&
+    ext !== "tsx" &&
+    ext !== "js" &&
+    ext !== "jsx" &&
+    ext !== "py"
+  ) {
     return null;
   }
 
@@ -424,9 +467,13 @@ def run():
 if __name__ == "__main__":
     run()
 `;
-      const result = cp.spawnSync("python", ["-c", pythonScript, fileContent, oldText, newText], {
-        encoding: "utf8",
-      });
+      const result = cp.spawnSync(
+        "python",
+        ["-c", pythonScript, fileContent, oldText, newText],
+        {
+          encoding: "utf8",
+        },
+      );
       if (result.status === 0 && result.stdout) {
         return result.stdout;
       }
@@ -534,7 +581,10 @@ if __name__ == "__main__":
     }
 
     const primary = isWrapped
-      ? oldDecls.find((d) => !(d.name === "Dummy" && d.kind === ts.SyntaxKind.ClassDeclaration))
+      ? oldDecls.find(
+          (d) =>
+            !(d.name === "Dummy" && d.kind === ts.SyntaxKind.ClassDeclaration),
+        )
       : oldDecls[0];
 
     if (!primary) {

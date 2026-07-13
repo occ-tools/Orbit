@@ -1,28 +1,34 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { rmSync, existsSync, readFileSync } from "fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
+import { tmpdir } from "os";
 import { CredentialsManager } from "./Credentials.js";
 
+vi.mock("child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("child_process")>();
+  return { ...actual, execFileSync: vi.fn() };
+});
+
 describe("CredentialsManager tests", () => {
-  let secretsPath: string;
+  let orbitDir: string;
 
   beforeEach(() => {
-    secretsPath = join(homedir(), ".orbit", "secrets.json");
+    orbitDir = mkdtempSync(join(tmpdir(), "orbit-credentials-test-"));
+    vi.mocked(execFileSync).mockReset();
   });
 
   afterEach(() => {
-    if (existsSync(secretsPath)) {
-      try {
-        rmSync(secretsPath, { force: true });
-      } catch {
-        // Ignored
-      }
-    }
+    rmSync(orbitDir, { recursive: true, force: true });
   });
 
   it("should store and retrieve secrets correctly", () => {
-    const manager = new CredentialsManager();
+    const manager = new CredentialsManager({
+      orbitDir,
+      platform: "linux",
+      fallbackKey: Buffer.alloc(32, 7),
+    });
+    const secretsPath = join(orbitDir, "secrets.json");
     const testKey = "TEST_RESOLVED_API_KEY";
     const testSecret = "sk-proj-test1234567890abcdef";
 
@@ -31,12 +37,92 @@ describe("CredentialsManager tests", () => {
     const retrieved = manager.getSecret(testKey);
     expect(retrieved).toBe(testSecret);
 
+    manager.storeSecret(testKey, "replacement-secret");
+    expect(manager.getSecret(testKey)).toBe("replacement-secret");
+
     // Verify it is saved in secrets.json and not in plaintext
     expect(existsSync(secretsPath)).toBe(true);
     const rawContent = readFileSync(secretsPath, "utf8");
     expect(rawContent).not.toContain(testSecret); // must be encrypted!
+    expect(rawContent).not.toContain("replacement-secret");
 
     // Verify missing keys return null
     expect(manager.getSecret("NON_EXISTENT_KEY")).toBeNull();
+  });
+
+  it("does not touch the real user home", () => {
+    const manager = new CredentialsManager({
+      orbitDir,
+      platform: "linux",
+      fallbackKey: Buffer.alloc(32, 3),
+    });
+
+    manager.storeSecret("TEST_KEY", "test-value");
+
+    expect(existsSync(join(orbitDir, "secrets.json"))).toBe(true);
+  });
+
+  it("rejects unsafe credential names and multiline values", () => {
+    const manager = new CredentialsManager({
+      orbitDir,
+      platform: "linux",
+      fallbackKey: Buffer.alloc(32, 5),
+    });
+
+    expect(() => manager.storeSecret("__proto__", "secret")).toThrow();
+    expect(() => manager.storeSecret("SAFE_KEY", "first\nsecond")).toThrow();
+    expect(manager.getSecret("__proto__")).toBeNull();
+  });
+
+  it("isolates Windows PowerShell modules and preserves the DPAPI format", () => {
+    const legacyCipherText = `01000000${"a".repeat(256)}`;
+    const replacementSecret = "replacement-secret";
+    const originalModulePath = process.env.PSModulePath;
+    const originalMixedCaseModulePath = process.env.PsMoDuLePaTh;
+    process.env.PSModulePath = "C:\\Program Files\\PowerShell\\Modules";
+    process.env.PsMoDuLePaTh = "C:\\incompatible-modules";
+
+    vi.mocked(execFileSync)
+      .mockReturnValueOnce(`${legacyCipherText}\r\n`)
+      .mockReturnValueOnce(`${replacementSecret}\r\n`);
+
+    try {
+      const manager = new CredentialsManager({ orbitDir, platform: "win32" });
+      manager.storeSecret("DEEPSEEK_API_KEY", replacementSecret);
+
+      const rawSecrets = JSON.parse(
+        readFileSync(join(orbitDir, "secrets.json"), "utf8"),
+      ) as Record<string, unknown>;
+      expect(rawSecrets.DEEPSEEK_API_KEY).toBe(legacyCipherText);
+      expect(manager.getSecret("DEEPSEEK_API_KEY")).toBe(replacementSecret);
+
+      const calls = vi.mocked(execFileSync).mock.calls;
+      expect(calls).toHaveLength(2);
+      for (const call of calls) {
+        expect(call[0]).toBe("powershell.exe");
+        const options = call[2] as { env?: NodeJS.ProcessEnv };
+        expect(
+          Object.keys(options.env ?? {}).some(
+            (key) => key.toLowerCase() === "psmodulepath",
+          ),
+        ).toBe(false);
+      }
+
+      expect(calls[0]?.[1]).toContain("-Command");
+      expect(String(calls[0]?.[1])).toContain("-ErrorAction Stop");
+      expect(String(calls[1]?.[1])).toContain("PtrToStringBSTR");
+      expect(String(calls[1]?.[1])).toContain("ZeroFreeBSTR");
+    } finally {
+      if (originalModulePath === undefined) {
+        delete process.env.PSModulePath;
+      } else {
+        process.env.PSModulePath = originalModulePath;
+      }
+      if (originalMixedCaseModulePath === undefined) {
+        delete process.env.PsMoDuLePaTh;
+      } else {
+        process.env.PsMoDuLePaTh = originalMixedCaseModulePath;
+      }
+    }
   });
 });

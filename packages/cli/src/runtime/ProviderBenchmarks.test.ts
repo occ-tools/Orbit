@@ -52,8 +52,9 @@ describe("ProviderBenchmarks", () => {
 
     expect(samples).toHaveLength(1);
     expect(JSON.stringify(samples)).not.toContain("Reply with ok");
-    expect(summary).toContain("slow-first-token");
-    expect(summary).toContain("p50 first=2800ms");
+    expect(summary).toContain("slow-first-delta");
+    expect(summary).toContain("p50 model=2800ms");
+    expect(summary).toContain("p50 answer=n/a");
   });
 
   it("ranks benchmark comparison by first-token latency", () => {

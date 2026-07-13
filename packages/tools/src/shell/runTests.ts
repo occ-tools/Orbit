@@ -2,7 +2,7 @@ import { z } from "zod";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { execa } from "execa";
-import { OrbitTool, ToolContext, ToolResult } from "../types.js";
+import type { OrbitTool, ToolContext, ToolResult } from "../types.js";
 import { LogTruncator } from "@orbit-build/shared";
 
 export const RunTestsInputSchema = z.object({
@@ -32,7 +32,8 @@ export class RunTestsTool implements OrbitTool<
     }
     const configuredTimeout = ctx.config?.tools?.bash?.timeoutMs;
     const timeout =
-      typeof configuredTimeout === "number" && Number.isFinite(configuredTimeout)
+      typeof configuredTimeout === "number" &&
+      Number.isFinite(configuredTimeout)
         ? Math.max(1000, configuredTimeout)
         : 120000;
 
@@ -61,8 +62,11 @@ export class RunTestsTool implements OrbitTool<
             ? `Tests failed with exit code ${exitCode}`
             : undefined,
       };
-    } catch (e: any) {
-      if (e.name === "AbortError" || ctx.abortSignal?.aborted) {
+    } catch (error: unknown) {
+      if (
+        (error instanceof Error && error.name === "AbortError") ||
+        ctx.abortSignal?.aborted
+      ) {
         return {
           ok: false,
           error: `Test execution was interrupted by the user.`,
@@ -70,7 +74,7 @@ export class RunTestsTool implements OrbitTool<
       }
       return {
         ok: false,
-        error: `Failed to run tests: ${e.message}`,
+        error: `Failed to run tests: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }

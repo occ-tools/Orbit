@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 import {
   FullscreenTui,
   getSlashSuggestionFooterText,
@@ -15,8 +23,8 @@ describe("FullscreenTui prompt interactions", () => {
   let originalWrite: typeof process.stdout.write;
   let originalRows: number | undefined;
   let originalColumns: number | undefined;
-  let originalIsRaw: boolean | undefined;
-  let setRawMode: ReturnType<typeof vi.fn>;
+  let originalIsRaw: boolean;
+  let setRawMode: Mock<[enabled: boolean], typeof process.stdin>;
 
   const press = (str: string, key: Key) => {
     process.stdin.emit("keypress", str, key);
@@ -99,6 +107,26 @@ describe("FullscreenTui prompt interactions", () => {
     await expect(result).resolves.toBe("pro");
     expect(setRawMode).toHaveBeenCalledWith(true);
     expect(setRawMode).toHaveBeenLastCalledWith(false);
+  });
+
+  it("arms the prompt keypress listener before resuming paused stdin", async () => {
+    const tui = createTui();
+    const resume = vi.mocked(process.stdin.resume);
+    resume.mockImplementationOnce(() => {
+      expect(process.stdin.listenerCount("keypress")).toBeGreaterThan(0);
+      return process.stdin;
+    });
+
+    const result = tui.showPrompt({
+      type: "select",
+      message: "Choose model",
+      options: [{ value: "flash", label: "DeepSeek Flash" }],
+    });
+    press("", { name: "return" });
+
+    await expect(result).resolves.toBe("flash");
+    expect(resume).toHaveBeenCalledOnce();
+    expect(process.stdin.pause).toHaveBeenCalledOnce();
   });
 
   it("requires two delete keypresses on the same option before resolving delete", async () => {
@@ -302,7 +330,7 @@ describe("FullscreenTui prompt interactions", () => {
             "  ✔ Success: Web search returned 5 results via Bing HTML.",
             "  ✦ web_search hangzhou weather today",
             "  ✔Success: Web search returned 3 results via Bing HTML.",
-            "  ⚠DeepSeek cache hit degraded for slab abc: 28% hit (1536/5535 tokens).",
+            "  ⚠Prompt cache hit degraded for slab abc: 28% hit (1536/5535 tokens).",
           ].join("\n"),
         },
       ],
@@ -313,7 +341,7 @@ describe("FullscreenTui prompt interactions", () => {
     expect(plain).toContain("web_search 2 searches · 8 results");
     expect(plain).toContain("latest: hangzhou weather today");
     expect(plain).not.toContain("Success:");
-    expect(plain).not.toContain("DeepSeek cache hit degraded");
+    expect(plain).not.toContain("Prompt cache hit degraded");
   });
 
   it("compacts Open-Meteo web search logs in history rendering", () => {

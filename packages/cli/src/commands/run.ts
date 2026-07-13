@@ -17,6 +17,7 @@ import {
 } from "../tui/FullscreenTui.js";
 import { ReplController } from "../runtime/ReplController.js";
 import { createProviderFromConfig } from "../runtime/ProviderFactory.js";
+import { redactSecrets } from "@orbit-build/shared";
 
 export { previousCodePointIndex, nextCodePointIndex, parseMouseWheelDirection };
 
@@ -35,6 +36,22 @@ function getLocalState(cwd: string): LocalState {
   }
 }
 
+export function shouldUseStoredModel(cliOverrides: unknown): boolean {
+  if (
+    typeof cliOverrides !== "object" ||
+    cliOverrides === null ||
+    Array.isArray(cliOverrides)
+  ) {
+    return true;
+  }
+  const models = (cliOverrides as Record<string, unknown>).models;
+  if (typeof models !== "object" || models === null || Array.isArray(models)) {
+    return true;
+  }
+  const selected = (models as Record<string, unknown>).default;
+  return typeof selected !== "string" || selected.trim().length === 0;
+}
+
 export async function runAgent(
   cwd: string,
   task?: string,
@@ -42,128 +59,195 @@ export async function runAgent(
   multi?: boolean,
   options?: { nonInteractive?: boolean; jsonl?: boolean },
 ): Promise<void> {
-  if (options?.jsonl) {
-    const originalLog = console.log;
-    console.log = (...args: any[]) => {
-      console.error(...args);
-    };
-    eventBus.on("*", (event) => {
-      originalLog(JSON.stringify(event));
-    });
-  }
-
-  const config = ConfigLoader.loadSync(cwd, cliOverrides);
-
-  if (!cliOverrides || !cliOverrides.model) {
-    const localState = getLocalState(cwd);
-    if (localState.lastModel) {
-      config.models.default = localState.lastModel;
-    }
-  }
-
-  if (config.models) {
-    if (config.models.default) {
-      config.models.default = config.models.default.replace(
-        /\x1b\[[0-9;]*[a-zA-Z]/g,
-        "",
-      );
-    }
-    if (config.models.fast) {
-      config.models.fast = config.models.fast.replace(
-        /\x1b\[[0-9;]*[a-zA-Z]/g,
-        "",
-      );
-    }
-  }
-
-  let providerInstance: any;
+  const cleanupJsonl = options?.jsonl ? configureJsonlOutput() : () => {};
   try {
-    providerInstance = createProviderFromConfig(config);
-  } catch (error: any) {
-    console.error(
-      picocolors.red(error?.message || "Failed to create provider instance."),
-    );
-    return;
-  }
+    const config = ConfigLoader.loadSync(cwd, cliOverrides);
 
-  const interaction: UserInteraction = options?.nonInteractive
-    ? {
-        async askApproval(reason: string, preview?: string): Promise<boolean> {
-          console.error(`\nRisk Warning [Non-Interactive Mode]: ${reason}`);
-          if (preview) {
-            console.error(picocolors.gray(`Parameters: ${preview}`));
-          }
-          console.error(
-            "Automatically denying action in non-interactive mode.",
-          );
-          return false;
-        },
-        showText(text: string): void {
-          console.error(text);
-        },
-        async showDiff(
-          filePath: string,
-          _before: string | null,
-          _after: string,
-        ): Promise<void> {
-          console.error(`[Diff for ${filePath} shown in non-interactive mode]`);
-        },
+    if (shouldUseStoredModel(cliOverrides)) {
+      const localState = getLocalState(cwd);
+      if (localState.lastModel) {
+        config.models.default = localState.lastModel;
       }
-    : {
-        async askApproval(reason: string, preview?: string): Promise<boolean> {
-          console.log(`\nRisk Warning: ${reason}`);
-          if (preview) {
-            console.log(picocolors.gray(`Parameters: ${preview}`));
-          }
-          return await Prompt.askApproval("Confirm action?");
+    }
+
+    if (config.models) {
+      if (config.models.default) {
+        config.models.default = config.models.default.replace(
+          /\x1b\[[0-9;]*[a-zA-Z]/g,
+          "",
+        );
+      }
+      if (config.models.fast) {
+        config.models.fast = config.models.fast.replace(
+          /\x1b\[[0-9;]*[a-zA-Z]/g,
+          "",
+        );
+      }
+    }
+
+    let providerInstance: any;
+    try {
+      providerInstance = createProviderFromConfig(config);
+    } catch (error: any) {
+      console.error(
+        picocolors.red(error?.message || "Failed to create provider instance."),
+      );
+      return;
+    }
+
+    const interaction: UserInteraction = options?.nonInteractive
+      ? {
+          async askApproval(
+            reason: string,
+            preview?: string,
+          ): Promise<boolean> {
+            console.error(`\nRisk Warning [Non-Interactive Mode]: ${reason}`);
+            if (preview) {
+              console.error(picocolors.gray(`Parameters: ${preview}`));
+            }
+            console.error(
+              "Automatically denying action in non-interactive mode.",
+            );
+            return false;
+          },
+          showText(text: string): void {
+            console.error(text);
+          },
+          async showDiff(
+            filePath: string,
+            _before: string | null,
+            _after: string,
+          ): Promise<void> {
+            console.error(
+              `[Diff for ${filePath} shown in non-interactive mode]`,
+            );
+          },
+        }
+      : {
+          async askApproval(
+            reason: string,
+            preview?: string,
+          ): Promise<boolean> {
+            console.log(`\nRisk Warning: ${reason}`);
+            if (preview) {
+              console.log(picocolors.gray(`Parameters: ${preview}`));
+            }
+            return await Prompt.askApproval("Confirm action?");
+          },
+          showText(text: string): void {
+            console.log(text);
+          },
+          async showDiff(
+            filePath: string,
+            before: string | null,
+            after: string,
+          ): Promise<void> {
+            await pageText(DiffView.render(filePath, before, after));
+          },
+        };
+
+    const activeTask = task;
+    if (!activeTask) {
+      const controller = new ReplController(
+        cwd,
+        config,
+        providerInstance,
+        interaction,
+        multi,
+        !!cliOverrides?.direct,
+      );
+      await controller.start();
+      return;
+    }
+
+    if (multi) {
+      const orchestrator = new Orchestrator(
+        cwd,
+        config,
+        providerInstance,
+        activeTask,
+        interaction,
+      );
+      await orchestrator.run();
+    } else {
+      const loop = new AgentLoop(
+        cwd,
+        config,
+        providerInstance,
+        activeTask,
+        interaction,
+        {
+          disableStatusBar: !!options?.nonInteractive || !!options?.jsonl,
         },
-        showText(text: string): void {
-          console.log(text);
-        },
-        async showDiff(
-          filePath: string,
-          before: string | null,
-          after: string,
-        ): Promise<void> {
-          await pageText(DiffView.render(filePath, before, after));
+      );
+      await loop.run();
+    }
+  } finally {
+    cleanupJsonl();
+  }
+}
+
+function configureJsonlOutput(): () => void {
+  const originalLog = console.log;
+  const onEvent = (event: unknown) => {
+    originalLog(JSON.stringify(sanitizeJsonlEvent(event)));
+  };
+  console.log = (...args: unknown[]) => {
+    console.error(...args);
+  };
+  eventBus.on("*", onEvent);
+  return () => {
+    eventBus.off("*", onEvent);
+    console.log = originalLog;
+  };
+}
+
+function sanitizeJsonlEvent(event: unknown): unknown {
+  if (!isRecord(event) || typeof event.type !== "string") return {};
+  const payload = isRecord(event.payload) ? event.payload : {};
+  switch (event.type) {
+    case "model_request":
+      return { type: event.type, payload: { model: payload.model } };
+    case "model_response":
+      return {
+        type: event.type,
+        payload: { model: payload.model, usage: payload.usage },
+      };
+    case "tool_proposal":
+      return {
+        type: event.type,
+        payload: {
+          toolCallId: payload.toolCallId,
+          toolName: payload.toolName,
+          explanation: payload.explanation,
         },
       };
-
-  const activeTask = task;
-  if (!activeTask) {
-    const controller = new ReplController(
-      cwd,
-      config,
-      providerInstance,
-      interaction,
-      multi,
-      !!cliOverrides?.direct,
-    );
-    await controller.start();
-    return;
+    case "tool_result":
+      return {
+        type: event.type,
+        payload: {
+          toolCallId: payload.toolCallId,
+          toolName: payload.toolName,
+          error:
+            typeof payload.error === "string"
+              ? redactSecrets(payload.error)
+              : payload.error,
+        },
+      };
+    default:
+      return redactJsonValue(event);
   }
+}
 
-  if (multi) {
-    const orchestrator = new Orchestrator(
-      cwd,
-      config,
-      providerInstance,
-      activeTask,
-      interaction,
-    );
-    await orchestrator.run();
-  } else {
-    const loop = new AgentLoop(
-      cwd,
-      config,
-      providerInstance,
-      activeTask,
-      interaction,
-      {
-        detachBackgroundCachePrimer: !!options?.nonInteractive,
-        disableStatusBar: !!options?.nonInteractive || !!options?.jsonl,
-      },
-    );
-    await loop.run();
-  }
+function redactJsonValue(value: unknown): unknown {
+  if (typeof value === "string") return redactSecrets(value);
+  if (Array.isArray(value)) return value.map(redactJsonValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, redactJsonValue(item)]),
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

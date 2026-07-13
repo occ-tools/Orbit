@@ -9,3 +9,4 @@ export * from "./BM25.js";
 export * from "./HybridSearch.js";
 export * from "./ASTChunker.js";
 export * from "./ReferencesRetriever.js";
+export * from "./cachePaths.js";

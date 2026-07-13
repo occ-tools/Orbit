@@ -6,11 +6,51 @@ import {
   writeFileSync,
 } from "fs";
 import { dirname, join } from "path";
+import { z } from "zod";
 import type { OrbitConfig } from "@orbit-build/config";
 import type {
   ModelCapabilities,
   ModelProvider,
 } from "@orbit-build/model-providers";
+import { redactSecrets } from "@orbit-build/shared";
+
+const DEFAULT_PROVIDER_PROBE_TIMEOUT_MS = 15_000;
+
+const ModelCapabilitiesSchema = z
+  .object({
+    streaming: z.boolean(),
+    toolCalls: z.boolean(),
+    jsonMode: z.boolean(),
+    thinking: z.boolean(),
+    vision: z.boolean(),
+    promptCaching: z.boolean(),
+    maxContextTokens: z.number().int().positive().optional(),
+    maxOutputTokens: z.number().int().positive().optional(),
+  })
+  .passthrough();
+
+const ProviderProbeResultSchema = z
+  .object({
+    providerId: z.string().min(1),
+    model: z.string().min(1),
+    checkedAt: z.string().min(1),
+    declared: ModelCapabilitiesSchema,
+    observed: z
+      .object({
+        streamStarted: z.boolean(),
+        usageReturned: z.boolean(),
+        cacheUsageReturned: z.boolean().optional(),
+        totalTokensReturned: z.boolean().optional(),
+        error: z.string().optional(),
+        firstDeltaMs: z.number().nonnegative().optional(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+const ProviderProbeCacheSchema = z
+  .object({ results: z.array(z.unknown()) })
+  .passthrough();
 
 export interface ProviderProbeResult {
   providerId: string;
@@ -35,8 +75,14 @@ export function readProviderProbeCache(cwd: string): ProviderProbeResult[] {
   const path = providerProbeCachePath(cwd);
   if (!existsSync(path)) return [];
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return Array.isArray(parsed?.results) ? parsed.results : [];
+    const envelope = ProviderProbeCacheSchema.safeParse(
+      JSON.parse(readFileSync(path, "utf8")),
+    );
+    if (!envelope.success) return [];
+    return envelope.data.results.flatMap((candidate) => {
+      const parsed = ProviderProbeResultSchema.safeParse(candidate);
+      return parsed.success ? [parsed.data] : [];
+    });
   } catch {
     return [];
   }
@@ -47,10 +93,12 @@ export function writeProviderProbeCache(
   result: ProviderProbeResult,
 ): void {
   try {
+    const validatedResult = ProviderProbeResultSchema.safeParse(result);
+    if (!validatedResult.success) return;
     const path = providerProbeCachePath(cwd);
     const existing = readProviderProbeCache(cwd);
     const next = [
-      result,
+      validatedResult.data,
       ...existing.filter(
         (item) =>
           item.providerId !== result.providerId || item.model !== result.model,
@@ -87,7 +135,7 @@ export async function probeProviderCapabilities(
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(),
-    options.timeoutMs ?? 6000,
+    options.timeoutMs ?? DEFAULT_PROVIDER_PROBE_TIMEOUT_MS,
   );
   timeout.unref?.();
   const result: ProviderProbeResult = {
@@ -116,7 +164,8 @@ export async function probeProviderCapabilities(
       ],
       tools: [],
       stream: true,
-      maxTokens: 4,
+      maxTokens: 32,
+      thinking: { enabled: false },
       abortSignal: controller.signal,
     });
 
@@ -136,15 +185,17 @@ export async function probeProviderCapabilities(
           typeof event.usage.cacheMissTokens === "number" ||
           typeof event.usage.cacheWriteTokens === "number";
       } else if (event.type === "error") {
-        result.observed.error = event.error?.message || String(event.error);
+        result.observed.error = redactSecrets(
+          event.error?.message || String(event.error),
+        );
         break;
-      }
-      if (result.observed.streamStarted && result.observed.usageReturned) {
+      } else if (event.type === "done") {
         break;
       }
     }
-  } catch (error: any) {
-    result.observed.error = error?.message || String(error);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    result.observed.error = redactSecrets(message);
   } finally {
     clearTimeout(timeout);
   }
@@ -174,19 +225,16 @@ export function formatProviderProbe(result: ProviderProbeResult): string {
   if (!observed.usageReturned) {
     warnings.push("usage metadata missing");
   }
-  if (
-    result.declared.promptCaching &&
-    observed.cacheUsageReturned === false
-  ) {
+  if (result.declared.promptCaching && observed.cacheUsageReturned === false) {
     warnings.push("declared cache support but no cache usage fields observed");
   }
 
   return [
     `Provider probe: ${result.providerId} / ${result.model}`,
-    `- declared: streaming=${result.declared.streaming} tools=${result.declared.toolCalls} thinking=${result.declared.thinking} cache=${result.declared.promptCaching}`,
+    `- declared: streaming=${result.declared.streaming} tools=${result.declared.toolCalls} thinking=${result.declared.thinking} cache=${result.declared.promptCaching} maxContext=${result.declared.maxContextTokens ?? "n/a"} maxOutput=${result.declared.maxOutputTokens ?? "n/a"}`,
     `- observed: stream=${observed.streamStarted ? "yes" : "no"} usage=${observed.usageReturned ? "yes" : "no"} cacheUsage=${cacheUsage} totalTokens=${totalTokens} firstDelta=${observed.firstDeltaMs ?? "n/a"}ms`,
     warnings.length > 0 ? `- warnings: ${warnings.join("; ")}` : "",
-    observed.error ? `- error: ${observed.error}` : "",
+    observed.error ? `- error: ${redactSecrets(observed.error)}` : "",
   ]
     .filter(Boolean)
     .join("\n");

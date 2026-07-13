@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   describeDeprecatedDeepSeekAliases,
   formatModelOptionLabel,
+  getDeepSeekAliasMigration,
   getDeepSeekAliasReplacement,
   getProviderModelCandidates,
   isDeprecatedDeepSeekAlias,
@@ -44,13 +45,25 @@ describe("ModelCatalog", () => {
     });
 
     expect(models).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
+    expect(
+      getProviderModelCandidates({
+        provider: { default: "deepseek-anthropic" },
+        providers: {
+          "deepseek-anthropic": { type: "anthropic-compatible" },
+        },
+      }),
+    ).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
   });
 
   it("describes DeepSeek legacy aliases with V4 replacements", () => {
     expect(isDeprecatedDeepSeekAlias("deepseek-chat")).toBe(true);
     expect(getDeepSeekAliasReplacement("deepseek-reasoner")).toBe(
-      "deepseek-v4-pro",
+      "deepseek-v4-flash",
     );
+    expect(getDeepSeekAliasMigration("deepseek-reasoner")).toEqual({
+      model: "deepseek-v4-flash",
+      thinking: "high",
+    });
     expect(formatModelOptionLabel("deepseek-chat")).toContain(
       "deprecated -> deepseek-v4-flash",
     );
@@ -60,6 +73,6 @@ describe("ModelCatalog", () => {
         "deepseek-reasoner",
         "deepseek-v4-flash",
       ]),
-    ).toContain("2026-07-24T15:59:00Z");
+    ).toContain("deepseek-reasoner -> deepseek-v4-flash (thinking high)");
   });
 });

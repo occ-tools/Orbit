@@ -96,6 +96,7 @@ export class Renderer {
     sessionId: string,
     model: string,
     cwd: string,
+    version = "Orbit",
   ): void {
     const sessionShort = sessionId.substring(0, 8);
     const columns = process.stdout.columns || 80;
@@ -104,7 +105,7 @@ export class Renderer {
     console.log(
       "\n  " +
         morandi.asstBold("⚡ Orbit AI Coding Runtime") +
-        morandi.gray(" (v0.1.0)"),
+        morandi.gray(` (${version})`),
     );
     console.log("  " + line);
     console.log(`  🤖 ${morandi.gray("Model")}   : ${morandi.accent(model)}`);
@@ -127,13 +128,19 @@ export class Renderer {
   }
 
   public static printThought(thought: string): void {
-    if (!thought.trim()) return;
-    console.log(`\n🧠 ${morandi.asstBold("Orbit Agent Thinking:")}`);
+    const formatted = this.formatThought(thought);
+    if (formatted) console.log(formatted);
+  }
+
+  /** Formats a thought block without writing directly to the terminal. */
+  public static formatThought(thought: string): string {
+    if (!thought.trim()) return "";
+    const output = [`\n🧠 ${morandi.asstBold("Orbit Agent Thinking:")}`];
     const lines = thought.trim().split("\n");
     for (const line of lines) {
-      console.log(`   ${morandi.gray(line)}`);
+      output.push(`   ${morandi.gray(line)}`);
     }
-    console.log();
+    return `${output.join("\n")}\n`;
   }
 
   public static formatMarkdown(text: string): string {

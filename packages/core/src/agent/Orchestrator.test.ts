@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Orchestrator } from "./Orchestrator.js";
-import { OrbitConfig } from "@orbit-build/config";
+import { DEFAULT_CONFIG, type OrbitConfig } from "@orbit-build/config";
 import { ModelProvider } from "@orbit-build/model-providers";
 import fs from "fs";
 import path from "path";
@@ -11,6 +11,7 @@ describe("Orchestrator Multi-Agent Flow", () => {
   let testCwd: string;
 
   const dummyConfig: OrbitConfig = {
+    ...DEFAULT_CONFIG,
     name: "test",
     provider: { default: "openai" },
     models: {
@@ -20,9 +21,11 @@ describe("Orchestrator Multi-Agent Flow", () => {
       reviewer: "reviewer-model",
       fast: "fast-model",
       summarizer: "fast-model",
+      embedding: "text-embedding-3-small",
     },
     providers: { openai: { type: "openai", apiKey: "test" } },
     permissions: {
+      ...DEFAULT_CONFIG.permissions,
       mode: "auto",
       allowRead: true,
       requireApprovalForWrite: false,
@@ -32,6 +35,7 @@ describe("Orchestrator Multi-Agent Flow", () => {
       protectedPaths: [],
     },
     context: {
+      ...DEFAULT_CONFIG.context,
       maxFilesToIndex: 10,
       maxFileSizeKb: 10,
       ignore: [],
@@ -39,9 +43,14 @@ describe("Orchestrator Multi-Agent Flow", () => {
       compactThreshold: 0.75,
     },
     tools: {
-      bash: { enabled: false, timeoutMs: 1000 },
-      webSearch: { enabled: false },
-      mcp: { enabled: false },
+      ...DEFAULT_CONFIG.tools,
+      bash: {
+        ...DEFAULT_CONFIG.tools.bash,
+        enabled: false,
+        timeoutMs: 1000,
+      },
+      webSearch: { ...DEFAULT_CONFIG.tools.webSearch, enabled: false },
+      mcp: { ...DEFAULT_CONFIG.tools.mcp, enabled: false },
     },
     mcpServers: {},
     hooks: {},
@@ -58,7 +67,7 @@ describe("Orchestrator Multi-Agent Flow", () => {
     vi.restoreAllMocks();
     testCwd = path.join(
       os.tmpdir(),
-      `orbit-orchestrator-test-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      `orbit-orchestrator-test-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     );
     fs.mkdirSync(testCwd, { recursive: true });
   });
@@ -93,7 +102,7 @@ describe("Orchestrator Multi-Agent Flow", () => {
             reviewerCalled = true;
             yield {
               type: "text_delta" as const,
-              text: "Verification APPROVED",
+              text: '{"verdict":"approved","feedback":""}',
             };
           }
         })();
@@ -106,10 +115,19 @@ describe("Orchestrator Multi-Agent Flow", () => {
 
     const createWorktreeSpy = vi
       .spyOn(WorktreeManager.prototype, "createWorktree")
-      .mockImplementation((subagentId) => ({
-        path: path.join(testCwd, ".orbit", "worktrees", subagentId),
-        branchName: `mock-branch-${subagentId}`,
-      }));
+      .mockImplementation((subagentId) => {
+        const worktreePath = path.join(
+          testCwd,
+          ".orbit",
+          "worktrees",
+          subagentId,
+        );
+        fs.mkdirSync(worktreePath, { recursive: true });
+        return {
+          path: worktreePath,
+          branchName: `mock-branch-${subagentId}`,
+        };
+      });
 
     const mergeAndCleanupSpy = vi
       .spyOn(WorktreeManager.prototype, "mergeAndCleanup")
@@ -135,7 +153,7 @@ describe("Orchestrator Multi-Agent Flow", () => {
     expect(mergeAndCleanupSpy).toHaveBeenCalled();
 
     // Verify plan file was written
-    const planPath = path.resolve(testCwd, "orbit_plan.md");
+    const planPath = path.resolve(testCwd, ".orbit", "task.md");
     expect(fs.existsSync(planPath)).toBe(true);
     expect(fs.readFileSync(planPath, "utf8")).toContain(
       "Plan: Add a new test file.",
@@ -164,7 +182,7 @@ describe("Orchestrator Multi-Agent Flow", () => {
             reviewerCalled = true;
             yield {
               type: "text_delta" as const,
-              text: "Verification APPROVED",
+              text: '{"verdict":"approved","feedback":""}',
             };
           }
         })();
@@ -175,8 +193,14 @@ describe("Orchestrator Multi-Agent Flow", () => {
       .spyOn(WorktreeManager.prototype, "isGitRepo")
       .mockReturnValue(false);
 
-    const createWorktreeSpy = vi.spyOn(WorktreeManager.prototype, "createWorktree");
-    const mergeAndCleanupSpy = vi.spyOn(WorktreeManager.prototype, "mergeAndCleanup");
+    const createWorktreeSpy = vi.spyOn(
+      WorktreeManager.prototype,
+      "createWorktree",
+    );
+    const mergeAndCleanupSpy = vi.spyOn(
+      WorktreeManager.prototype,
+      "mergeAndCleanup",
+    );
 
     const orchestrator = new Orchestrator(
       testCwd,
@@ -198,9 +222,56 @@ describe("Orchestrator Multi-Agent Flow", () => {
     expect(mergeAndCleanupSpy).not.toHaveBeenCalled();
 
     // Verify plan file was written
-    const planPath = path.resolve(testCwd, "orbit_plan.md");
+    const planPath = path.resolve(testCwd, ".orbit", "task.md");
     expect(fs.existsSync(planPath)).toBe(true);
   }, 15_000);
+
+  it("propagates a coder provider failure without running the reviewer", async () => {
+    let reviewerCalled = false;
+    const output: string[] = [];
+    const mockProvider: ModelProvider = {
+      id: "openai",
+      chat: (params: any) =>
+        (async function* () {
+          if (params.model === "planner-model") {
+            yield { type: "text_delta" as const, text: "Plan" };
+          } else if (params.model === "coder-model") {
+            yield {
+              type: "error" as const,
+              error: new Error("HTTP 401 Bearer orchestration-secret"),
+            };
+          } else if (params.model === "reviewer-model") {
+            reviewerCalled = true;
+            yield {
+              type: "text_delta" as const,
+              text: '{"verdict":"approved","feedback":""}',
+            };
+          }
+        })(),
+    } as any;
+    vi.spyOn(WorktreeManager.prototype, "isGitRepo").mockReturnValue(false);
+
+    const outcome = await new Orchestrator(
+      testCwd,
+      dummyConfig,
+      mockProvider,
+      "Test failed coder outcome",
+      {
+        ...dummyInteraction,
+        showText: (text) => output.push(text),
+      },
+    ).run();
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "provider_error" },
+    });
+    expect(JSON.stringify(outcome)).not.toContain("orchestration-secret");
+    expect(reviewerCalled).toBe(false);
+    expect(output.join("\n")).not.toContain(
+      "Multi-agent task completed successfully",
+    );
+  });
 
   it("should fall back to main workspace when createWorktree fails", async () => {
     let plannerCalled = false;
@@ -224,7 +295,7 @@ describe("Orchestrator Multi-Agent Flow", () => {
             reviewerCalled = true;
             yield {
               type: "text_delta" as const,
-              text: "Verification APPROVED",
+              text: '{"verdict":"approved","feedback":""}',
             };
           }
         })();
@@ -241,7 +312,10 @@ describe("Orchestrator Multi-Agent Flow", () => {
         throw new Error("Simulated worktree creation error");
       });
 
-    const mergeAndCleanupSpy = vi.spyOn(WorktreeManager.prototype, "mergeAndCleanup");
+    const mergeAndCleanupSpy = vi.spyOn(
+      WorktreeManager.prototype,
+      "mergeAndCleanup",
+    );
 
     const orchestrator = new Orchestrator(
       testCwd,
@@ -263,7 +337,63 @@ describe("Orchestrator Multi-Agent Flow", () => {
     expect(mergeAndCleanupSpy).not.toHaveBeenCalled();
 
     // Verify plan file was written
-    const planPath = path.resolve(testCwd, "orbit_plan.md");
+    const planPath = path.resolve(testCwd, ".orbit", "task.md");
     expect(fs.existsSync(planPath)).toBe(true);
   }, 15_000);
+
+  it("does not merge rejected or malformed reviewer verdicts", async () => {
+    let reviewerCalls = 0;
+    const mockProvider: ModelProvider = {
+      id: "openai",
+      chat: (params: any) =>
+        (async function* () {
+          if (params.model === "planner-model") {
+            yield { type: "text_delta" as const, text: "Plan" };
+          } else if (params.model === "coder-model") {
+            yield { type: "text_delta" as const, text: "Coder finished" };
+          } else if (params.model === "reviewer-model") {
+            reviewerCalls++;
+            yield {
+              type: "text_delta" as const,
+              text:
+                reviewerCalls === 1
+                  ? "NOT APPROVED"
+                  : '{"verdict":"rejected","feedback":"tests failed"}',
+            };
+          }
+        })(),
+    } as any;
+    vi.spyOn(WorktreeManager.prototype, "isGitRepo").mockReturnValue(true);
+    vi.spyOn(WorktreeManager.prototype, "createWorktree").mockImplementation(
+      () => {
+        const worktreePath = path.join(
+          testCwd,
+          ".orbit",
+          "worktrees",
+          "review-gate",
+        );
+        fs.mkdirSync(worktreePath, { recursive: true });
+        return {
+          path: worktreePath,
+          branchName: "orbit-wt-review-gate-test",
+        };
+      },
+    );
+    const merge = vi.spyOn(WorktreeManager.prototype, "mergeAndCleanup");
+    const discard = vi
+      .spyOn(WorktreeManager.prototype, "discardWorktree")
+      .mockImplementation(() => {});
+
+    await new Orchestrator(
+      testCwd,
+      dummyConfig,
+      mockProvider,
+      "Test review gate",
+      dummyInteraction,
+    ).run();
+
+    expect(reviewerCalls).toBe(3);
+    expect(merge).not.toHaveBeenCalled();
+    expect(discard).toHaveBeenCalledOnce();
+  });
 });

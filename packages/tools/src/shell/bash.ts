@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { execa } from "execa";
-import { OrbitTool, ToolContext, ToolResult } from "../types.js";
+import type { OrbitTool, ToolContext, ToolResult } from "../types.js";
 import { LogTruncator } from "@orbit-build/shared";
 
 export const BashInputSchema = z.object({
@@ -29,7 +29,8 @@ export class BashTool implements OrbitTool<BashInput, BashOutput> {
   ): Promise<ToolResult<BashOutput>> {
     const configuredTimeout = ctx.config?.tools?.bash?.timeoutMs;
     const timeoutCap =
-      typeof configuredTimeout === "number" && Number.isFinite(configuredTimeout)
+      typeof configuredTimeout === "number" &&
+      Number.isFinite(configuredTimeout)
         ? Math.max(1000, configuredTimeout)
         : 120000;
     const timeout =
@@ -64,17 +65,24 @@ export class BashTool implements OrbitTool<BashInput, BashOutput> {
         .join("\n\n");
 
       return {
-        ok: true,
+        ok: exitCode === 0,
         data: {
           stdout,
           stderr,
           exitCode,
         },
         display,
+        error:
+          exitCode === 0
+            ? undefined
+            : `Command exited with non-zero status ${exitCode}.`,
         metadata: { truncated },
       };
-    } catch (e: any) {
-      if (e.name === "AbortError" || ctx.abortSignal?.aborted) {
+    } catch (error: unknown) {
+      if (
+        (error instanceof Error && error.name === "AbortError") ||
+        ctx.abortSignal?.aborted
+      ) {
         return {
           ok: false,
           error: `Command execution was interrupted by the user.`,
@@ -82,7 +90,7 @@ export class BashTool implements OrbitTool<BashInput, BashOutput> {
       }
       return {
         ok: false,
-        error: `Command failed to execute or timed out: ${e.message}`,
+        error: `Command failed to execute or timed out: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }

@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { buildDoctorReport } from "./doctor.js";
-import type { OrbitConfig } from "@orbit-build/config";
+import {
+  buildDoctorReport,
+  buildDoctorSnapshot,
+  DoctorSnapshotSchema,
+} from "./doctor.js";
+import { ConfigSchema, type OrbitConfig } from "@orbit-build/config";
 
 describe("doctor diagnostics", () => {
   it("summarizes capabilities without exposing secret values", () => {
     const config = {
+      schemaVersion: 1,
       provider: { default: "deepseek-openai" },
       models: {
         default: "deepseek-v4-flash",
@@ -23,6 +28,9 @@ describe("doctor diagnostics", () => {
           apiKey: "secret-deepseek-key",
         },
       },
+      security: {
+        trustProjectExecutables: false,
+      },
       permissions: {
         mode: "normal",
         allowRead: true,
@@ -40,6 +48,11 @@ describe("doctor diagnostics", () => {
         compactThreshold: 0.75,
         autoRepair: false,
         testCommands: [],
+      },
+      agent: {
+        maxIterations: 8,
+        fastMaxOutputTokens: 8192,
+        maxOutputTokens: 16384,
       },
       tools: {
         bash: { enabled: true, timeoutMs: 120000 },
@@ -94,7 +107,7 @@ describe("doctor diagnostics", () => {
     });
 
     expect(report).toContain("Orbit Diagnostics");
-    expect(report).toContain("DeepSeek cache-first profile is active");
+    expect(report).toContain("DeepSeek V4 automatic-cache profile is active");
     expect(report).toContain("DeepSeek Official Alignment");
     expect(report).toContain(
       "No deprecated deepseek-chat/deepseek-reasoner aliases",
@@ -103,7 +116,76 @@ describe("doctor diagnostics", () => {
     expect(report).toContain("Provider benchmark");
     expect(report).toContain("Realtime lookup enabled");
     expect(report).toContain("Skills:");
+    expect(report).toContain("API key loaded from DEEPSEEK_API_KEY");
     expect(report).not.toContain("secret-deepseek-key");
     expect(report).not.toContain("secret-tavily-key");
+  });
+
+  it("gives an actionable failure when the provider key is missing", () => {
+    const config = ConfigSchema.parse({
+      provider: { default: "deepseek-openai" },
+      providers: {
+        "deepseek-openai": {
+          type: "openai-compatible",
+          baseUrl: "https://api.deepseek.com",
+          apiKeyEnv: "DEEPSEEK_API_KEY",
+        },
+      },
+    });
+
+    const report = buildDoctorReport("D:/repo", config, {
+      exec: () => "",
+      env: {},
+    });
+
+    expect(report).toContain("API key not found in DEEPSEEK_API_KEY");
+    expect(report).toContain("run `orbit login`");
+    expect(report).not.toContain("API key loaded from DEEPSEEK_API_KEY");
+  });
+
+  it("builds a versioned, path-redacted machine-readable support snapshot", () => {
+    const config = ConfigSchema.parse({
+      provider: { default: "deepseek-openai" },
+      providers: {
+        "deepseek-openai": {
+          type: "openai-compatible",
+          baseUrl:
+            "https://private-user:private-password@api.deepseek.com?api_key=private-query",
+          apiKeyEnv: "DEEPSEEK_API_KEY",
+          apiKey: "private-provider-secret",
+        },
+      },
+    });
+
+    const snapshot = buildDoctorSnapshot(
+      "D:/Customers/PrivateProject",
+      config,
+      {
+        exec: (command) => {
+          if (command === "git --version") return "git version 2.50.0";
+          if (command === "rg --version") return "ripgrep 14.1.1\nfeatures";
+          if (command === "git status --short") return " M src/index.ts";
+          return "";
+        },
+        env: {},
+        providerProbeText: "Bearer private-probe-token",
+        providerProbeOk: false,
+      },
+    );
+
+    expect(DoctorSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+    expect(snapshot.schemaVersion).toBe(1);
+    expect(snapshot.workspace).toEqual({
+      name: "PrivateProject",
+      pathRedacted: true,
+    });
+    expect(snapshot.runtime.gitDirty).toBe(true);
+    expect(snapshot.status).toBe("error");
+    expect(snapshot.issues.map((issue) => issue.code)).toContain(
+      "provider.probe.failed",
+    );
+    expect(JSON.stringify(snapshot)).not.toMatch(
+      /Customers|private-user|private-password|private-query|private-provider-secret|private-probe-token/,
+    );
   });
 });

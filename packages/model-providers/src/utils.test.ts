@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { fetchWithRetry, zodToJsonSchema } from "./utils.js";
+import {
+  fetchWithRetry,
+  modelFinishReasonError,
+  sanitizeProviderErrorText,
+  zodToJsonSchema,
+} from "./utils.js";
 
 describe("zodToJsonSchema", () => {
   it("preserves descriptions, required fields, enums, and numeric bounds", () => {
@@ -86,5 +91,102 @@ describe("fetchWithRetry", () => {
 
     expect(response.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the external abort signal connected after response headers arrive", async () => {
+    let requestSignal: AbortSignal | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        requestSignal = init?.signal ?? null;
+        return Promise.resolve(new Response("stream", { status: 200 }));
+      }),
+    );
+
+    const externalController = new AbortController();
+    await fetchWithRetry("https://provider.example.test/chat", {
+      signal: externalController.signal,
+      timeout: 10000,
+    });
+
+    expect((requestSignal as AbortSignal | null)?.aborted).toBe(false);
+    externalController.abort();
+    expect((requestSignal as AbortSignal | null)?.aborted).toBe(true);
+  });
+
+  it("does not retry permanent 4xx responses", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response("bad request", { status: 400 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await fetchWithRetry(
+      "https://provider.example.test/chat",
+      { timeout: 10000 },
+      2,
+    );
+
+    expect(response.status).toBe(400);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries transient 503 responses", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("busy", {
+          status: 503,
+          headers: { "retry-after": "0" },
+        }),
+      )
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await fetchWithRetry(
+      "https://provider.example.test/chat",
+      { timeout: 10000 },
+      1,
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("modelFinishReasonError", () => {
+  it("accepts normal OpenAI and Anthropic terminal reasons", () => {
+    for (const reason of [
+      "stop",
+      "tool_calls",
+      "tool_use",
+      "end_turn",
+      "stop_sequence",
+    ]) {
+      expect(modelFinishReasonError(reason)).toBeUndefined();
+    }
+  });
+
+  it("fails closed for truncation, resource exhaustion, and unknown reasons", () => {
+    expect(modelFinishReasonError("length")?.message).toContain("truncated");
+    expect(
+      modelFinishReasonError("insufficient_system_resource")?.message,
+    ).toContain("resources were insufficient");
+    expect(modelFinishReasonError("future_failure")?.message).toContain(
+      "unexpectedly",
+    );
+  });
+});
+
+describe("sanitizeProviderErrorText", () => {
+  it("redacts configured and bearer credentials and caps provider text", () => {
+    const secret = "ds-configured-secret";
+    const sanitized = sanitizeProviderErrorText(
+      `authorization=Bearer ${secret}\n${"detail ".repeat(300)}`,
+      [secret],
+    );
+
+    expect(sanitized).not.toContain(secret);
+    expect(sanitized).toContain("[REDACTED]");
+    expect(sanitized.length).toBeLessThanOrEqual(1001);
   });
 });

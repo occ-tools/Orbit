@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
@@ -48,6 +48,7 @@ describe("ProviderDiagnostics", () => {
             cacheMissTokens: 0,
           },
         };
+        yield { type: "done" };
       },
     };
 
@@ -84,6 +85,150 @@ describe("ProviderDiagnostics", () => {
     });
 
     expect(text).toContain("cacheUsage=n/a");
+    expect(text).toContain("maxContext=n/a");
+    expect(text).toContain("maxOutput=n/a");
     expect(text).not.toContain("declared cache support");
+  });
+
+  it("consumes through a terminal error after usage and disables thinking", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "orbit-provider-probe-error-"));
+    dirs.push(cwd);
+    const config = {
+      models: { default: "deepseek-v4-pro" },
+    } as OrbitConfig;
+    let request: Parameters<ModelProvider["chat"]>[0] | undefined;
+    const provider: ModelProvider = {
+      id: "deepseek-openai",
+      type: "openai-compatible",
+      capabilities: {
+        streaming: true,
+        toolCalls: true,
+        jsonMode: true,
+        thinking: true,
+        vision: false,
+        promptCaching: true,
+        maxContextTokens: 1_000_000,
+        maxOutputTokens: 384_000,
+      },
+      async *chat(input) {
+        request = input;
+        yield { type: "text_delta", text: "partial" };
+        yield {
+          type: "usage",
+          usage: {
+            inputTokens: 8,
+            outputTokens: 32,
+            totalTokens: 40,
+          },
+        };
+        yield {
+          type: "error",
+          error: new Error("Model output was truncated at the token limit."),
+        };
+      },
+    };
+
+    const result = await probeProviderCapabilities(cwd, config, provider);
+    const formatted = formatProviderProbe(result);
+
+    expect(request).toMatchObject({
+      model: "deepseek-v4-pro",
+      stream: true,
+      maxTokens: 32,
+      thinking: { enabled: false },
+    });
+    expect(result.observed.usageReturned).toBe(true);
+    expect(result.observed.error).toContain("truncated");
+    expect(formatted).toContain("maxContext=1000000");
+    expect(formatted).toContain("maxOutput=384000");
+    expect(formatted).toContain("error: Model output was truncated");
+    expect(readProviderProbeCache(cwd)[0].observed.error).toContain(
+      "truncated",
+    );
+  });
+
+  it("redacts credentials from probe failures before caching or formatting", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "orbit-provider-probe-secret-"));
+    dirs.push(cwd);
+    const secret = `sk-${"a".repeat(40)}`;
+    const config = {
+      models: { default: "deepseek-v4-flash" },
+    } as OrbitConfig;
+    const provider: ModelProvider = {
+      id: "deepseek-openai",
+      type: "openai-compatible",
+      capabilities: {
+        streaming: true,
+        toolCalls: true,
+        jsonMode: true,
+        thinking: true,
+        vision: false,
+        promptCaching: true,
+      },
+      async *chat() {
+        yield {
+          type: "error",
+          error: new Error(`Authentication failed for ${secret}`),
+        };
+      },
+    };
+
+    const result = await probeProviderCapabilities(cwd, config, provider);
+    const formatted = formatProviderProbe(result);
+    const cached = readProviderProbeCache(cwd);
+
+    expect(result.observed.error).toContain("***REDACTED***");
+    expect(formatted).not.toContain(secret);
+    expect(JSON.stringify(cached)).not.toContain(secret);
+  });
+
+  it("filters malformed provider probe cache entries with Zod", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "orbit-provider-probe-cache-"));
+    dirs.push(cwd);
+    const cacheDir = join(cwd, ".orbit");
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      join(cacheDir, "provider-capabilities.json"),
+      JSON.stringify({
+        results: [
+          null,
+          {
+            providerId: "invalid",
+            model: "bad",
+            checkedAt: "now",
+            declared: { streaming: "yes" },
+            observed: { streamStarted: true, usageReturned: true },
+          },
+          {
+            providerId: "deepseek-openai",
+            model: "deepseek-v4-flash",
+            checkedAt: "2026-07-13T00:00:00.000Z",
+            declared: {
+              streaming: true,
+              toolCalls: true,
+              jsonMode: true,
+              thinking: true,
+              vision: false,
+              promptCaching: true,
+              maxContextTokens: 1_000_000,
+              maxOutputTokens: 384_000,
+            },
+            observed: {
+              streamStarted: true,
+              usageReturned: true,
+            },
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const cached = readProviderProbeCache(cwd);
+
+    expect(cached).toHaveLength(1);
+    expect(cached[0]).toMatchObject({
+      providerId: "deepseek-openai",
+      model: "deepseek-v4-flash",
+    });
   });
 });

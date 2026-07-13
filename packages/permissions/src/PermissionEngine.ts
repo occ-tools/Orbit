@@ -8,7 +8,7 @@ export class PermissionEngine {
 
   public evaluate(
     toolName: string,
-    args: any,
+    args: unknown,
     declaredRisk?: ToolRisk,
   ): PermissionDecision {
     const mode = this.config.permissions.mode;
@@ -37,19 +37,32 @@ export class PermissionEngine {
       "multi_replace_file_content",
     ]);
 
+    const safeArgs = isRecord(args) ? args : {};
+
     if (readTools.has(toolName) || writeTools.has(toolName)) {
-      targetPath = args.path || args.TargetFile || args.filePath || args.file;
+      targetPath = firstString(
+        safeArgs.path,
+        safeArgs.TargetFile,
+        safeArgs.filePath,
+        safeArgs.file,
+      );
       risk = readTools.has(toolName) ? "read" : "write";
     } else if (toolName === "bash") {
-      cmdString = args.command;
+      cmdString = firstString(safeArgs.command);
       risk = RiskClassifier.classifyBashCommand(cmdString || "");
-    } else if (toolName === "run_tests" || toolName === "git_commit") {
+    } else if (toolName === "run_tests") {
+      cmdString = firstString(safeArgs.command);
+      risk = cmdString
+        ? RiskClassifier.classifyBashCommand(cmdString)
+        : "execute";
+    } else if (toolName === "git_commit") {
       risk = "execute";
     } else if (toolName === "git_restore") {
       risk = "dangerous";
     }
 
     if (
+      this.config.permissions.protectSecrets &&
       targetPath &&
       RiskClassifier.isProtectedPath(targetPath, protectedPaths)
     ) {
@@ -67,6 +80,25 @@ export class PermissionEngine {
       };
     }
 
+    if (risk === "read" && !this.config.permissions.allowRead) {
+      return {
+        action: "deny",
+        reason: "Read operations are disabled by configuration.",
+        risk,
+      };
+    }
+
+    if (risk === "dangerous") {
+      if (this.config.permissions.blockDangerousCommands) {
+        return {
+          action: "deny",
+          reason: `Dangerous operation "${toolName}" is blocked by configuration.`,
+          risk,
+        };
+      }
+      risk = "execute";
+    }
+
     if (mode === "plan") {
       if (risk === "read") {
         return {
@@ -82,6 +114,27 @@ export class PermissionEngine {
       };
     }
 
+    if (risk === "write" && this.config.permissions.requireApprovalForWrite) {
+      return {
+        action: "ask",
+        reason: "Write approval is required by configuration.",
+        risk,
+      };
+    }
+
+    if (
+      (toolName === "bash" ||
+        toolName === "run_tests" ||
+        toolName === "git_commit") &&
+      this.config.permissions.requireApprovalForBash
+    ) {
+      return {
+        action: "ask",
+        reason: "Command execution approval is required by configuration.",
+        risk,
+      };
+    }
+
     if (mode === "strict") {
       if (risk === "read") {
         return {
@@ -90,7 +143,7 @@ export class PermissionEngine {
           risk,
         };
       }
-      if (risk === "dangerous" || risk === "network") {
+      if (risk === "network") {
         return {
           action: "deny",
           reason: `Dangerous or network operations ("${toolName}") are blocked under strict mode.`,
@@ -112,13 +165,6 @@ export class PermissionEngine {
           risk,
         };
       }
-      if (risk === "dangerous") {
-        return {
-          action: "deny",
-          reason: `Dangerous operation "${toolName}" is blocked under normal mode.`,
-          risk,
-        };
-      }
       return {
         action: "ask",
         reason: `Normal mode requires user confirmation for "${toolName}" (${risk}).`,
@@ -131,13 +177,6 @@ export class PermissionEngine {
         return {
           action: "allow",
           reason: `Automatically allowed under auto mode.`,
-          risk,
-        };
-      }
-      if (risk === "dangerous") {
-        return {
-          action: "deny",
-          reason: `Dangerous operation "${toolName}" is blocked under auto mode.`,
           risk,
         };
       }
@@ -154,4 +193,12 @@ export class PermissionEngine {
       risk,
     };
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  return values.find((value): value is string => typeof value === "string");
 }

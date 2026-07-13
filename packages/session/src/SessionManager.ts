@@ -1,5 +1,23 @@
 import { SessionStore } from "./SessionStore.js";
-import { Session } from "./types.js";
+import { serializeAuditValue } from "./auditSerialization.js";
+import type { Session, StoredHistoryMessage } from "./types.js";
+
+function getToolCallId(input: unknown): string {
+  try {
+    if (
+      typeof input === "object" &&
+      input !== null &&
+      "id" in input &&
+      typeof input.id === "string" &&
+      input.id.trim().length > 0
+    ) {
+      return input.id;
+    }
+  } catch {
+    // Hostile proxies and getters must not break session bookkeeping.
+  }
+  return "tc_unknown";
+}
 
 export class SessionManager {
   private store: SessionStore;
@@ -28,15 +46,15 @@ export class SessionManager {
     return this.currentSession;
   }
 
-  public logEvent(type: string, payload: any): void {
+  public logEvent(type: string, payload: unknown): void {
     if (!this.currentSession) return;
     this.store.appendEvent(this.currentSession.id, type, payload);
   }
 
   public recordToolExecution(
     toolName: string,
-    input: any,
-    output: any,
+    input: unknown,
+    output: unknown,
     risk: string,
     decision: string,
     status: "success" | "failed" | "denied",
@@ -45,10 +63,10 @@ export class SessionManager {
 
     this.store.recordToolCall({
       sessionId: this.currentSession.id,
-      id: input.id || "tc_unknown",
+      id: getToolCallId(input),
       toolName,
-      inputJson: JSON.stringify(input),
-      outputJson: JSON.stringify(output),
+      inputJson: serializeAuditValue(input),
+      outputJson: serializeAuditValue(output),
       risk,
       permissionDecision: decision,
       status,
@@ -80,12 +98,12 @@ export class SessionManager {
     return this.store;
   }
 
-  public saveHistory(history: any[]): void {
+  public saveHistory(history: unknown): void {
     if (!this.currentSession) return;
     this.store.saveHistory(this.currentSession.id, history);
   }
 
-  public getHistory(): any[] {
+  public getHistory(): StoredHistoryMessage[] {
     if (!this.currentSession) return [];
     return this.store.getHistory(this.currentSession.id);
   }

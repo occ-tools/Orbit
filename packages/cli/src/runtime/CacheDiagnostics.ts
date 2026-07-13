@@ -1,37 +1,52 @@
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import picocolors from "picocolors";
+import { z } from "zod";
 
-interface CacheTelemetrySample {
-  recordedAt: string;
-  inputTokens: number;
-  hitTokens: number;
-  missTokens: number;
-  hitRate: number;
-  degraded: boolean;
-}
+const CacheTelemetrySampleSchema = z
+  .object({
+    recordedAt: z.string(),
+    inputTokens: z.number().nonnegative(),
+    hitTokens: z.number().nonnegative(),
+    missTokens: z.number().nonnegative(),
+    hitRate: z.number().min(0).max(1),
+    degraded: z.boolean(),
+  })
+  .passthrough();
 
-interface CacheSlabMetadata {
-  hash?: string;
-  model?: string;
-  tokenEstimate?: number;
-  lastPrimedAt?: string;
-  telemetry?: CacheTelemetrySample[];
-}
+const CacheSlabMetadataSchema = z
+  .object({
+    hash: z.string().optional(),
+    model: z.string().optional(),
+    tokenEstimate: z.number().nonnegative().optional(),
+    /** Read-only compatibility with cache metadata from pre-V4 releases. */
+    lastPrimedAt: z.string().optional(),
+    telemetry: z.array(CacheTelemetrySampleSchema).optional(),
+  })
+  .passthrough();
+
+type CacheSlabMetadata = z.infer<typeof CacheSlabMetadataSchema>;
 
 function readMetadata(filePath: string): CacheSlabMetadata | undefined {
   try {
-    return JSON.parse(readFileSync(filePath, "utf8")) as CacheSlabMetadata;
+    const parsed = CacheSlabMetadataSchema.safeParse(
+      JSON.parse(readFileSync(filePath, "utf8")),
+    );
+    return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
   }
+}
+
+function latestObservation(metadata: CacheSlabMetadata): string {
+  return metadata.telemetry?.at(-1)?.recordedAt || metadata.lastPrimedAt || "";
 }
 
 export function buildCacheDiagnostics(cwd: string): string {
   const dir = join(cwd, ".orbit", "cache-slabs");
   if (!existsSync(dir)) {
     return picocolors.gray(
-      "● No cache slabs found yet. Stable project context will be primed after the next DeepSeek request.",
+      "● No cache telemetry yet. It will appear after a completed DeepSeek request.",
     );
   }
 
@@ -39,9 +54,7 @@ export function buildCacheDiagnostics(cwd: string): string {
     .filter((file) => file.endsWith(".json"))
     .map((file) => readMetadata(join(dir, file)))
     .filter((item): item is CacheSlabMetadata => Boolean(item))
-    .sort((a, b) =>
-      String(b.lastPrimedAt || "").localeCompare(String(a.lastPrimedAt || "")),
-    )
+    .sort((a, b) => latestObservation(b).localeCompare(latestObservation(a)))
     .slice(0, 5);
 
   if (slabs.length === 0) {
@@ -74,13 +87,14 @@ export function buildCacheDiagnostics(cwd: string): string {
         ? samples.reduce((sum, sample) => sum + sample.hitRate, 0) /
           samples.length
         : latest?.hitRate;
-    const degraded = samples.some((sample) => sample.degraded);
+    // A cold baseline must not keep the slab yellow after later requests warm.
+    const degraded = latest?.degraded ?? false;
     const label = `${slab.hash || "unknown"} model=${slab.model || "unknown"} stable=${slab.tokenEstimate || 0}t`;
 
     if (!latest) {
       lines.push(
         picocolors.gray(
-          `● ${label}: primed ${slab.lastPrimedAt || "unknown"}, no live telemetry yet.`,
+          `● ${label}: no request telemetry yet${slab.lastPrimedAt ? ` (legacy metadata ${slab.lastPrimedAt})` : ""}.`,
         ),
       );
       continue;

@@ -1,5 +1,25 @@
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, statSync } from "fs";
+import { pathToFileURL } from "url";
+import { z } from "zod";
+import { resolveSafePath } from "@orbit-build/shared";
+import { getOrbitCachePath } from "./cachePaths.js";
+
+const ReferenceIndexSchema = z.object({
+  files: z.record(z.unknown()),
+});
+
+const RequestedSymbolsSchema = z.array(z.string().trim().min(1).max(512));
+const MAX_REFERENCE_FILE_BYTES = 2_000_000;
+
+function normalizeLimit(
+  value: number,
+  fallback: number,
+  maximum: number,
+): number {
+  return Number.isFinite(value)
+    ? Math.max(1, Math.min(maximum, Math.trunc(value)))
+    : fallback;
+}
 
 export interface ReferenceContext {
   filePath: string;
@@ -19,37 +39,41 @@ export class ReferencesRetriever {
     maxReferencesPerSymbol = 3,
     maxTotalReferences = 10,
   ): Promise<string> {
-    const indexPath = join(this.cwd, ".orbit", "symbols.json");
+    const indexPath = getOrbitCachePath(this.cwd, "symbols.json");
     if (!existsSync(indexPath)) {
       return "";
     }
 
-    let index: { files?: Record<string, any> };
+    let index: z.infer<typeof ReferenceIndexSchema>;
     try {
       const raw = readFileSync(indexPath, "utf8");
-      index = JSON.parse(raw);
+      const parsed = ReferenceIndexSchema.safeParse(JSON.parse(raw));
+      if (!parsed.success) return "";
+      index = parsed.data;
     } catch {
       return "";
     }
 
-    if (!index.files || typeof index.files !== "object") {
-      return "";
-    }
-
-    const uniqueSymbols = Array.from(new Set(symbols)).filter(Boolean);
+    const parsedSymbols = RequestedSymbolsSchema.safeParse(symbols);
+    if (!parsedSymbols.success) return "";
+    const uniqueSymbols = Array.from(new Set(parsedSymbols.data));
+    const perSymbolLimit = normalizeLimit(maxReferencesPerSymbol, 3, 100);
+    const totalLimit = normalizeLimit(maxTotalReferences, 10, 1000);
     const results: Array<{ symbol: string; references: ReferenceContext[] }> =
       [];
     let totalCollected = 0;
 
     for (const symbol of uniqueSymbols) {
-      if (totalCollected >= maxTotalReferences) break;
+      if (totalCollected >= totalLimit) break;
 
       let symbolRegex: RegExp;
       try {
         const escapedSymbol = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const startBoundary = /^\w/.test(symbol) ? "\\b" : "";
         const endBoundary = /\w$/.test(symbol) ? "\\b" : "";
-        symbolRegex = new RegExp(`${startBoundary}${escapedSymbol}${endBoundary}`);
+        symbolRegex = new RegExp(
+          `${startBoundary}${escapedSymbol}${endBoundary}`,
+        );
       } catch {
         continue;
       }
@@ -57,16 +81,20 @@ export class ReferencesRetriever {
 
       for (const relPath of Object.keys(index.files)) {
         if (
-          symbolRefs.length >= maxReferencesPerSymbol ||
-          totalCollected >= maxTotalReferences
+          symbolRefs.length >= perSymbolLimit ||
+          totalCollected >= totalLimit
         ) {
           break;
         }
 
-        const absPath = join(this.cwd, relPath);
-        if (!existsSync(absPath)) continue;
-
         try {
+          const absPath = resolveSafePath(this.cwd, relPath);
+          if (
+            !existsSync(absPath) ||
+            statSync(absPath).size > MAX_REFERENCE_FILE_BYTES
+          ) {
+            continue;
+          }
           const content = readFileSync(absPath, "utf8");
           const lines = content.split(/\r?\n/);
 
@@ -108,8 +136,8 @@ export class ReferencesRetriever {
 
               totalCollected++;
               if (
-                symbolRefs.length >= maxReferencesPerSymbol ||
-                totalCollected >= maxTotalReferences
+                symbolRefs.length >= perSymbolLimit ||
+                totalCollected >= totalLimit
               ) {
                 break;
               }
@@ -135,9 +163,11 @@ export class ReferencesRetriever {
       "The following are call sites and usage examples of symbols referenced in this task:\n\n";
 
     for (const item of results) {
-      output += `#### References for symbol: \`${item.symbol}\`\n`;
+      output += `#### References for symbol: \`${item.symbol.replace(/`/g, "\\`")}\`\n`;
       for (const ref of item.references) {
-        output += `- **File**: [${ref.filePath}](file:///${join(this.cwd, ref.filePath).replace(/\\/g, "/")}) (Line ${ref.line})\n`;
+        const absolutePath = resolveSafePath(this.cwd, ref.filePath);
+        const label = ref.filePath.replace(/([\\[\]])/g, "\\$1");
+        output += `- **File**: [${label}](${pathToFileURL(absolutePath).href}) (Line ${ref.line})\n`;
         output += `\`\`\`typescript\n${ref.excerpt}\n\`\`\`\n\n`;
       }
     }

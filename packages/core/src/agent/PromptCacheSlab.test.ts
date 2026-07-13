@@ -2,7 +2,26 @@ import { describe, expect, it, afterEach } from "vitest";
 import fs from "fs";
 import path from "path";
 import { PromptCacheSlabBuilder } from "./PromptCacheSlab.js";
-import { ContextPack } from "@orbit-build/context-engine";
+import type { ContextPack } from "@orbit-build/context-engine";
+
+function createProjectIndex(
+  overrides: Partial<ContextPack["projectIndex"]> = {},
+): ContextPack["projectIndex"] {
+  return {
+    root: "/workspace",
+    detectedLanguages: ["typescript"],
+    frameworks: ["vitest"],
+    entrypoints: ["src/index.ts"],
+    packageManager: "pnpm",
+    testCommands: [],
+    lintCommands: [],
+    buildCommands: [],
+    importantFiles: [],
+    ignoredFiles: [],
+    generatedAt: "2026-06-30T00:00:00.000Z",
+    ...overrides,
+  };
+}
 
 describe("PromptCacheSlabBuilder", () => {
   const cwd = path.resolve(process.cwd(), "cache-slab-test-temp");
@@ -18,13 +37,7 @@ describe("PromptCacheSlabBuilder", () => {
     overrides: Partial<ContextPack> = {},
   ): ContextPack {
     return {
-      projectIndex: {
-        detectedLanguages: ["typescript"],
-        frameworks: ["vitest"],
-        entrypoints: ["src/index.ts"],
-        packageManager: "pnpm",
-        files: {},
-      },
+      projectIndex: createProjectIndex(),
       projectInstructions: "Always preserve workspace boundaries.",
       skillsIndex: [
         {
@@ -39,6 +52,9 @@ describe("PromptCacheSlabBuilder", () => {
           description: "Optimize provider throughput",
           path: ".orbit/skills/api-tuning/SKILL.md",
           content: "Volatile skill body for this turn",
+          activation: "auto",
+          loadedBytes: 34,
+          truncated: false,
         },
       ],
       relevantFiles: [
@@ -80,13 +96,15 @@ describe("PromptCacheSlabBuilder", () => {
     expect(first.text).toContain("Always preserve workspace boundaries.");
     expect(first.text).toContain("api-tuning - Optimize provider throughput");
     expect(first.text).not.toContain("Volatile skill body");
-    expect(first.text).toContain("Repo map A");
-    expect(first.text).toContain("<!-- VOLATILE_CONTEXT -->");
+    expect(first.text).not.toContain("Repo map A");
+    expect(first.text).not.toContain("<!-- VOLATILE_CONTEXT -->");
     expect(first.text).not.toContain("### Runtime Context");
     expect(first.text).not.toContain("Current local date");
     expect(first.text).not.toContain("RAG result one");
     expect(first.text).not.toContain("console.log(Date.now())");
-    expect(fs.existsSync(first.path)).toBe(true);
+    // Building the in-memory slab is intentionally side-effect free. Metadata is
+    // persisted only when real cache telemetry is available.
+    expect(fs.existsSync(first.path)).toBe(false);
   });
 
   it("keeps the cache key stable for reordered stable project metadata", () => {
@@ -97,13 +115,11 @@ describe("PromptCacheSlabBuilder", () => {
       toolsPrompt: "Tool schema A",
       repoMapText: "Repo map A",
       contextPack: makeContext("RAG result one", {
-        projectIndex: {
+        projectIndex: createProjectIndex({
           detectedLanguages: ["typescript", "javascript"],
           frameworks: ["vitest", "react"],
           entrypoints: ["src/index.ts", "src/cli.ts"],
-          packageManager: "pnpm",
-          files: {},
-        },
+        }),
       }),
     });
     const second = PromptCacheSlabBuilder.build({
@@ -113,13 +129,11 @@ describe("PromptCacheSlabBuilder", () => {
       toolsPrompt: "Tool schema A",
       repoMapText: "Repo map A",
       contextPack: makeContext("RAG result two", {
-        projectIndex: {
+        projectIndex: createProjectIndex({
           detectedLanguages: ["javascript", "typescript"],
           frameworks: ["react", "vitest"],
           entrypoints: ["src/cli.ts", "src/index.ts"],
-          packageManager: "pnpm",
-          files: {},
-        },
+        }),
       }),
     });
 
@@ -139,6 +153,8 @@ describe("PromptCacheSlabBuilder", () => {
       contextPack: makeContext("RAG result one"),
     });
 
+    expect(PromptCacheSlabBuilder.hasTelemetry(slab)).toBe(false);
+
     PromptCacheSlabBuilder.recordTelemetry(
       slab,
       {
@@ -151,11 +167,27 @@ describe("PromptCacheSlabBuilder", () => {
       new Date("2026-06-30T00:00:00Z"),
     );
 
+    expect(PromptCacheSlabBuilder.hasTelemetry(slab)).toBe(true);
+
     const diagnostics = PromptCacheSlabBuilder.buildDiagnostics(cwd);
 
     expect(diagnostics).toContain("Cache diagnostics:");
     expect(diagnostics).toContain(slab.hash.slice(0, 8));
     expect(diagnostics).toContain("recent hit=90%");
     expect(diagnostics).toContain("trend samples=1");
+  });
+
+  it("ignores malformed external cache metadata", () => {
+    const cacheDir = path.join(cwd, ".orbit", "cache-slabs");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(cacheDir, "invalid.json"),
+      JSON.stringify({ hash: "bad", telemetry: "not-an-array" }),
+      "utf8",
+    );
+
+    expect(PromptCacheSlabBuilder.buildDiagnostics(cwd)).toBe(
+      "Cache diagnostics:\n- No readable cache slab metadata found.",
+    );
   });
 });

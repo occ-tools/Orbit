@@ -1,5 +1,6 @@
 node_modules/
 dist/
+out/
 .orbit/
 scratch_git_test/
 *.log

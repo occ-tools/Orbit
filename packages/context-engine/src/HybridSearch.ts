@@ -21,6 +21,11 @@ export class HybridSearch {
     await Promise.all([this.vectorStore.load(), this.bm25Store.load()]);
   }
 
+  /** Returns true only when both persisted search caches passed validation. */
+  public hasValidCaches(): boolean {
+    return this.vectorStore.hasValidCache() && this.bm25Store.hasValidCache();
+  }
+
   /**
    * Clear all indexed documents.
    */
@@ -59,8 +64,16 @@ export class HybridSearch {
       candidateLimit?: number;
     },
   ): Promise<SearchResult[]> {
-    const limit = options?.limit || 5;
-    const candidateLimit = options?.candidateLimit || 40;
+    const limit = options?.limit ?? 5;
+    const candidateLimit = options?.candidateLimit ?? 40;
+    if (
+      !Number.isInteger(limit) ||
+      limit <= 0 ||
+      !Number.isInteger(candidateLimit) ||
+      candidateLimit <= 0
+    ) {
+      return [];
+    }
 
     // Load stores just in case
     await this.load();
@@ -91,7 +104,7 @@ export class HybridSearch {
     // We need to retrieve full documents to construct return values.
     // Since VectorStore stores documents with vectors, we load the database documents.
     // To avoid reading file multiple times, we can access vectorStore's in-memory documents list.
-    const allDocs = ((this.vectorStore as any).documents as Document[]) || [];
+    const allDocs = this.vectorStore.getDocuments();
     const allDocsMap = new Map(allDocs.map((d) => [d.id, d]));
 
     // Rank maps

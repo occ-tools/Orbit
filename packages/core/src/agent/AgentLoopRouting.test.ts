@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { AgentLoop } from "./AgentLoop.js";
-import { OrbitConfig } from "@orbit-build/config";
+import { DEFAULT_CONFIG, type OrbitConfig } from "@orbit-build/config";
 import { ModelProvider } from "@orbit-build/model-providers";
 import { toolRegistry } from "@orbit-build/tools";
 import { Prompt } from "@orbit-build/tui";
@@ -12,14 +12,21 @@ describe("AgentLoop Fin Heuristic Routing", () => {
   const testDir = path.resolve(process.cwd(), "routing-test-temp");
 
   const dummyConfig: OrbitConfig = {
+    ...DEFAULT_CONFIG,
     name: "test",
     provider: { default: "openai" },
     models: {
       default: "deepseek-v4-pro",
       fast: "deepseek-v4-flash",
+      planner: "deepseek-v4-pro",
+      coder: "deepseek-v4-pro",
+      reviewer: "deepseek-v4-pro",
+      summarizer: "deepseek-v4-flash",
+      embedding: "text-embedding-3-small",
     },
     providers: { openai: { type: "openai", apiKey: "test" } },
     permissions: {
+      ...DEFAULT_CONFIG.permissions,
       mode: "auto",
       allowRead: true,
       requireApprovalForWrite: false,
@@ -29,6 +36,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
       protectedPaths: [],
     },
     context: {
+      ...DEFAULT_CONFIG.context,
       maxFilesToIndex: 10,
       maxFileSizeKb: 10,
       ignore: [],
@@ -36,9 +44,14 @@ describe("AgentLoop Fin Heuristic Routing", () => {
       compactThreshold: 0.75,
     },
     tools: {
-      bash: { enabled: false, timeoutMs: 1000 },
-      webSearch: { enabled: false },
-      mcp: { enabled: false },
+      ...DEFAULT_CONFIG.tools,
+      bash: {
+        ...DEFAULT_CONFIG.tools.bash,
+        enabled: false,
+        timeoutMs: 1000,
+      },
+      webSearch: { ...DEFAULT_CONFIG.tools.webSearch, enabled: false },
+      mcp: { ...DEFAULT_CONFIG.tools.mcp, enabled: false },
     },
     mcpServers: {},
     hooks: {},
@@ -58,7 +71,6 @@ describe("AgentLoop Fin Heuristic Routing", () => {
   });
 
   afterEach(() => {
-    delete process.env.ORBIT_DEEPSEEK_CACHE_PRIMER_BUDGET_MS;
     vi.useRealTimers();
     if (fs.existsSync(testDir)) {
       fs.rmSync(testDir, { recursive: true, force: true });
@@ -122,8 +134,99 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     expect(chatMock).toHaveBeenCalled();
     const callArgs = chatMock.mock.calls[0][0];
     expect(callArgs.model).toBe("deepseek-v4-flash");
-    // Since it's deepseek-v4-flash (which doesn't contain "reasoner" or "r1" or "v4-pro"), thinking should be undefined
-    expect(callArgs.thinking).toBeUndefined();
+    expect(callArgs.thinking).toEqual({ enabled: false, budgetTokens: 1024 });
+    expect(callArgs.maxTokens).toBe(8192);
+    expect(callArgs.userId).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("routes complex direct-mode work to the coder lane even when default equals fast", async () => {
+    const chatMock = vi.fn().mockImplementation(async function* () {
+      yield { type: "text_delta", text: "Response" };
+    });
+    const mockProvider: ModelProvider = {
+      id: "deepseek-openai",
+      chat: chatMock,
+    } as any;
+    const loop = new AgentLoop(
+      testDir,
+      {
+        ...dummyConfig,
+        models: {
+          ...dummyConfig.models,
+          default: "deepseek-v4-flash",
+          fast: "deepseek-v4-flash",
+          coder: "deepseek-v4-pro",
+        },
+      },
+      mockProvider,
+      "refactor the architecture and debug the race condition",
+      dummyInteraction,
+      { disableStatusBar: true },
+    );
+
+    await loop.run();
+
+    expect(chatMock.mock.calls[0][0].model).toBe("deepseek-v4-pro");
+    expect(chatMock.mock.calls[0][0].thinking.enabled).toBe(true);
+  });
+
+  it("routes each new user turn independently instead of inheriting old complexity", async () => {
+    const chatMock = vi.fn().mockImplementation(async function* () {
+      yield { type: "text_delta", text: "Response" };
+    });
+    const mockProvider: ModelProvider = {
+      id: "deepseek-openai",
+      chat: chatMock,
+    } as any;
+    const loop = new AgentLoop(
+      testDir,
+      dummyConfig,
+      mockProvider,
+      "debug the architecture race condition",
+      dummyInteraction,
+      { disableStatusBar: true },
+    );
+
+    await loop.run();
+    loop.prepareUserTurn("list files");
+    await loop.run();
+
+    expect(chatMock.mock.calls[0][0].model).toBe("deepseek-v4-pro");
+    expect(chatMock.mock.calls[1][0].model).toBe("deepseek-v4-flash");
+    expect(chatMock.mock.calls[1][0].thinking.enabled).toBe(false);
+  });
+
+  it("preserves legacy deepseek-chat non-thinking semantics on complex overrides", async () => {
+    const chatMock = vi.fn().mockImplementation(async function* () {
+      yield { type: "text_delta", text: "Response" };
+    });
+    const mockProvider: ModelProvider = {
+      id: "deepseek-openai",
+      chat: chatMock,
+      getModelCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        jsonMode: true,
+        thinking: true,
+        vision: false,
+        promptCaching: true,
+      }),
+    } as any;
+    const loop = new AgentLoop(
+      testDir,
+      dummyConfig,
+      mockProvider,
+      "debug the architecture",
+      dummyInteraction,
+      { disableStatusBar: true, modelOverride: "deepseek-chat" },
+    );
+
+    await loop.run();
+
+    expect(chatMock.mock.calls[0][0].thinking).toEqual({
+      enabled: false,
+      budgetTokens: 4096,
+    });
   });
 
   it("should apply configured agent loop iteration limit", () => {
@@ -385,7 +488,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     }
   });
 
-  it("includes tool parameter descriptions in the XML fallback prompt", async () => {
+  it("uses a compact native-tool prompt when function calling is available", async () => {
     const originalWebSearch = toolRegistry.get("web_search");
     toolRegistry.register({
       name: "web_search",
@@ -429,10 +532,9 @@ describe("AgentLoop Fin Heuristic Routing", () => {
       await loop.run();
 
       const system = chatMock.mock.calls[0][0].system;
-      expect(system).toContain("`query`: (type: string)");
-      expect(system).toContain("Search query with runtime dates");
-      expect(system).toContain("`maxResults`: (type: number, optional)");
-      expect(system).toContain("Maximum number of search results");
+      expect(system).toContain("### Native Tool Use");
+      expect(system).toContain("Available tools: web_search");
+      expect(system).not.toContain('<tool_call name="tool_name">');
     } finally {
       if (originalWebSearch) {
         toolRegistry.register(originalWebSearch);
@@ -440,33 +542,17 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     }
   });
 
-  it("should prime DeepSeek cache slab before the main request", async () => {
-    const chatMock = vi.fn().mockImplementation(async function* (input: any) {
-      if (input.maxTokens === 1) {
-        yield {
-          type: "usage",
-          usage: {
-            inputTokens: 100,
-            outputTokens: 1,
-            totalTokens: 101,
-            cacheReadTokens: 0,
-            cacheMissTokens: 100,
-          },
-        };
-        return;
-      }
-      yield {
-        type: "text_delta",
-        text: "Response",
-      };
+  it("uses natural request-boundary caching without synthetic primer calls", async () => {
+    const chatMock = vi.fn().mockImplementation(async function* () {
+      yield { type: "text_delta", text: "Response" };
       yield {
         type: "usage",
         usage: {
           inputTokens: 120,
           outputTokens: 5,
           totalTokens: 125,
-          cacheReadTokens: 80,
-          cacheMissTokens: 40,
+          cacheReadTokens: 0,
+          cacheMissTokens: 120,
         },
       };
     });
@@ -479,7 +565,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
         streaming: true,
         toolCalls: true,
         jsonMode: true,
-        thinking: false,
+        thinking: true,
         vision: false,
         promptCaching: true,
       }),
@@ -498,160 +584,38 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     );
 
     await loop.run();
-
-    expect(chatMock).toHaveBeenCalledTimes(3);
-    const firstPrimerArgs = chatMock.mock.calls[0][0];
-    const secondPrimerArgs = chatMock.mock.calls[1][0];
-    const mainArgs = chatMock.mock.calls[2][0];
-    expect(firstPrimerArgs.maxTokens).toBe(1);
-    expect(secondPrimerArgs.maxTokens).toBe(1);
-    expect(firstPrimerArgs.system).toContain("<!-- VOLATILE_CONTEXT -->");
-    expect(mainArgs.system.startsWith(firstPrimerArgs.system)).toBe(true);
-    expect(mainArgs.system).toContain("### Volatile Context");
-  });
-
-  it("should prime cache for self-hosted DeepSeek models by model name", async () => {
-    const chatMock = vi.fn().mockImplementation(async function* (input: any) {
-      if (input.maxTokens === 1) {
-        yield {
-          type: "usage",
-          usage: {
-            inputTokens: 100,
-            outputTokens: 1,
-            totalTokens: 101,
-            cacheReadTokens: 0,
-            cacheMissTokens: 100,
-          },
-        };
-        return;
-      }
-      yield {
-        type: "text_delta",
-        text: "Response",
-      };
-    });
-
-    const mockProvider: ModelProvider = {
-      id: "local-openai-compatible",
-      type: "openai-compatible",
-      chat: chatMock,
-      getModelCapabilities: () => ({
-        streaming: true,
-        toolCalls: true,
-        jsonMode: true,
-        thinking: false,
-        vision: false,
-        promptCaching: true,
-      }),
-    } as any;
-
-    const loop = new AgentLoop(
-      testDir,
-      {
-        ...dummyConfig,
-        provider: { default: "local-deepseek" },
-        models: {
-          default: "vendor/deepseek-v4-flash",
-          fast: "vendor/deepseek-v4-flash",
-        },
-        providers: {
-          "local-deepseek": {
-            type: "openai-compatible",
-            baseUrl: "http://localhost:8000/v1",
-          },
-        },
-      },
-      mockProvider,
-      "what is this project?",
-      dummyInteraction,
-      { disableStatusBar: true },
-    );
-
-    await loop.run();
-
-    expect(chatMock).toHaveBeenCalledTimes(3);
-    expect(chatMock.mock.calls[0][0].maxTokens).toBe(1);
-    expect(chatMock.mock.calls[1][0].maxTokens).toBe(1);
-    expect(chatMock.mock.calls[2][0].model).toBe("vendor/deepseek-v4-flash");
-  });
-
-  it("keeps DeepSeek cache alive with the stable slab only", async () => {
-    vi.useFakeTimers();
-    const chatMock = vi.fn().mockImplementation(async function* () {
-      yield { type: "done" };
-    });
-
-    const mockProvider: ModelProvider = {
-      id: "deepseek-openai",
-      type: "openai-compatible",
-      chat: chatMock,
-      getModelCapabilities: () => ({
-        streaming: true,
-        toolCalls: true,
-        jsonMode: true,
-        thinking: false,
-        vision: false,
-        promptCaching: true,
-      }),
-    } as any;
-
-    const loop = new AgentLoop(
-      testDir,
-      {
-        ...dummyConfig,
-        provider: { default: "deepseek-openai" },
-      },
-      mockProvider,
-      "what is this project?",
-      dummyInteraction,
-      { disableStatusBar: true },
-    );
-
-    (loop as any).lastChatParams = {
-      model: "deepseek-v4-flash",
-      system: "stable slab\n<!-- VOLATILE_CONTEXT -->",
-    };
-    (loop as any).startKeepaliveTimer();
-
-    await vi.advanceTimersByTimeAsync(210000);
 
     expect(chatMock).toHaveBeenCalledTimes(1);
-    const keepaliveArgs = chatMock.mock.calls[0][0];
-    expect(keepaliveArgs.system).toBe("stable slab\n<!-- VOLATILE_CONTEXT -->");
-    expect(keepaliveArgs.messages).toHaveLength(1);
-    expect(keepaliveArgs.messages[0].content[0].text).toBe("0");
-    expect(keepaliveArgs.tools).toEqual([]);
-    expect(keepaliveArgs.stream).toBe(false);
-    expect(keepaliveArgs.maxTokens).toBe(1);
-
-    (loop as any).stopKeepaliveTimer();
+    const request = chatMock.mock.calls[0][0];
+    expect(request.maxTokens).toBe(8192);
+    expect(request.userId).toMatch(/^[a-f0-9]{64}$/);
+    expect(request.system).not.toContain("<!-- VOLATILE_CONTEXT -->");
+    expect(request.messages.at(-2)?.metadata).toMatchObject({
+      kind: "orbit_volatile_context",
+    });
+    expect(request.messages.at(-1)?.content[0].text).toBe(
+      "what is this project?",
+    );
   });
 
-  it("does not block Flash main request when cache primer exceeds latency budget", async () => {
-    process.env.ORBIT_DEEPSEEK_CACHE_PRIMER_BUDGET_MS = "1";
-    const callOrder: string[] = [];
-    const chatMock = vi.fn().mockImplementation(async function* (input: any) {
-      if (input.maxTokens === 1) {
-        callOrder.push("primer");
-        await new Promise((resolve) => setTimeout(resolve, 50));
+  it("keeps system bytes stable across tool sub-turns for boundary cache hits", async () => {
+    const target = path.join(testDir, "cache-boundary.txt");
+    fs.writeFileSync(target, "stable", "utf8");
+    let requestCount = 0;
+    const chatMock = vi.fn().mockImplementation(async function* () {
+      requestCount++;
+      if (requestCount === 1) {
         yield {
-          type: "usage",
-          usage: {
-            inputTokens: 100,
-            outputTokens: 1,
-            totalTokens: 101,
-            cacheReadTokens: 0,
-            cacheMissTokens: 100,
+          type: "tool_call",
+          toolCall: {
+            id: "read-cache-boundary",
+            name: "read_file",
+            arguments: JSON.stringify({ path: target }),
           },
         };
         return;
       }
-
-      callOrder.push("main");
-      yield {
-        type: "text_delta",
-        text: "Response",
-      };
+      yield { type: "text_delta", text: "done" };
     });
 
     const mockProvider: ModelProvider = {
@@ -662,7 +626,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
         streaming: true,
         toolCalls: true,
         jsonMode: true,
-        thinking: false,
+        thinking: true,
         vision: false,
         promptCaching: true,
       }),
@@ -675,20 +639,77 @@ describe("AgentLoop Fin Heuristic Routing", () => {
         provider: { default: "deepseek-openai" },
       },
       mockProvider,
-      "what is this project?",
+      "show current project file",
       dummyInteraction,
       { disableStatusBar: true },
     );
 
     await loop.run();
 
-    expect(callOrder[0]).toBe("primer");
-    expect(callOrder[1]).toBe("main");
-    expect(chatMock.mock.calls[1][0].maxTokens).toBeUndefined();
+    expect(chatMock).toHaveBeenCalledTimes(2);
+    const first = chatMock.mock.calls[0][0];
+    const second = chatMock.mock.calls[1][0];
+    expect(second.system).toBe(first.system);
+    expect(second.messages.length).toBeGreaterThan(first.messages.length);
+    expect(second.messages.slice(0, first.messages.length)).toEqual(
+      first.messages,
+    );
+    expect(second.userId).toBe(first.userId);
+  });
 
-    await new Promise((resolve) => setTimeout(resolve, 120));
+  it("concatenates split thinking signatures before replaying a tool turn", async () => {
+    const target = path.join(testDir, "signature-boundary.txt");
+    fs.writeFileSync(target, "stable", "utf8");
+    let requestCount = 0;
+    const chatMock = vi.fn().mockImplementation(async function* () {
+      requestCount++;
+      if (requestCount === 1) {
+        yield { type: "thinking_delta", text: "reason", signature: "sig-" };
+        yield { type: "thinking_delta", text: "", signature: "part" };
+        yield {
+          type: "tool_call",
+          toolCall: {
+            id: "read-signature-boundary",
+            name: "read_file",
+            arguments: JSON.stringify({ path: target }),
+          },
+        };
+        return;
+      }
+      yield { type: "text_delta", text: "done" };
+    });
+    const mockProvider: ModelProvider = {
+      id: "deepseek-anthropic",
+      type: "anthropic-compatible",
+      chat: chatMock,
+      getModelCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        jsonMode: true,
+        thinking: true,
+        vision: false,
+        promptCaching: true,
+      }),
+    } as any;
+    const loop = new AgentLoop(
+      testDir,
+      dummyConfig,
+      mockProvider,
+      "debug signature replay",
+      dummyInteraction,
+      { disableStatusBar: true },
+    );
 
-    expect(chatMock).toHaveBeenCalledTimes(3);
-    expect(chatMock.mock.calls[2][0].maxTokens).toBe(1);
+    await loop.run();
+
+    const secondRequest = chatMock.mock.calls[1][0];
+    const assistant = secondRequest.messages.find(
+      (message: any) => message.role === "assistant",
+    );
+    expect(assistant.content).toContainEqual({
+      type: "thinking",
+      text: "reason",
+      signature: "sig-part",
+    });
   });
 });

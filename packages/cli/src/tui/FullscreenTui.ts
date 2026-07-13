@@ -1,4 +1,4 @@
-import { join, dirname } from "path";
+import { join } from "path";
 import { homedir } from "os";
 import {
   existsSync,
@@ -9,57 +9,54 @@ import {
 } from "fs";
 import { exec } from "child_process";
 import readline from "readline";
-import { Prompt, Renderer, type PromptOption } from "@orbit-build/tui";
-import { BUILTIN_SLASH_COMMANDS } from "../runtime/CommandRouter.js";
+import { Prompt, Renderer } from "@orbit-build/tui";
+import { BUILTIN_SLASH_COMMANDS } from "../runtime/SlashCommandCatalog.js";
 import { getProviderModelCandidates } from "../runtime/ModelCatalog.js";
+import {
+  findPreviousHistoryEntry,
+  getSlashSuggestionFooterText,
+  nextCodePointIndex,
+  nextWordIndex,
+  parseMouseWheelDirection,
+  previousCodePointIndex,
+  previousWordIndex,
+  rankSlashCandidates,
+  selectActiveSlashSuggestion,
+} from "./TuiInputHelpers.js";
+import {
+  formatWrappedLines,
+  getCursorPositionInWrappedInput,
+  getStringWidth,
+  stripAnsiCodes,
+  truncatePlainToWidth,
+  truncateToWidth,
+  wrapAnsiLine,
+  wrapInputText,
+  type WrappedInputLine,
+} from "./TerminalText.js";
+import { InputHistoryStore } from "./InputHistoryStore.js";
+import { MORANDI } from "./TuiTheme.js";
+import {
+  TuiPromptSession,
+  type TuiPromptConfig,
+  type TuiPromptResult,
+} from "./TuiPromptSession.js";
+import { renderPromptScreen } from "./TuiPromptView.js";
 
-export function previousCodePointIndex(text: string, index: number): number {
-  const safeIndex = Math.max(0, Math.min(index, text.length));
-  if (safeIndex === 0) return 0;
-  const previous = text.charCodeAt(safeIndex - 1);
-  if (previous >= 0xdc00 && previous <= 0xdfff && safeIndex >= 2) {
-    const leading = text.charCodeAt(safeIndex - 2);
-    if (leading >= 0xd800 && leading <= 0xdbff) {
-      return safeIndex - 2;
-    }
-  }
-  return safeIndex - 1;
-}
-
-export function nextCodePointIndex(text: string, index: number): number {
-  const safeIndex = Math.max(0, Math.min(index, text.length));
-  if (safeIndex >= text.length) return text.length;
-  const leading = text.charCodeAt(safeIndex);
-  if (leading >= 0xd800 && leading <= 0xdbff && safeIndex + 1 < text.length) {
-    const trailing = text.charCodeAt(safeIndex + 1);
-    if (trailing >= 0xdc00 && trailing <= 0xdfff) {
-      return safeIndex + 2;
-    }
-  }
-  return safeIndex + 1;
-}
-
-export function previousWordIndex(text: string, index: number): number {
-  let pos = index;
-  while (pos > 0 && /\s/.test(text.charAt(pos - 1))) {
-    pos--;
-  }
-  while (pos > 0 && !/\s/.test(text.charAt(pos - 1))) {
-    pos--;
-  }
-  return pos;
-}
-
-export function nextWordIndex(text: string, index: number): number {
-  let pos = index;
-  while (pos < text.length && /\s/.test(text.charAt(pos))) {
-    pos++;
-  }
-  while (pos < text.length && !/\s/.test(text.charAt(pos))) {
-    pos++;
-  }
-  return pos;
-}
+export {
+  filterPromptOptionIndices,
+  findPreviousHistoryEntry,
+  getSlashSuggestionFooterText,
+  nextCodePointIndex,
+  nextWordIndex,
+  parseMouseWheelDirection,
+  previousCodePointIndex,
+  previousWordIndex,
+  rankSlashCandidates,
+  selectActiveSlashSuggestion,
+} from "./TuiInputHelpers.js";
+export { pageText } from "./TextPager.js";
+export { stripAnsiCodes } from "./TerminalText.js";
 
 export type SubmittedInputEcho = boolean | ((submitted: string) => boolean);
 
@@ -67,242 +64,8 @@ export interface AskInputOptions {
   echoSubmitted?: SubmittedInputEcho;
 }
 
-export function parseMouseWheelDirection(
-  input: string | undefined | null,
-): "up" | "down" | null {
-  if (typeof input !== "string") return null;
-  const match = input.match(/\x1b\[<(\d+);\d+;\d+[mM]/);
-  if (!match) return null;
-  const button = Number(match[1]);
-  if ((button & 64) === 0) return null;
-  return (button & 1) === 0 ? "up" : "down";
-}
-
-export async function pageText(text: string): Promise<void> {
-  const lines = text.split("\n");
-  const rows = process.stdout.rows || 24;
-  const pageSize = rows - 2;
-
-  if (lines.length <= pageSize) {
-    console.log(text);
-    return;
-  }
-
-  let cursor = 0;
-  const wasRaw = !!process.stdin.isRaw;
-  if (process.stdin.setRawMode) {
-    process.stdin.setRawMode(true);
-  }
-  process.stdin.resume();
-
-  readline.emitKeypressEvents(process.stdin);
-
-  const keypressPromise = (): Promise<string> => {
-    return new Promise((resolve) => {
-      const onKeypress = (str: string, key: any) => {
-        process.stdin.removeListener("keypress", onKeypress);
-        if (key && key.ctrl && key.name === "c") {
-          if (process.stdin.setRawMode) {
-            process.stdin.setRawMode(wasRaw);
-          }
-          process.exit(0);
-        }
-        resolve(key ? key.name || str : str);
-      };
-      process.stdin.on("keypress", onKeypress);
-    });
-  };
-
-  try {
-    while (cursor < lines.length) {
-      const chunk = lines.slice(cursor, cursor + pageSize);
-      console.log(chunk.join("\n"));
-      cursor += pageSize;
-
-      if (cursor >= lines.length) {
-        break;
-      }
-
-      process.stdout.write(
-        `\r\x1b[36m-- More (${Math.round((cursor / lines.length) * 100)}%) [Space/Enter to continue, q to quit] --\x1b[39m`,
-      );
-
-      const key = await keypressPromise();
-      process.stdout.write("\r\x1b[K");
-
-      if (key === "q") {
-        break;
-      }
-      if (key === "return" || key === "enter") {
-        cursor = cursor - pageSize + 1;
-      }
-    }
-  } finally {
-    if (process.stdin.setRawMode) {
-      process.stdin.setRawMode(wasRaw);
-    }
-    process.stdin.pause();
-  }
-}
-
-// ─── Shared ANSI colour helpers (class-level constant, avoids recreation per render) ───
-const MORANDI = {
-  user: (s: string) => `\x1b[38;2;158;184;196m${s}\x1b[0m`,
-  userBold: (s: string) => `\x1b[1;38;2;158;184;196m${s}\x1b[0m`,
-  asst: (s: string) => `\x1b[38;2;164;178;150m${s}\x1b[0m`,
-  asstBold: (s: string) => `\x1b[1;38;2;164;178;150m${s}\x1b[0m`,
-  cyan: (s: string) => `\x1b[38;2;158;184;196m${s}\x1b[0m`,
-  accent: (s: string) => `\x1b[38;2;224;188;124m${s}\x1b[0m`,
-  completed: (s: string) => `\x1b[38;2;152;188;146m${s}\x1b[0m`,
-  failed: (s: string) => `\x1b[38;2;212;132;132m${s}\x1b[0m`,
-  warn: (s: string) => `\x1b[38;2;226;178;98m${s}\x1b[0m`,
-  white: (s: string) => `\x1b[38;2;236;233;224m${s}\x1b[0m`,
-  whiteBold: (s: string) => `\x1b[1;38;2;245;242;232m${s}\x1b[0m`,
-  gray: (s: string) => `\x1b[38;2;178;176;168m${s}\x1b[0m`,
-  dim: (s: string) => `\x1b[38;2;148;146;138m${s}\x1b[0m`,
-} as const;
-
 // Width of the fixed input-box left prefix "  │ orbit > " (constant, pre-calculated)
 const INPUT_PREFIX_WIDTH = 12; // "  │ orbit > " visual width
-
-export function selectActiveSlashSuggestion(
-  input: string,
-  matches: string[],
-  activeIndex: number,
-): string {
-  if (!input.startsWith("/") || matches.length === 0) return input;
-  const idx = Math.min(Math.max(0, activeIndex), matches.length - 1);
-  return matches[idx] || input;
-}
-
-export function getSlashSuggestionFooterText(
-  isZh: boolean,
-  matchCount: number,
-): string {
-  return isZh
-    ? `↑/↓ 选择  Enter 运行所选  Tab 填入  Esc 关闭  ·  ${matchCount} 项`
-    : `↑/↓ select  Enter run selected  Tab fill  Esc close  ·  ${matchCount} match(es)`;
-}
-
-const ANSI_PATTERN =
-  /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
-
-export function stripAnsiCodes(str: string): string {
-  return str.replace(ANSI_PATTERN, "");
-}
-
-export function filterPromptOptionIndices(
-  options: PromptOption[],
-  query: string,
-): number[] {
-  const terms = stripAnsiCodes(query)
-    .trim()
-    .toLocaleLowerCase()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (terms.length === 0) {
-    return options.map((_, index) => index);
-  }
-
-  return options
-    .map((option, index) => ({ option, index }))
-    .filter(({ option }) => {
-      const haystack = stripAnsiCodes(
-        [option.label, option.value, option.hint || ""].join(" "),
-      ).toLocaleLowerCase();
-      return terms.every((term) => haystack.includes(term));
-    })
-    .map(({ index }) => index);
-}
-
-function normalizeMatchText(text: string): string {
-  return stripAnsiCodes(text)
-    .toLocaleLowerCase()
-    .replace(/[_/\\:-]+/g, " ");
-}
-
-function isOrderedSubsequence(needle: string, haystack: string): boolean {
-  if (needle.length === 0) return true;
-  let pos = 0;
-  for (const char of haystack) {
-    if (char === needle[pos]) {
-      pos++;
-      if (pos === needle.length) return true;
-    }
-  }
-  return false;
-}
-
-export function rankSlashCandidates(
-  candidates: string[],
-  input: string,
-): string[] {
-  const rawQuery = stripAnsiCodes(input).trim();
-  if (!rawQuery || rawQuery === "/") return candidates;
-
-  const normalizedQuery = normalizeMatchText(rawQuery);
-  const queryNoSlash = normalizedQuery.replace(/^\s*\/\s*/, "").trim();
-  const terms = queryNoSlash.split(/\s+/).filter(Boolean);
-
-  return candidates
-    .map((candidate, index) => {
-      const normalizedCandidate = normalizeMatchText(candidate);
-      const candidateNoSlash = normalizedCandidate
-        .replace(/^\s*\/\s*/, "")
-        .trim();
-
-      let score = Number.POSITIVE_INFINITY;
-      if (normalizedCandidate === normalizedQuery) {
-        score = 0;
-      } else if (normalizedCandidate.startsWith(normalizedQuery)) {
-        score = 10;
-      } else if (queryNoSlash && candidateNoSlash.startsWith(queryNoSlash)) {
-        score = 20;
-      } else if (
-        terms.length > 0 &&
-        terms.every((term) => normalizedCandidate.includes(term))
-      ) {
-        const positionScore = terms.reduce(
-          (sum, term) => sum + Math.max(0, normalizedCandidate.indexOf(term)),
-          0,
-        );
-        score = 50 + positionScore + normalizedCandidate.length / 1000;
-      } else if (
-        queryNoSlash.length >= 2 &&
-        isOrderedSubsequence(queryNoSlash.replace(/\s+/g, ""), candidateNoSlash)
-      ) {
-        score = 100 + candidateNoSlash.length;
-      }
-
-      return { candidate, index, score };
-    })
-    .filter((entry) => Number.isFinite(entry.score))
-    .sort((a, b) => a.score - b.score || a.index - b.index)
-    .map((entry) => entry.candidate);
-}
-
-export function findPreviousHistoryEntry(
-  history: string[],
-  query: string,
-  startIndex = history.length,
-): { entry: string; index: number } | null {
-  if (history.length === 0) return null;
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const cappedStart = Math.max(0, Math.min(startIndex, history.length));
-
-  for (let offset = 0; offset < history.length; offset++) {
-    const index = (cappedStart - 1 - offset + history.length) % history.length;
-    const entry = history[index];
-    if (
-      !normalizedQuery ||
-      entry.toLocaleLowerCase().includes(normalizedQuery)
-    ) {
-      return { entry, index };
-    }
-  }
-
-  return null;
-}
 
 /** One conversation turn in the TUI history view. */
 type HistoryEntry = {
@@ -318,31 +81,6 @@ interface TuiTurn {
   user?: HistoryEntry;
   assistant?: HistoryEntry;
   system: HistoryEntry[];
-}
-
-interface TuiPrompt {
-  type: "select" | "multiselect" | "text" | "confirm" | "password";
-  message: string;
-  options: PromptOption[];
-  initialValue?: string;
-  initialSelectedValue?: string;
-  deletable?: boolean;
-  suppressCloseRenderOnDelete?: boolean;
-  pendingDeleteValue?: string | null;
-  pendingDeleteAt?: number;
-  filterQuery: string;
-  filterActive: boolean;
-  resolve: (value: any) => void;
-  selectedIndex: number;
-  selectedValues: Set<string>;
-  inputValue: string;
-  cursorPosition: number;
-}
-
-interface WrappedInputLine {
-  text: string;
-  start: number;
-  end: number;
 }
 
 export class FullscreenTui {
@@ -373,7 +111,7 @@ export class FullscreenTui {
   private firstDeltaTime = 0;
   private thoughtTimer: NodeJS.Timeout | null = null;
   private thoughtElapsed = 0;
-  private activePrompt: TuiPrompt | null = null;
+  private readonly promptSession = new TuiPromptSession(() => this.render());
 
   private isThinking = false;
 
@@ -387,7 +125,6 @@ export class FullscreenTui {
   private cacheTelemetry: {
     slabHash: string;
     slabTokenEstimate: number;
-    primed: boolean;
     hitTokens: number;
     missTokens: number;
     inputTokens: number;
@@ -397,7 +134,9 @@ export class FullscreenTui {
   private budgetLimit = 0;
 
   private resolveInput: ((val: string | null) => void) | null = null;
-  private activeRunnable: { abort: () => void } | null = null;
+  private activeRunnable: {
+    abort: (mode?: "prompt" | "immediate") => void;
+  } | null = null;
   private thinkingKeypressListener: ((str: string, key: any) => void) | null =
     null;
   public pendingGuidedStatement: string | null = null;
@@ -408,7 +147,7 @@ export class FullscreenTui {
   private renderTimeout: NodeJS.Timeout | null = null;
   private hasRenderedAttemptDelta = false;
 
-  private originalWrite = process.stdout.write.bind(process.stdout);
+  private originalWrite: typeof process.stdout.write | null = null;
   private hasWrittenStdoutSinceStop = false;
   private originalStdinEmit: any = null;
 
@@ -450,6 +189,8 @@ export class FullscreenTui {
   private maxHistoryScrollOffset = 0;
   private lastHistoryLineCount = 0;
   private hasNewOutputWhileScrolled = false;
+  private readonly inputHistoryStore = new InputHistoryStore();
+  private terminalInitialized = false;
 
   private getPlanLines(): string[] {
     const now = Date.now();
@@ -510,27 +251,59 @@ export class FullscreenTui {
     this.render();
   }
 
-  public setActiveRunnable(runnable: { abort: () => void } | null) {
+  public setActiveRunnable(
+    runnable: {
+      abort: (mode?: "prompt" | "immediate") => void;
+    } | null,
+  ) {
     this.activeRunnable = runnable;
   }
 
-  constructor(
+  public hasActiveRunnable(): boolean {
+    return this.activeRunnable !== null;
+  }
+
+  public abortActiveRunnable(mode: "prompt" | "immediate" = "prompt"): boolean {
+    if (!this.activeRunnable) return false;
+    this.activeRunnable.abort(mode);
+    return true;
+  }
+
+  public constructor(
     private cwd: string,
     private modelName: string,
     private version: string,
     private config?: any,
-  ) {
+  ) {}
+
+  /**
+   * Installs process-level terminal hooks and loads persisted input history.
+   * This method is explicit and idempotent so construction remains side-effect free.
+   */
+  public initialize(): void {
+    if (this.terminalInitialized) return;
+
     readline.emitKeypressEvents(process.stdin);
-    process.stdout.write = (chunk: any, encoding?: any, cb?: any) => {
+    this.originalWrite = process.stdout.write;
+    const originalWrite = this.originalWrite;
+    process.stdout.write = ((
+      chunk: string | Uint8Array,
+      ...args: unknown[]
+    ) => {
       if (!this.isActive) {
-        const text = typeof chunk === "string" ? chunk : chunk.toString();
+        const text =
+          typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
         if (text.trim().length > 0) {
           this.hasWrittenStdoutSinceStop = true;
         }
       }
-      return this.originalWrite(chunk, encoding, cb);
-    };
-    this.loadInputHistory();
+      return Reflect.apply(originalWrite, process.stdout, [
+        chunk,
+        ...args,
+      ]) as boolean;
+    }) as typeof process.stdout.write;
+    this.inputHistory = this.inputHistoryStore.load();
+    this.terminalInitialized = true;
   }
 
   private formatSystemStatusLine(
@@ -582,7 +355,7 @@ export class FullscreenTui {
         liveLookupResults > 0 ? ` · ${liveLookupResults} results` : "";
       const sourceText = liveLookupOpenMeteo ? " · Open-Meteo" : "";
       const queryText = lastLiveLookupQuery
-        ? this.truncatePlainToWidth(lastLiveLookupQuery, 42)
+        ? truncatePlainToWidth(lastLiveLookupQuery, 42)
         : "";
       const label =
         liveLookupTool && liveLookupTool !== "mixed"
@@ -646,7 +419,7 @@ export class FullscreenTui {
           continue;
         }
 
-        if (/^⚠.*DeepSeek cache hit degraded/i.test(plain)) {
+        if (/^⚠.*(?:DeepSeek|Prompt) cache hit degraded/i.test(plain)) {
           continue;
         }
 
@@ -685,40 +458,8 @@ export class FullscreenTui {
     };
   }
 
-  private getHistoryFilePath(): string {
-    return join(homedir(), ".orbit", "input_history.json");
-  }
-
-  private loadInputHistory() {
-    try {
-      const filePath = this.getHistoryFilePath();
-      if (existsSync(filePath)) {
-        const raw = readFileSync(filePath, "utf8");
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          this.inputHistory = parsed.filter((x) => typeof x === "string");
-        }
-      }
-    } catch {
-      this.inputHistory = [];
-    }
-  }
-
   private saveInputHistory() {
-    try {
-      const filePath = this.getHistoryFilePath();
-      const dir = dirname(filePath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-      writeFileSync(
-        filePath,
-        JSON.stringify(this.inputHistory, null, 2),
-        "utf8",
-      );
-    } catch {
-      // Ignore
-    }
+    this.inputHistoryStore.save(this.inputHistory);
   }
 
   public addSystemMessage(text: string, _raw = false) {
@@ -737,6 +478,7 @@ export class FullscreenTui {
   };
 
   public start(budgetLimit: number) {
+    this.initialize();
     this.budgetLimit = budgetLimit;
     this.isActive = true;
     this.hasWrittenStdoutSinceStop = false;
@@ -815,6 +557,7 @@ export class FullscreenTui {
   }
 
   public dispose() {
+    this.promptSession.dispose();
     this.stopThinkingInput();
     this.stop();
     if (this.thoughtTimer) {
@@ -828,7 +571,11 @@ export class FullscreenTui {
     if (process.stdin.setRawMode && process.stdin.isTTY) {
       process.stdin.setRawMode(false);
     }
-    process.stdout.write = this.originalWrite as typeof process.stdout.write;
+    if (this.originalWrite) {
+      process.stdout.write = this.originalWrite as typeof process.stdout.write;
+      this.originalWrite = null;
+    }
+    this.terminalInitialized = false;
   }
 
   private getNpmNeedsUpdate(): boolean {
@@ -856,7 +603,7 @@ export class FullscreenTui {
       if (!existsSync(nodeModulesPath)) {
         this.npmNeedsUpdate = true;
         this.isCheckingNpm = false;
-        this.draw();
+        this.render();
         return;
       }
 
@@ -906,7 +653,7 @@ export class FullscreenTui {
       this.npmNeedsUpdate = false;
     } finally {
       this.isCheckingNpm = false;
-      this.draw();
+      this.render();
     }
   }
 
@@ -1377,7 +1124,6 @@ export class FullscreenTui {
   public setCacheTelemetry(payload: {
     slabHash: string;
     slabTokenEstimate: number;
-    primed: boolean;
     hitTokens: number;
     missTokens: number;
     inputTokens: number;
@@ -1511,476 +1257,10 @@ export class FullscreenTui {
     }
   }
 
-  private getPromptOptionIndices(prompt: TuiPrompt): number[] {
-    return filterPromptOptionIndices(prompt.options, prompt.filterQuery);
+  /** Opens a typed full-screen prompt managed by an isolated session. */
+  public showPrompt(config: TuiPromptConfig): Promise<TuiPromptResult> {
+    return this.promptSession.show(config);
   }
-
-  private ensurePromptSelectionVisible(prompt: TuiPrompt): number[] {
-    const indices = this.getPromptOptionIndices(prompt);
-    if (indices.length > 0 && !indices.includes(prompt.selectedIndex)) {
-      prompt.selectedIndex = indices[0];
-    }
-    return indices;
-  }
-
-  private movePromptSelection(prompt: TuiPrompt, delta: number): void {
-    const indices = this.ensurePromptSelectionVisible(prompt);
-    if (indices.length === 0) return;
-
-    const currentPosition = Math.max(0, indices.indexOf(prompt.selectedIndex));
-    const nextPosition =
-      (currentPosition + delta + indices.length * 1000) % indices.length;
-    prompt.selectedIndex = indices[nextPosition];
-  }
-
-  private setPromptSelectionToEdge(
-    prompt: TuiPrompt,
-    edge: "first" | "last",
-  ): void {
-    const indices = this.ensurePromptSelectionVisible(prompt);
-    if (indices.length === 0) return;
-    prompt.selectedIndex =
-      edge === "first" ? indices[0] : indices[indices.length - 1];
-  }
-
-  private truncatePlainToWidth(text: string, maxWidth: number): string {
-    if (maxWidth <= 0) return "";
-    const plain = stripAnsiCodes(text);
-    if (this.getStringWidth(plain) <= maxWidth) return plain;
-    if (maxWidth <= 3) return this.truncateToWidth(plain, maxWidth);
-    return this.truncateToWidth(plain, maxWidth - 3) + "...";
-  }
-
-  private getCursorPositionInWrappedInput(
-    wrappedInputLines: WrappedInputLine[],
-  ): { lineIndex: number; xOffset: number } {
-    for (let i = 0; i < wrappedInputLines.length; i++) {
-      const line = wrappedInputLines[i];
-      if (
-        this.cursorPosition >= line.start &&
-        this.cursorPosition <= line.end
-      ) {
-        const subStr = line.text.substring(
-          0,
-          Math.max(0, this.cursorPosition - line.start),
-        );
-        return { lineIndex: i, xOffset: this.getStringWidth(subStr) };
-      }
-    }
-    const lastIndex = Math.max(0, wrappedInputLines.length - 1);
-    const lastLine = wrappedInputLines[lastIndex] || {
-      text: "",
-      start: 0,
-      end: 0,
-    };
-    return {
-      lineIndex: lastIndex,
-      xOffset: this.getStringWidth(lastLine.text),
-    };
-  }
-
-  public showPrompt(config: {
-    type: "select" | "multiselect" | "text" | "confirm" | "password";
-    message: string;
-    options?: PromptOption[];
-    initialValue?: string;
-    initialSelectedValue?: string;
-    deletable?: boolean;
-    suppressCloseRenderOnDelete?: boolean;
-  }): Promise<any> {
-    return new Promise((resolve) => {
-      const options = config.options || [];
-      this.activePrompt = {
-        type: config.type,
-        message: config.message,
-        options,
-        initialValue: config.initialValue || "",
-        initialSelectedValue: config.initialSelectedValue,
-        deletable: config.deletable,
-        suppressCloseRenderOnDelete: config.suppressCloseRenderOnDelete,
-        pendingDeleteValue: null,
-        pendingDeleteAt: 0,
-        filterQuery: "",
-        filterActive: false,
-        resolve,
-        selectedIndex: 0,
-        selectedValues: new Set(),
-        inputValue: config.initialValue || "",
-        cursorPosition: (config.initialValue || "").length,
-      };
-
-      if (config.type === "confirm") {
-        this.activePrompt.options = [
-          { value: "yes", label: "Yes" },
-          { value: "no", label: "No" },
-        ];
-      }
-      if (
-        config.initialSelectedValue &&
-        (config.type === "select" || config.type === "multiselect")
-      ) {
-        const initialIndex = this.activePrompt.options.findIndex(
-          (option) => option.value === config.initialSelectedValue,
-        );
-        if (initialIndex >= 0) {
-          this.activePrompt.selectedIndex = initialIndex;
-        }
-      }
-
-      this.render();
-
-      const wasRaw = !!process.stdin.isRaw;
-      if (process.stdin.setRawMode) {
-        process.stdin.setRawMode(true);
-      }
-      process.stdin.resume();
-
-      const onPromptKeypress = (str: string, key: any) => {
-        if (!this.activePrompt) {
-          cleanup();
-          return;
-        }
-
-        try {
-          const prompt = this.activePrompt;
-          const options = prompt.options;
-          const completePrompt = (value: any) => {
-            cleanup();
-            this.activePrompt = null;
-            const isDeleteAction =
-              value && typeof value === "object" && value.action === "delete";
-            if (!isDeleteAction || !prompt.suppressCloseRenderOnDelete) {
-              this.render();
-            }
-            resolve(value);
-          };
-          const clearPendingDelete = () => {
-            prompt.pendingDeleteValue = null;
-            prompt.pendingDeleteAt = 0;
-          };
-          const isListPrompt =
-            prompt.type === "select" || prompt.type === "multiselect";
-          const moveSelection = (delta: number) => {
-            clearPendingDelete();
-            this.movePromptSelection(prompt, delta);
-            this.render();
-          };
-
-          if (key && key.ctrl && key.name === "c") {
-            if (prompt.type === "confirm") {
-              completePrompt(false);
-            } else if (prompt.deletable && prompt.type === "select") {
-              completePrompt({ action: "cancel" });
-            } else {
-              completePrompt(null);
-            }
-            return;
-          }
-
-          if (isListPrompt && key && key.name === "/" && !prompt.filterActive) {
-            clearPendingDelete();
-            prompt.filterActive = true;
-            this.render();
-            return;
-          }
-
-          if (isListPrompt && prompt.filterActive) {
-            if (key && key.name === "escape") {
-              clearPendingDelete();
-              if (prompt.filterQuery.length > 0) {
-                prompt.filterQuery = "";
-                this.ensurePromptSelectionVisible(prompt);
-              } else {
-                prompt.filterActive = false;
-              }
-              this.render();
-              return;
-            }
-
-            if (key && key.ctrl && key.name === "u") {
-              clearPendingDelete();
-              prompt.filterQuery = "";
-              this.ensurePromptSelectionVisible(prompt);
-              this.render();
-              return;
-            }
-
-            if (key && key.name === "backspace") {
-              clearPendingDelete();
-              const previousIndex = previousCodePointIndex(
-                prompt.filterQuery,
-                prompt.filterQuery.length,
-              );
-              prompt.filterQuery = prompt.filterQuery.slice(0, previousIndex);
-              this.ensurePromptSelectionVisible(prompt);
-              this.render();
-              return;
-            }
-
-            if (
-              str &&
-              !key?.ctrl &&
-              !key?.meta &&
-              !/[\u0000-\u001f\u007f]/.test(str)
-            ) {
-              clearPendingDelete();
-              prompt.filterQuery += str;
-              this.ensurePromptSelectionVisible(prompt);
-              this.render();
-              return;
-            }
-          }
-
-          if (key && key.name === "escape") {
-            if (prompt.type === "confirm") {
-              completePrompt(false);
-            } else if (prompt.deletable && prompt.type === "select") {
-              completePrompt({ action: "cancel" });
-            } else {
-              completePrompt(null);
-            }
-            return;
-          }
-
-          if (key && (key.name === "return" || key.name === "enter")) {
-            if (prompt.type === "select") {
-              const indices = this.ensurePromptSelectionVisible(prompt);
-              if (indices.length === 0) {
-                this.render();
-                return;
-              }
-              const value = options[prompt.selectedIndex]?.value || null;
-              completePrompt(
-                prompt.deletable && value ? { action: "select", value } : value,
-              );
-            } else if (prompt.type === "confirm") {
-              completePrompt(options[prompt.selectedIndex]?.value === "yes");
-            } else if (prompt.type === "multiselect") {
-              completePrompt(Array.from(prompt.selectedValues));
-            } else if (prompt.type === "text" || prompt.type === "password") {
-              completePrompt(prompt.inputValue);
-            }
-            return;
-          }
-
-          if (
-            prompt.type === "select" ||
-            prompt.type === "confirm" ||
-            prompt.type === "multiselect"
-          ) {
-            const visibleIndices =
-              prompt.type === "confirm"
-                ? options.map((_, index) => index)
-                : this.ensurePromptSelectionVisible(prompt);
-            if (visibleIndices.length === 0) {
-              return;
-            }
-
-            if (
-              prompt.type === "select" &&
-              prompt.deletable &&
-              key &&
-              key.name === "delete"
-            ) {
-              const option = options[prompt.selectedIndex];
-              if (
-                !option ||
-                option.deleteDisabled ||
-                !visibleIndices.includes(prompt.selectedIndex)
-              ) {
-                clearPendingDelete();
-                this.render();
-                return;
-              }
-
-              const armed = prompt.pendingDeleteValue === option.value;
-              if (armed) {
-                completePrompt({ action: "delete", value: option.value });
-                return;
-              }
-
-              prompt.pendingDeleteValue = option.value;
-              prompt.pendingDeleteAt = Date.now();
-              this.render();
-              return;
-            }
-
-            if (key && (key.name === "up" || str === "k")) {
-              moveSelection(-1);
-              return;
-            }
-            if (key && (key.name === "down" || str === "j")) {
-              moveSelection(1);
-              return;
-            }
-            if (key && key.name === "home") {
-              clearPendingDelete();
-              this.setPromptSelectionToEdge(prompt, "first");
-              this.render();
-              return;
-            }
-            if (key && key.name === "end") {
-              clearPendingDelete();
-              this.setPromptSelectionToEdge(prompt, "last");
-              this.render();
-              return;
-            }
-            if (key && key.name === "pageup") {
-              moveSelection(-8);
-              return;
-            }
-            if (key && key.name === "pagedown") {
-              moveSelection(8);
-              return;
-            }
-            if (
-              prompt.type === "multiselect" &&
-              key &&
-              (key.name === "space" || str === " ")
-            ) {
-              const val = options[prompt.selectedIndex]?.value;
-              if (val) {
-                if (prompt.selectedValues.has(val)) {
-                  prompt.selectedValues.delete(val);
-                } else {
-                  prompt.selectedValues.add(val);
-                }
-              }
-              this.render();
-              return;
-            }
-          } else if (prompt.type === "text" || prompt.type === "password") {
-            if (
-              key &&
-              (key.name === "home" || (key.ctrl && key.name === "a"))
-            ) {
-              prompt.cursorPosition = 0;
-              this.render();
-              return;
-            }
-            if (key && (key.name === "end" || (key.ctrl && key.name === "e"))) {
-              prompt.cursorPosition = prompt.inputValue.length;
-              this.render();
-              return;
-            }
-            if (key && (key.ctrl || key.meta) && key.name === "left") {
-              prompt.cursorPosition = previousWordIndex(
-                prompt.inputValue,
-                prompt.cursorPosition,
-              );
-              this.render();
-              return;
-            }
-            if (key && (key.ctrl || key.meta) && key.name === "right") {
-              prompt.cursorPosition = nextWordIndex(
-                prompt.inputValue,
-                prompt.cursorPosition,
-              );
-              this.render();
-              return;
-            }
-            if (
-              key &&
-              key.ctrl &&
-              (key.name === "backspace" || key.name === "w")
-            ) {
-              if (prompt.cursorPosition > 0) {
-                const targetPos = previousWordIndex(
-                  prompt.inputValue,
-                  prompt.cursorPosition,
-                );
-                prompt.inputValue =
-                  prompt.inputValue.slice(0, targetPos) +
-                  prompt.inputValue.slice(prompt.cursorPosition);
-                prompt.cursorPosition = targetPos;
-                this.render();
-              }
-              return;
-            }
-            if (key && key.ctrl && key.name === "u") {
-              prompt.inputValue = prompt.inputValue.slice(
-                prompt.cursorPosition,
-              );
-              prompt.cursorPosition = 0;
-              this.render();
-              return;
-            }
-            if (key && key.name === "backspace") {
-              if (prompt.cursorPosition > 0) {
-                const previousIndex = previousCodePointIndex(
-                  prompt.inputValue,
-                  prompt.cursorPosition,
-                );
-                prompt.inputValue =
-                  prompt.inputValue.substring(0, previousIndex) +
-                  prompt.inputValue.substring(prompt.cursorPosition);
-                prompt.cursorPosition = previousIndex;
-                this.render();
-              }
-              return;
-            }
-            if (key && key.name === "delete") {
-              if (prompt.cursorPosition < prompt.inputValue.length) {
-                const nextIndex = nextCodePointIndex(
-                  prompt.inputValue,
-                  prompt.cursorPosition,
-                );
-                prompt.inputValue =
-                  prompt.inputValue.substring(0, prompt.cursorPosition) +
-                  prompt.inputValue.substring(nextIndex);
-                this.render();
-              }
-              return;
-            }
-            if (key && key.name === "left") {
-              if (prompt.cursorPosition > 0) {
-                prompt.cursorPosition = previousCodePointIndex(
-                  prompt.inputValue,
-                  prompt.cursorPosition,
-                );
-                this.render();
-              }
-              return;
-            }
-            if (key && key.name === "right") {
-              if (prompt.cursorPosition < prompt.inputValue.length) {
-                prompt.cursorPosition = nextCodePointIndex(
-                  prompt.inputValue,
-                  prompt.cursorPosition,
-                );
-                this.render();
-              }
-              return;
-            }
-            if (
-              str &&
-              !key?.ctrl &&
-              !key?.meta &&
-              !/[\u0000-\u001f\u007f]/.test(str)
-            ) {
-              prompt.inputValue =
-                prompt.inputValue.substring(0, prompt.cursorPosition) +
-                str +
-                prompt.inputValue.substring(prompt.cursorPosition);
-              prompt.cursorPosition += str.length;
-              this.render();
-              return;
-            }
-          }
-        } catch {}
-      };
-
-      const cleanup = () => {
-        process.stdin.removeListener("keypress", onPromptKeypress);
-        if (process.stdin.setRawMode) {
-          process.stdin.setRawMode(wasRaw);
-        }
-      };
-
-      process.stdin.on("keypress", onPromptKeypress);
-    });
-  }
-
   public async askInput(options: AskInputOptions = {}): Promise<string | null> {
     if (!this.isActive) {
       if (this.hasWrittenStdoutSinceStop) {
@@ -2530,246 +1810,20 @@ export class FullscreenTui {
     // Use the shared MORANDI constant (class-level) instead of recreating per frame
     const morandi = MORANDI;
 
-    if (this.activePrompt) {
-      const prompt = this.activePrompt;
-      const options = prompt.options;
-      const isZh = this.config?.language === "zh";
-
-      const title =
-        prompt.type === "confirm"
-          ? isZh
-            ? "确认"
-            : "Confirmation"
-          : prompt.type === "select"
-            ? isZh
-              ? "选择"
-              : "Selection"
-            : prompt.type === "multiselect"
-              ? isZh
-                ? "多选"
-                : "Multi-Selection"
-              : isZh
-                ? "输入"
-                : "Input";
-
-      const lines: string[] = [];
-      lines.push("");
-      lines.push(morandi.userBold("  Orbit " + title));
-      lines.push(morandi.gray("  " + "─".repeat(columns - 4)));
-      lines.push("");
-      const messageLines = prompt.message
-        .split("\n")
-        .flatMap((line) => this.wrapLine(stripAnsiCodes(line), columns - 8));
-      for (let i = 0; i < Math.min(messageLines.length, 5); i++) {
-        const prefix = i === 0 ? "? " : "  ";
-        lines.push(
-          "  " + morandi.cyan(prefix) + morandi.white(messageLines[i]),
-        );
-      }
-      if (messageLines.length > 5) {
-        lines.push(
-          "  " +
-            morandi.dim(
-              isZh
-                ? `... 还有 ${messageLines.length - 5} 行`
-                : `... ${messageLines.length - 5} more line(s)`,
-            ),
-        );
-      }
-      lines.push("");
-
-      let inputLineRow = 0;
-      if (
-        prompt.type === "select" ||
-        prompt.type === "confirm" ||
-        prompt.type === "multiselect"
-      ) {
-        const isSearchable =
-          prompt.type === "select" || prompt.type === "multiselect";
-        const filteredIndices =
-          prompt.type === "confirm"
-            ? options.map((_, index) => index)
-            : this.ensurePromptSelectionVisible(prompt);
-        const L = filteredIndices.length;
-        if (isSearchable && (prompt.filterActive || prompt.filterQuery)) {
-          const queryText = prompt.filterQuery || "";
-          const searchLabel = isZh ? "过滤" : "filter";
-          const placeholder = isZh ? "输入关键字" : "type keywords";
-          const visibleQuery =
-            queryText.length > 0 ? queryText : morandi.dim(placeholder);
-          const cursor = prompt.filterActive ? morandi.accent("▌") : "";
-          lines.push(
-            "  " +
-              morandi.dim(`${searchLabel}: `) +
-              morandi.white(stripAnsiCodes(visibleQuery)) +
-              cursor +
-              morandi.dim(`  ${L}/${options.length}`),
-          );
-          lines.push("");
-        }
-
-        const maxVisible = Math.max(5, Math.min(12, rows - lines.length - 6));
-
-        let startIdx = 0;
-        const selectedFilteredIndex = filteredIndices.indexOf(
-          prompt.selectedIndex,
-        );
-        if (selectedFilteredIndex >= maxVisible) {
-          startIdx = selectedFilteredIndex - maxVisible + 1;
-        }
-        if (startIdx + maxVisible > L) {
-          startIdx = L - maxVisible;
-        }
-        if (startIdx < 0) startIdx = 0;
-
-        const visibleOptionIndices = filteredIndices.slice(
-          startIdx,
-          startIdx + maxVisible,
-        );
-
-        if (startIdx > 0) {
-          lines.push(
-            morandi.gray(
-              isZh ? "    ▲ 上方还有更多选项" : "    ▲ more options above",
-            ),
-          );
-        }
-
-        if (visibleOptionIndices.length === 0) {
-          lines.push(
-            "    " +
-              morandi.warn(
-                isZh
-                  ? "没有匹配项，按 Esc 清空过滤"
-                  : "No matches. Press Esc to clear the filter.",
-              ),
-          );
-        }
-
-        for (let i = 0; i < visibleOptionIndices.length; i++) {
-          const actualIdx = visibleOptionIndices[i];
-          const opt = options[actualIdx];
-          const isSelected = actualIdx === prompt.selectedIndex;
-          const isChecked = prompt.selectedValues.has(opt.value);
-          const deleteArmed =
-            !!prompt.deletable && prompt.pendingDeleteValue === opt.value;
-
-          let prefix = "    ";
-          if (prompt.type === "multiselect") {
-            prefix = isChecked ? "[x] " : "[ ] ";
-          }
-
-          let lineText = prefix + stripAnsiCodes(opt.label);
-          if (opt.hint) {
-            lineText += ` (${stripAnsiCodes(opt.hint)})`;
-          }
-          if (deleteArmed) {
-            lineText += isZh ? "  再按 Del 删除" : "  Del again to delete";
-          } else if (
-            prompt.deletable &&
-            prompt.type === "select" &&
-            isSelected &&
-            !opt.deleteDisabled
-          ) {
-            lineText += isZh ? "  Del 标记删除" : "  Del to delete";
-          }
-
-          const marker = isSelected ? (deleteArmed ? "  ! " : "  ❯ ") : "    ";
-          const clipped = this.truncatePlainToWidth(
-            lineText.trim(),
-            Math.max(8, columns - this.getStringWidth(marker) - 6),
-          );
-          if (isSelected) {
-            const paint = deleteArmed ? morandi.warn : morandi.accent;
-            lines.push(paint(marker + clipped));
-          } else {
-            lines.push(marker + morandi.gray(clipped));
-          }
-        }
-
-        if (startIdx + maxVisible < L) {
-          lines.push(
-            morandi.gray(
-              isZh ? "    ▼ 下方还有更多选项" : "    ▼ more options below",
-            ),
-          );
-        }
-      } else if (prompt.type === "text" || prompt.type === "password") {
-        inputLineRow = lines.length + 1;
-        const displayVal =
-          prompt.type === "password"
-            ? "*".repeat(prompt.inputValue.length)
-            : prompt.inputValue;
-        lines.push("  " + displayVal);
-        lines.push(
-          "  " + morandi.gray("─".repeat(Math.max(20, displayVal.length + 4))),
-        );
-      }
-
-      // Add padding space
-      const remainingHeight = rows - lines.length - 5;
-      for (let i = 0; i < remainingHeight; i++) {
-        lines.push("");
-      }
-
-      // Slim cat watermark aligned to bottom-right
-      const catWidth = 7;
-      const leftPad = " ".repeat(Math.max(0, columns - catWidth - 4));
-      lines.push(leftPad + morandi.gray(" /\\ /\\ "));
-      lines.push(leftPad + morandi.gray("/ °_° \\"));
-
-      // Footer
-      lines.push(morandi.gray("  " + "─".repeat(columns - 4)));
-      let footerHelp = "";
-      if (
-        (prompt.type === "select" || prompt.type === "multiselect") &&
-        prompt.filterActive
-      ) {
-        footerHelp = isZh
-          ? "输入过滤 · Backspace 删除 · Ctrl+U 清空 · ↑/↓ 选择 · Enter 确认 · Esc 退出过滤"
-          : "type to filter · Backspace edit · Ctrl+U clear · ↑/↓ move · Enter confirm · Esc exit filter";
-      } else if (prompt.type === "multiselect") {
-        footerHelp = isZh
-          ? "↑/↓/j/k 选择 · / 过滤 · Space 勾选 · Enter 确认 · Esc 取消"
-          : "↑/↓/j/k move · / filter · Space toggle · Enter confirm · Esc cancel";
-      } else if (prompt.type === "select" && prompt.deletable) {
-        footerHelp = isZh
-          ? "↑/↓/j/k 选择 · / 过滤 · Enter 打开 · Del 标记 · 再 Del 删除 · Esc 取消"
-          : "↑/↓/j/k move · / filter · Enter open · Del mark · Del again delete · Esc cancel";
-      } else if (prompt.type === "select") {
-        footerHelp = isZh
-          ? "↑/↓/j/k 选择 · / 过滤 · Enter 确认 · Esc 取消"
-          : "↑/↓/j/k move · / filter · Enter select · Esc cancel";
-      } else if (prompt.type === "confirm") {
-        footerHelp = isZh
-          ? "↑/↓/j/k 选择 · Enter 确认 · Esc 取消"
-          : "↑/↓/j/k move · Enter select · Esc cancel";
+    const promptState = this.promptSession.state;
+    if (promptState) {
+      const output = renderPromptScreen(promptState, {
+        columns,
+        rows,
+        isZh: this.config?.language === "zh",
+      });
+      if (this.originalWrite) {
+        Reflect.apply(this.originalWrite, process.stdout, [output]);
       } else {
-        footerHelp = isZh
-          ? "Ctrl+A/E 跳转 · Ctrl+W 删词 · Enter 确认 · Esc 取消"
-          : "Ctrl+A/E jump · Ctrl+W delete word · Enter confirm · Esc cancel";
+        process.stdout.write(output);
       }
-      lines.push(
-        "  " +
-          morandi.dim(
-            this.truncatePlainToWidth(footerHelp, Math.max(12, columns - 4)),
-          ),
-      );
-
-      let cursorSequence = "\x1b[?25l";
-      if (prompt.type === "text" || prompt.type === "password") {
-        cursorSequence = `\x1b[${inputLineRow};${2 + prompt.cursorPosition + 1}H\x1b[?25h`;
-      }
-
-      const output =
-        "\x1b[?25l\x1b[H" +
-        lines.map((line) => line + "\x1b[K").join("\n") +
-        "\x1b[J" +
-        cursorSequence;
-      this.originalWrite(output);
       return;
     }
-
     const isWaitingInput = this.resolveInput !== null;
     const isInputActive =
       isWaitingInput || this.thinkingKeypressListener !== null;
@@ -3002,11 +2056,11 @@ export class FullscreenTui {
         const hint = isZh
           ? "Esc 关闭建议 · Ctrl+P 重新打开命令面板"
           : "Esc closes suggestions · Ctrl+P reopens command palette";
-        const messageText = this.truncatePlainToWidth(
+        const messageText = truncatePlainToWidth(
           message,
           Math.max(8, popupWidth - 2),
         );
-        const hintText = this.truncatePlainToWidth(
+        const hintText = truncatePlainToWidth(
           hint,
           Math.max(8, popupWidth - 2),
         );
@@ -3062,8 +2116,8 @@ export class FullscreenTui {
         morandi.gray("  ·  ") +
         morandi.white(
           languageIsZh
-            ? `历史搜索: ${this.truncatePlainToWidth(query, 28)}`
-            : `history search: ${this.truncatePlainToWidth(query, 28)}`,
+            ? `历史搜索: ${truncatePlainToWidth(query, 28)}`
+            : `history search: ${truncatePlainToWidth(query, 28)}`,
         );
     } else {
       const displayedModel = this.activeModelName || this.modelNameGetter();
@@ -3239,7 +2293,6 @@ export class FullscreenTui {
     const slabLabel = this.cacheTelemetry
       ? ` slab:${this.cacheTelemetry.slabHash.slice(0, 8)}`
       : "";
-    const primerLabel = this.cacheTelemetry?.primed ? " primed" : "";
     const cachePrefix = this.cacheTelemetry?.degraded
       ? languageIsZh
         ? "[缓存!]"
@@ -3249,8 +2302,8 @@ export class FullscreenTui {
         : "[cache]";
     let cacheText =
       cacheInput <= 0
-        ? `${cachePrefix} ${this.cacheTelemetry?.primed ? (languageIsZh ? "已预热" : "primed") : languageIsZh ? "待命" : "idle"}${slabLabel}`
-        : `${cachePrefix} ${languageIsZh ? "命中" : "hit"}: ${hitRate.toFixed(0)}% (${(cacheRead / 1000).toFixed(0)}k ${languageIsZh ? "命中" : "hit"}/${(cacheMiss / 1000).toFixed(0)}k ${languageIsZh ? "未命中" : "miss"})${slabLabel}${primerLabel}`;
+        ? `${cachePrefix} ${languageIsZh ? "等待遥测" : "awaiting telemetry"}${slabLabel}`
+        : `${cachePrefix} ${languageIsZh ? "命中" : "hit"}: ${hitRate.toFixed(0)}% (${(cacheRead / 1000).toFixed(0)}k ${languageIsZh ? "命中" : "hit"}/${(cacheMiss / 1000).toFixed(0)}k ${languageIsZh ? "未命中" : "miss"})${slabLabel}`;
     if (this.getStringWidth(cacheText) > availableWidth) {
       cacheText = `${cachePrefix} ${hitRate.toFixed(0)}% (${(cacheRead / 1000).toFixed(0)}k/${(cacheInput / 1000).toFixed(0)}k)${slabLabel}`;
     }
@@ -3648,7 +2701,7 @@ export class FullscreenTui {
       // 局部增量重绘
       let cursorSequence = "";
       const { lineIndex: cursorLineIndex, xOffset } =
-        this.getCursorPositionInWrappedInput(wrappedInputLines);
+        getCursorPositionInWrappedInput(wrappedInputLines, this.cursorPosition);
       // Use pre-calculated constant for the input prefix width instead of recomputing
       const lineStartX = cursorLineIndex === 0 ? INPUT_PREFIX_WIDTH : 12;
       const targetX = lineStartX + xOffset;
@@ -3680,7 +2733,7 @@ export class FullscreenTui {
     let cursorSequence = "";
     if (this.resolveInput || this.thinkingKeypressListener !== null) {
       const { lineIndex: cursorLineIndex, xOffset } =
-        this.getCursorPositionInWrappedInput(wrappedInputLines);
+        getCursorPositionInWrappedInput(wrappedInputLines, this.cursorPosition);
       const lineStartX = cursorLineIndex === 0 ? INPUT_PREFIX_WIDTH : 12;
       const targetX = lineStartX + xOffset;
       const linesUp = formattedLines.length - cursorLineIndex + 1; // 距离状态行向上数 linesUp 行
@@ -3693,241 +2746,26 @@ export class FullscreenTui {
     process.stdout.write(finalOutput);
   }
 
-  private isFullWidth(codePoint: number): boolean {
-    if (Number.isNaN(codePoint)) {
-      return false;
-    }
-    if (
-      codePoint === 0x25e2 || // ◢
-      codePoint === 0x25e3 || // ◣
-      codePoint === 0x25e4 || // ◤
-      codePoint === 0x25e5 || // ◥
-      codePoint === 0x2590 || // ▐
-      codePoint === 0x258c || // ▌
-      codePoint === 0x25cf // ●
-    ) {
-      return true;
-    }
-    return (
-      (codePoint >= 0x1100 && codePoint <= 0x115f) || // Hangul Jamo
-      codePoint === 0x2329 || // LEFT-POINTING ANGLE BRACKET
-      codePoint === 0x232a || // RIGHT-POINTING ANGLE BRACKET
-      (codePoint >= 0x2e80 && codePoint <= 0x3247 && codePoint !== 0x303f) || // CJK Radicals Supplement .. Enclosed CJK Letters and Months
-      (codePoint >= 0x3250 && codePoint <= 0x4dbf) || // Enclosed CJK Letters and Months .. CJK Unified Ideographs Extension A
-      (codePoint >= 0x4e00 && codePoint <= 0xa4c6) || // CJK Unified Ideographs .. Yi Radicals
-      (codePoint >= 0xa960 && codePoint <= 0xa97c) || // Hangul Jamo Extended-A
-      (codePoint >= 0xac00 && codePoint <= 0xd7a3) || // Hangul Syllables
-      (codePoint >= 0xf900 && codePoint <= 0xfaff) || // CJK Compatibility Ideographs
-      (codePoint >= 0xfe10 && codePoint <= 0xfe19) || // Vertical Forms
-      (codePoint >= 0xfe30 && codePoint <= 0xfe6b) || // CJK Compatibility Forms .. Small Form Variants
-      (codePoint >= 0xff01 && codePoint <= 0xff60) || // Halfwidth and Fullwidth Forms
-      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-      (codePoint >= 0x1b000 && codePoint <= 0x1b001) || // Kana Supplement
-      (codePoint >= 0x1f200 && codePoint <= 0x1f251) || // Enclosed Ideographic Supplement
-      (codePoint >= 0x20000 && codePoint <= 0x3fffd) || // CJK Unified Ideographs Extension B .. Tertiary Ideographic Plane
-      (codePoint >= 0x1f300 && codePoint <= 0x1f9ff) || // Emojis
-      (codePoint >= 0x1f600 && codePoint <= 0x1f64f) || // Emoticons
-      (codePoint >= 0x1f680 && codePoint <= 0x1f6ff) // Transport & Map
-    );
-  }
-
   private truncateToWidth(str: string, maxW: number): string {
-    let width = 0;
-    let result = "";
-    for (const char of str) {
-      const code = char.codePointAt(0);
-      if (code === undefined) continue;
-      const charW = this.isFullWidth(code) ? 2 : 1;
-      if (width + charW > maxW) {
-        break;
-      }
-      width += charW;
-      result += char;
-    }
-    return result;
+    return truncateToWidth(str, maxW);
   }
 
   private wrapLine(line: string, maxWidth: number): string[] {
-    const cleanLine = line.replace(
-      /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g,
-      "",
-    );
-    if (this.getStringWidth(cleanLine) <= maxWidth) {
-      return [line];
-    }
-
-    const lines: string[] = [];
-    let currentLine = "";
-    let currentWidth = 0;
-
-    const ansiRegex =
-      /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
-    let activeColor = "";
-
-    let i = 0;
-    while (i < line.length) {
-      ansiRegex.lastIndex = i;
-      const match = ansiRegex.exec(line);
-      if (match && match.index === i) {
-        const ansiCode = match[0];
-        currentLine += ansiCode;
-        if (ansiCode.includes("m") && !ansiCode.includes("[0m")) {
-          activeColor = ansiCode;
-        } else if (ansiCode.includes("[0m")) {
-          activeColor = "";
-        }
-        i += ansiCode.length;
-        continue;
-      }
-
-      const code = line.codePointAt(i);
-      let charLen = 1;
-      if (code && code > 0xffff) {
-        charLen = 2;
-      }
-      const charStr = line.substring(i, i + charLen);
-      const charW = this.isFullWidth(code || 0) ? 2 : 1;
-
-      if (currentWidth + charW > maxWidth) {
-        if (activeColor) {
-          currentLine += "\x1b[0m";
-        }
-        lines.push(currentLine);
-        currentLine = activeColor + charStr;
-        currentWidth = charW;
-      } else {
-        currentLine += charStr;
-        currentWidth += charW;
-      }
-      i += charLen;
-    }
-
-    if (currentLine) {
-      lines.push(currentLine);
-    }
-    return lines;
+    return wrapAnsiLine(line, maxWidth);
   }
 
   private getStringWidth(str: string): number {
-    const cleanStr = str.replace(
-      /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g,
-      "",
-    );
-    let width = 0;
-    for (let i = 0; i < cleanStr.length; i++) {
-      const code = cleanStr.codePointAt(i);
-      if (!code) continue;
-      if (code > 0xffff) {
-        i++;
-      }
-      if (this.isFullWidth(code)) {
-        width += 2;
-      } else {
-        width += 1;
-      }
-    }
-    return width;
-  }
-
-  private wrapText(str: string, maxWidth: number): string[] {
-    const lines: string[] = [];
-    let currentLine = "";
-    let currentWidth = 0;
-
-    for (let i = 0; i < str.length; i++) {
-      const code = str.codePointAt(i);
-      if (!code) continue;
-      let char = str.charAt(i);
-      if (code > 0xffff) {
-        char = str.substring(i, i + 2);
-        i++;
-      }
-      const charWidth = this.isFullWidth(code) ? 2 : 1;
-      if (currentWidth + charWidth > maxWidth) {
-        lines.push(currentLine);
-        currentLine = char;
-        currentWidth = charWidth;
-      } else {
-        currentLine += char;
-        currentWidth += charWidth;
-      }
-    }
-    if (currentLine || lines.length === 0) {
-      lines.push(currentLine);
-    }
-    return lines;
+    return getStringWidth(str);
   }
 
   private wrapInputText(str: string, maxWidth: number): WrappedInputLine[] {
-    const lines: WrappedInputLine[] = [];
-    let currentLine = "";
-    let currentWidth = 0;
-    let currentStart = 0;
-
-    for (let i = 0; i < str.length; ) {
-      const code = str.codePointAt(i);
-      if (!code) {
-        i++;
-        continue;
-      }
-
-      if (code === 10) {
-        lines.push({ text: currentLine, start: currentStart, end: i });
-        i++;
-        currentLine = "";
-        currentWidth = 0;
-        currentStart = i;
-        continue;
-      }
-
-      const charLen = code > 0xffff ? 2 : 1;
-      const char = str.substring(i, i + charLen);
-      const charWidth = this.isFullWidth(code) ? 2 : 1;
-      if (currentLine && currentWidth + charWidth > maxWidth) {
-        lines.push({ text: currentLine, start: currentStart, end: i });
-        currentLine = "";
-        currentWidth = 0;
-        currentStart = i;
-      }
-
-      currentLine += char;
-      currentWidth += charWidth;
-      i += charLen;
-    }
-
-    lines.push({ text: currentLine, start: currentStart, end: str.length });
-    return lines;
+    return wrapInputText(str, maxWidth);
   }
 
   private formatWrappedLines(
     wrappedLines: string[],
     inputLength: number,
   ): string[] {
-    let charIndex = 0;
-    const formattedLines: string[] = [];
-
-    for (const line of wrappedLines) {
-      let formattedLine = "";
-      for (let i = 0; i < line.length; i++) {
-        const char = line.charAt(i);
-        const code = line.codePointAt(i);
-        let increment = 1;
-        let charStr = char;
-        if (code && code > 0xffff) {
-          charStr = line.substring(i, i + 2);
-          i++;
-          increment = 2;
-        }
-
-        if (charIndex < inputLength) {
-          formattedLine += `\x1b[1;38;2;245;242;232m${charStr}\x1b[0m`; // morandi.whiteBold
-        } else {
-          formattedLine += `\x1b[38;2;148;146;138m${charStr}\x1b[0m`; // morandi.dim
-        }
-        charIndex += increment;
-      }
-      formattedLines.push(formattedLine);
-    }
-    return formattedLines;
+    return formatWrappedLines(wrappedLines, inputLength);
   }
 }

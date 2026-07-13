@@ -118,9 +118,7 @@ export class DiffView {
     const output: string[] = [];
     output.push(
       picocolors.gray(
-        "--- Diff: " +
-          picocolors.bold(picocolors.cyan(filePath)) +
-          " ---"
+        "--- Diff: " + picocolors.bold(picocolors.cyan(filePath)) + " ---",
       ),
     );
 
@@ -193,15 +191,11 @@ export class DiffView {
             }
             // Deletions
             for (const line of sub.linesB) {
-              output.push(
-                `  ${picocolors.red(`- ${line}`)}`,
-              );
+              output.push(`  ${picocolors.red(`- ${line}`)}`);
             }
             // Insertions
             for (const line of sub.linesA) {
-              output.push(
-                `  ${picocolors.green(`+ ${line}`)}`,
-              );
+              output.push(`  ${picocolors.green(`+ ${line}`)}`);
             }
             currentB = sub.endB;
           }
@@ -215,7 +209,11 @@ export class DiffView {
       }
     }
 
-    output.push(picocolors.gray("----------------------------------------------------------------------------"));
+    output.push(
+      picocolors.gray(
+        "----------------------------------------------------------------------------",
+      ),
+    );
     return output.join("\n");
   }
 }

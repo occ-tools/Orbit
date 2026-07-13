@@ -7,28 +7,31 @@ export class Compactor {
     for (const msg of messages) {
       if (msg.role === "user") {
         const text = msg.content
-          .filter((c: any) => c.type === "text")
-          .map((c: any) => c.text)
+          .flatMap((content) => (content.type === "text" ? [content.text] : []))
           .join(" ");
         if (text) steps.push(`User Goal: ${text}`);
       } else if (msg.role === "assistant") {
         const text = msg.content
-          .filter((c: any) => c.type === "text")
-          .map((c: any) => c.text)
+          .flatMap((content) => (content.type === "text" ? [content.text] : []))
           .join(" ");
         const tools = msg.content
-          .filter((c: any) => c.type === "tool_call")
-          .map((c: any) => `Called ${c.toolCall.name}`)
+          .flatMap((content) =>
+            content.type === "tool_call"
+              ? [`Called ${content.toolCall.name}`]
+              : [],
+          )
           .join(", ");
 
         if (tools) steps.push(`Action: ${tools}`);
         if (text) steps.push(`Orchestrator plan: ${text}`);
       } else if (msg.role === "tool") {
         const results = msg.content
-          .filter((c: any) => c.type === "tool_result")
-          .map((c: any) => {
-            const tr = c.toolResult;
-            return `Result of ${tr.name}: ${tr.isError ? "Failed" : "Success"} (${tr.content.substring(0, 100)}...)`;
+          .flatMap((content) => {
+            if (content.type !== "tool_result") return [];
+            const tr = content.toolResult;
+            return [
+              `Result of ${tr.name}: ${tr.isError ? "Failed" : "Success"} (${tr.content.substring(0, 100)}...)`,
+            ];
           })
           .join("\n");
         if (results) steps.push(results);

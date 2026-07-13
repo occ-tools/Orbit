@@ -5,6 +5,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { eventBus } from "../events/EventBus.js";
 import { CheckpointManager } from "@orbit-build/sandbox";
+import { resolveSafePath } from "@orbit-build/shared";
 
 const execPromise = promisify(exec);
 
@@ -23,7 +24,12 @@ export class VerificationContractManager {
     private cwd: string,
     private sessionId: string,
     private checkpointManager: CheckpointManager,
-  ) {
+    private trusted = false,
+    private commandTimeoutMs = 120000,
+  ) {}
+
+  public initialize(): void {
+    if (!this.trusted) return;
     this.loadContract();
   }
 
@@ -37,10 +43,15 @@ export class VerificationContractManager {
         if (validated.success) {
           this.contract = validated.data;
         } else {
-          console.error(`[VerificationContract] Validation failed:`, validated.error);
+          console.error(
+            `[VerificationContract] Validation failed:`,
+            validated.error,
+          );
         }
       } catch (e: any) {
-        console.error(`[VerificationContract] Failed to load/parse: ${e.message}`);
+        console.error(
+          `[VerificationContract] Failed to load/parse: ${e.message}`,
+        );
       }
     }
   }
@@ -49,7 +60,10 @@ export class VerificationContractManager {
     return this.contract !== null;
   }
 
-  public async runVerification(): Promise<{ success: boolean; error?: string }> {
+  public async runVerification(): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
     if (!this.contract) {
       return { success: true };
     }
@@ -61,9 +75,15 @@ export class VerificationContractManager {
       const suites = this.contract.suites;
       for (const [name, command] of Object.entries(suites)) {
         if (command) {
-          eventBus.emitEvent("info", { message: `Running verification suite: ${name} (${command})...` });
+          eventBus.emitEvent("info", {
+            message: `Running verification suite: ${name} (${command})...`,
+          });
           try {
-            await execPromise(command, { cwd: this.cwd });
+            await execPromise(command, {
+              cwd: this.cwd,
+              timeout: this.commandTimeoutMs,
+              maxBuffer: 1024 * 1024,
+            });
           } catch (err: any) {
             const output = err.stdout || err.stderr || err.message;
             eventBus.emitEvent("verification_ended", {
@@ -79,11 +99,18 @@ export class VerificationContractManager {
       }
 
       // 2. Check allowed modified files bounds
-      if (this.contract.allowedModifiedFiles && this.contract.allowedModifiedFiles.length > 0) {
-        eventBus.emitEvent("info", { message: "Checking modified files bounds..." });
+      if (
+        this.contract.allowedModifiedFiles &&
+        this.contract.allowedModifiedFiles.length > 0
+      ) {
+        eventBus.emitEvent("info", {
+          message: "Checking modified files bounds...",
+        });
         let modifiedFiles: string[] = [];
         try {
-          const { stdout } = await execPromise("git status --porcelain", { cwd: this.cwd });
+          const { stdout } = await execPromise("git status --porcelain", {
+            cwd: this.cwd,
+          });
           modifiedFiles = stdout
             .split("\n")
             .filter((line) => line.length > 3)
@@ -98,7 +125,12 @@ export class VerificationContractManager {
               }
               return filePart;
             })
-            .filter((file) => file.length > 0 && !file.startsWith(".orbit/") && file !== ".orbit");
+            .filter(
+              (file) =>
+                file.length > 0 &&
+                !file.startsWith(".orbit/") &&
+                file !== ".orbit",
+            );
         } catch {
           // Fallback if git is not initialized
         }
@@ -129,10 +161,15 @@ export class VerificationContractManager {
       }
 
       // 3. Verify required files are produced
-      if (this.contract.requiredFiles && this.contract.requiredFiles.length > 0) {
-        eventBus.emitEvent("info", { message: "Verifying required files existence..." });
+      if (
+        this.contract.requiredFiles &&
+        this.contract.requiredFiles.length > 0
+      ) {
+        eventBus.emitEvent("info", {
+          message: "Verifying required files existence...",
+        });
         for (const requiredFile of this.contract.requiredFiles) {
-          const filePath = path.resolve(this.cwd, requiredFile);
+          const filePath = resolveSafePath(this.cwd, requiredFile);
           if (!fs.existsSync(filePath)) {
             eventBus.emitEvent("verification_ended", {
               success: false,

@@ -9,14 +9,17 @@ export class EventBus extends EventEmitter {
   public emitEvent<T extends OrbitEvent["type"]>(
     type: T,
     payload: Extract<OrbitEvent, { type: T }>["payload"],
-  ): void {
+  ): boolean {
     // Validate structure at runtime
     const validation = OrbitEventSchema.safeParse({ type, payload });
     if (!validation.success) {
-      console.error(`[EventBus Validation Error] Type: ${type}`, validation.error);
+      return false;
     }
-    this.emit(type, payload);
-    this.emit("*", { type, payload });
+    if (validation.data.type !== "error" || this.listenerCount("error") > 0) {
+      this.emit(validation.data.type, validation.data.payload);
+    }
+    this.emit("*", validation.data);
+    return true;
   }
 }
 

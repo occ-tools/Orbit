@@ -1,30 +1,145 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  renameSync,
+} from "fs";
 import { promises as fsPromises } from "fs";
-import { join, dirname, resolve } from "path";
+import { join, dirname, isAbsolute, resolve } from "path";
 import { createHash } from "crypto";
 import glob from "fast-glob";
 import { z } from "zod";
 import { ConfigLoader } from "@orbit-build/config";
-import { resolveSafePath, getGitBranch } from "@orbit-build/shared";
+import { resolveSafePath } from "@orbit-build/shared";
 import ts from "typescript";
 import { ASTChunker } from "./ASTChunker.js";
 import { HybridSearch } from "./HybridSearch.js";
+import { getOrbitCachePath } from "./cachePaths.js";
 import {
   OpenAIProvider,
-  DeepSeekOpenAIProvider,
+  isOfficialDeepSeekApi,
   OllamaProvider,
+  type ModelProvider,
+  type ProviderRuntimeOptions,
 } from "@orbit-build/model-providers";
 
+interface EmbeddingProviderConfig {
+  type?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
+  apiKeyHeader?: string;
+  apiKeyPrefix?: string;
+  headers?: Record<string, string>;
+  requestTimeoutMs?: number;
+  maxRetries?: number;
+}
+
+interface EmbeddingConfig {
+  provider?: { default?: string; embedding?: string };
+  providers?: Record<string, EmbeddingProviderConfig | undefined>;
+}
+
+const inFlightIndexes = new Map<string, Promise<void>>();
+
+function workspaceIndexKey(cwd: string): string {
+  const absolute = resolve(cwd).replace(/\\/g, "/");
+  return process.platform === "win32" ? absolute.toLowerCase() : absolute;
+}
+
+function resolveConfiguredApiKey(
+  provider: EmbeddingProviderConfig,
+): string | undefined {
+  try {
+    return (
+      provider.apiKey ||
+      (provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : undefined)
+    );
+  } catch {
+    return provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : undefined;
+  }
+}
+
+function providerRuntimeOptions(
+  id: string,
+  provider: EmbeddingProviderConfig,
+): ProviderRuntimeOptions {
+  return {
+    id,
+    apiKeyEnv: provider.apiKeyEnv,
+    apiKeyHeader: provider.apiKeyHeader,
+    apiKeyPrefix: provider.apiKeyPrefix,
+    headers: provider.headers,
+    requestTimeoutMs: provider.requestTimeoutMs,
+    maxRetries: provider.maxRetries,
+    disablePreheat: true,
+  };
+}
+
+function findConfiguredOpenAIEmbeddingProvider(
+  config: EmbeddingConfig,
+): ModelProvider | null {
+  const candidates = Object.entries(config.providers || {}).sort(
+    ([leftId], [rightId]) =>
+      embeddingProviderRank(rightId) - embeddingProviderRank(leftId),
+  );
+  for (const [id, provider] of candidates) {
+    if (
+      !provider ||
+      (provider.type !== "openai" && provider.type !== "openai-compatible")
+    ) {
+      continue;
+    }
+    const resolved = createEmbeddingProvider(id, provider);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+function embeddingProviderRank(id: string): number {
+  if (/embed/i.test(id)) return 3;
+  if (id === "openai") return 2;
+  return 1;
+}
+
+function createEmbeddingProvider(
+  id: string,
+  provider: EmbeddingProviderConfig,
+): ModelProvider | null {
+  const baseUrl = provider.baseUrl;
+  if (provider.type === "ollama") {
+    return new OllamaProvider(baseUrl);
+  }
+  if (provider.type !== "openai" && provider.type !== "openai-compatible") {
+    return null;
+  }
+  if (
+    (provider.type === "openai-compatible" && !baseUrl) ||
+    (baseUrl && isOfficialDeepSeekApi(baseUrl))
+  ) {
+    return null;
+  }
+  const apiKey = resolveConfiguredApiKey(provider);
+  if (!apiKey) return null;
+  return new OpenAIProvider(
+    apiKey,
+    baseUrl,
+    providerRuntimeOptions(id, provider),
+  );
+}
+
 export const SymbolEntrySchema = z.object({
-  name: z.string(),
+  name: z.string().min(1).max(4096),
   type: z.enum(["class", "interface", "function", "constant", "type"]),
-  line: z.number(),
+  line: z.number().int().positive(),
 });
 
 export const FileIndexSchema = z.object({
-  mtime: z.number(),
+  mtime: z.number().finite().nonnegative(),
+  size: z.number().int().nonnegative().optional(),
   symbols: z.array(SymbolEntrySchema),
-  imports: z.array(z.string()).optional(),
+  imports: z.array(z.string().max(4096)).optional(),
 });
 
 export const SymbolIndexSchema = z.object({
@@ -36,28 +151,39 @@ export type SymbolEntry = z.infer<typeof SymbolEntrySchema>;
 export type FileIndex = z.infer<typeof FileIndexSchema>;
 export type SymbolIndex = z.infer<typeof SymbolIndexSchema>;
 
+const EmbeddingCacheFileSchema = z.object({
+  model: z.string().min(1).max(1024),
+  cache: z.record(
+    z.string().regex(/^[0-9a-f]{64}$/),
+    z.array(z.number().finite()).min(1).max(32768),
+  ),
+});
+
+const PackageJsonSchema = z.object({
+  name: z.string().min(1).max(4096).optional(),
+});
+
 class EmbeddingCache {
   private cache: Record<string, number[]> = {};
-  private cachePath: string;
+  private cachePath: string | undefined;
 
   constructor(
-    cwd: string,
+    private cwd: string,
     private modelName: string,
-  ) {
-    const branchName = getGitBranch(cwd);
-    this.cachePath = branchName
-      ? join(cwd, ".orbit", "branches", branchName, "embedding_cache.json")
-      : join(cwd, ".orbit", "embedding_cache.json");
+  ) {}
+
+  public initialize(): void {
+    this.cachePath = getOrbitCachePath(this.cwd, "embedding_cache.json");
     this.load();
   }
 
-  private load() {
-    if (existsSync(this.cachePath)) {
+  private load(): void {
+    if (this.cachePath && existsSync(this.cachePath)) {
       try {
         const raw = readFileSync(this.cachePath, "utf8");
-        const parsed = JSON.parse(raw);
-        if (parsed.model === this.modelName && parsed.cache) {
-          this.cache = parsed.cache;
+        const parsed = EmbeddingCacheFileSchema.safeParse(JSON.parse(raw));
+        if (parsed.success && parsed.data.model === this.modelName) {
+          this.cache = parsed.data.cache;
         } else {
           this.cache = {};
         }
@@ -67,7 +193,8 @@ class EmbeddingCache {
     }
   }
 
-  public save() {
+  public save(): void {
+    if (!this.cachePath) return;
     try {
       const parentDir = dirname(this.cachePath);
       if (!existsSync(parentDir)) {
@@ -90,56 +217,77 @@ class EmbeddingCache {
     return this.cache[hash];
   }
 
-  public set(text: string, vector: number[]) {
+  public set(text: string, vector: number[]): void {
+    if (
+      vector.length === 0 ||
+      vector.length > 32768 ||
+      vector.some((value) => !Number.isFinite(value))
+    ) {
+      return;
+    }
     const hash = createHash("sha256").update(text).digest("hex");
     this.cache[hash] = vector;
   }
 }
 
-export function getEmbeddingProvider(config: any) {
+/**
+ * Resolves an embedding-capable provider without probing unsupported APIs.
+ *
+ * The official DeepSeek API exposes chat/FIM endpoints but no embeddings
+ * endpoint. When DeepSeek is the active chat provider, use a separately
+ * configured OpenAI provider with a resolved key or fall back to lexical BM25.
+ */
+export function getEmbeddingProvider(
+  config: EmbeddingConfig,
+): ModelProvider | null {
+  const embeddingProviderId = config.provider?.embedding;
+  if (embeddingProviderId) {
+    const embeddingProvider = config.providers?.[embeddingProviderId];
+    return embeddingProvider
+      ? createEmbeddingProvider(embeddingProviderId, embeddingProvider)
+      : null;
+  }
+
   const providerId = config.provider?.default || "deepseek-openai";
   const providerConfig = config.providers?.[providerId];
 
   if (!providerConfig) {
-    return new DeepSeekOpenAIProvider(
-      process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY || "no-key",
-    );
+    return findConfiguredOpenAIEmbeddingProvider(config);
   }
 
-  const apiKey =
-    providerConfig.apiKey ||
-    (providerConfig.apiKeyEnv
-      ? process.env[providerConfig.apiKeyEnv]
-      : undefined);
-  const baseUrl = providerConfig.baseUrl;
-
-  switch (providerConfig.type) {
-    case "openai":
-      return new OpenAIProvider(apiKey, baseUrl);
-    case "ollama":
-      return new OllamaProvider(baseUrl);
-    case "openai-compatible":
-    case "anthropic-compatible":
-    default:
-      return new DeepSeekOpenAIProvider(apiKey, baseUrl);
-  }
+  return (
+    createEmbeddingProvider(providerId, providerConfig) ??
+    findConfiguredOpenAIEmbeddingProvider(config)
+  );
 }
 
 export class SymbolIndexer {
   public indexPath: string;
 
   constructor(private cwd: string) {
-    const branchName = getGitBranch(cwd);
-    this.indexPath = branchName
-      ? join(cwd, ".orbit", "branches", branchName, "symbols.json")
-      : join(cwd, ".orbit", "symbols.json");
+    this.indexPath = resolve(cwd, ".orbit", "symbols.json");
   }
 
   /**
    * Run the indexer asynchronously and incrementally.
    */
-  public async index(): Promise<void> {
+  public index(): Promise<void> {
+    const key = workspaceIndexKey(this.cwd);
+    const existing = inFlightIndexes.get(key);
+    if (existing) return existing;
+
+    const tracked = this.performIndex().finally(() => {
+      if (inFlightIndexes.get(key) === tracked) {
+        inFlightIndexes.delete(key);
+      }
+    });
+    inFlightIndexes.set(key, tracked);
+    return tracked;
+  }
+
+  private async performIndex(): Promise<void> {
     try {
+      this.initializeIndexPath();
       // Skip indexing if cwd is user's home directory or system root directory
       const normCwd = resolve(this.cwd).toLowerCase().replace(/\\/g, "/");
       const { homedir } = await import("os");
@@ -176,7 +324,9 @@ export class SymbolIndexer {
         "**/.rustup/**",
         "**/.orbit/**",
       ];
-      const ignorePatterns = Array.from(new Set([...userIgnores, ...defaultSystemIgnores]));
+      const ignorePatterns = Array.from(
+        new Set([...userIgnores, ...defaultSystemIgnores]),
+      );
 
       // Load existing index if present
       let indexData: SymbolIndex = {
@@ -186,11 +336,7 @@ export class SymbolIndexer {
       if (existsSync(this.indexPath)) {
         try {
           const raw = await fsPromises.readFile(this.indexPath, "utf8");
-          const parsed = JSON.parse(raw);
-          const validated = SymbolIndexSchema.safeParse(parsed);
-          if (validated.success) {
-            indexData = validated.data;
-          }
+          indexData = this.parseSymbolIndex(raw) ?? indexData;
         } catch {
           // Ignore parse errors and start fresh
         }
@@ -198,11 +344,22 @@ export class SymbolIndexer {
 
       const hybridSearch = new HybridSearch(this.cwd);
       await hybridSearch.load();
+      if (
+        Object.keys(indexData.files).length > 0 &&
+        !hybridSearch.hasValidCaches()
+      ) {
+        await hybridSearch.clear();
+        indexData = {
+          files: {},
+          indexedAt: new Date().toISOString(),
+        };
+      }
 
       const embeddingModel =
         config.models?.embedding || "text-embedding-3-small";
       const embedCache = new EmbeddingCache(this.cwd, embeddingModel);
-      let provider: any = null;
+      embedCache.initialize();
+      let provider: ModelProvider | null = null;
       try {
         provider = getEmbeddingProvider(config);
       } catch {
@@ -215,36 +372,42 @@ export class SymbolIndexer {
         ignore: ignorePatterns,
         onlyFiles: true,
         absolute: false,
+        followSymbolicLinks: false,
         suppressErrors: true,
       });
 
       let gitFiles: Set<string> | null = null;
       try {
         const { execSync } = await import("child_process");
-        const stdout = execSync("git ls-files --cached --others --exclude-standard", {
-          cwd: this.cwd,
-          stdio: ["ignore", "pipe", "ignore"],
-        }).toString();
+        const stdout = execSync(
+          "git ls-files --cached --others --exclude-standard",
+          {
+            cwd: this.cwd,
+            stdio: ["ignore", "pipe", "ignore"],
+          },
+        ).toString();
         gitFiles = new Set(
           stdout
             .split(/\r?\n/)
             .map((f) => f.trim())
-            .filter(Boolean)
+            .filter(Boolean),
         );
       } catch {
         // Not a git repo or git not installed/available
       }
 
-      const filteredFiles = gitFiles
-        ? files.filter((f) => gitFiles!.has(f))
-        : files;
+      const filteredFiles = (
+        gitFiles ? files.filter((f) => gitFiles!.has(f)) : files
+      ).sort((left, right) => left.localeCompare(right));
 
       const maxFiles = config.context?.maxFilesToIndex ?? 5000;
-      const slicedFiles = filteredFiles.length > maxFiles
-        ? filteredFiles.slice(0, maxFiles)
-        : filteredFiles;
+      const slicedFiles =
+        filteredFiles.length > maxFiles
+          ? filteredFiles.slice(0, maxFiles)
+          : filteredFiles;
 
       const activeFiles = new Set<string>();
+      const maxFileBytes = config.context.maxFileSizeKb * 1024;
       let changed = false;
       let i = 0;
 
@@ -253,16 +416,18 @@ export class SymbolIndexer {
         if (i % 50 === 0) {
           await new Promise<void>((res) => setImmediate(res));
         }
-        // Resolve absolute path safely to avoid path traversal
-        const absolutePath = resolveSafePath(this.cwd, relativePath);
-        activeFiles.add(relativePath);
-
         try {
+          // Resolve each path independently so one unsafe symlink cannot abort indexing.
+          const absolutePath = resolveSafePath(this.cwd, relativePath);
           const stats = await fsPromises.stat(absolutePath);
+          if (!stats.isFile() || stats.size > maxFileBytes) {
+            continue;
+          }
+          activeFiles.add(relativePath);
           const mtime = stats.mtimeMs;
           const cached = indexData.files[relativePath];
 
-          if (cached && cached.mtime === mtime) {
+          if (cached && cached.mtime === mtime && cached.size === stats.size) {
             continue;
           }
 
@@ -284,11 +449,12 @@ export class SymbolIndexer {
             }
           }
 
-          if (uncachedTexts.length > 0 && provider) {
+          if (uncachedTexts.length > 0 && provider?.embed) {
             try {
               const embeddingModel =
                 config.models?.embedding || "text-embedding-3-small";
-              const vectors = await provider.embed(uncachedTexts, {
+              const embed = provider.embed.bind(provider);
+              const vectors = await embed(uncachedTexts, {
                 model: embeddingModel,
               });
               let vectorIdx = 0;
@@ -314,6 +480,7 @@ export class SymbolIndexer {
 
           indexData.files[relativePath] = {
             mtime,
+            size: stats.size,
             symbols,
             imports,
           };
@@ -359,20 +526,19 @@ export class SymbolIndexer {
     query: string,
   ): Promise<Array<SymbolEntry & { filePath: string }>> {
     const results: Array<SymbolEntry & { filePath: string }> = [];
+    this.initializeIndexPath();
     if (!existsSync(this.indexPath)) {
       return results;
     }
 
     try {
       const raw = await fsPromises.readFile(this.indexPath, "utf8");
-      const parsed = JSON.parse(raw);
-      const validated = SymbolIndexSchema.safeParse(parsed);
-      if (!validated.success) return results;
+      const indexData = this.parseSymbolIndex(raw);
+      if (!indexData) return results;
 
       const lowercaseQuery = query.toLowerCase();
-      for (const [filePath, fileData] of Object.entries(validated.data.files)) {
-        const fileIndex = fileData as FileIndex;
-        for (const sym of fileIndex.symbols) {
+      for (const [filePath, fileData] of Object.entries(indexData.files)) {
+        for (const sym of fileData.symbols) {
           if (sym.name.toLowerCase().includes(lowercaseQuery)) {
             results.push({
               ...sym,
@@ -393,17 +559,15 @@ export class SymbolIndexer {
    * using PageRank weights computed from AST imports and exports.
    */
   public async getRepoMapText(tokenLimit: number = 2048): Promise<string> {
+    this.initializeIndexPath();
     if (!existsSync(this.indexPath)) {
       return "";
     }
 
     try {
       const raw = await fsPromises.readFile(this.indexPath, "utf8");
-      const parsed = JSON.parse(raw);
-      const validated = SymbolIndexSchema.safeParse(parsed);
-      if (!validated.success) return "";
-
-      const indexData = validated.data;
+      const indexData = this.parseSymbolIndex(raw);
+      if (!indexData) return "";
       const allFiles = new Set(Object.keys(indexData.files));
 
       // 1. Build package map from workspace package.json files
@@ -414,15 +578,16 @@ export class SymbolIndexer {
           ignore: ["**/node_modules/**", "**/dist/**"],
           onlyFiles: true,
           absolute: false,
+          followSymbolicLinks: false,
           suppressErrors: true,
         });
         for (const relPath of packageJsonFiles) {
           try {
             const absPath = resolveSafePath(this.cwd, relPath);
             const content = await fsPromises.readFile(absPath, "utf8");
-            const pkg = JSON.parse(content);
-            if (pkg.name && typeof pkg.name === "string") {
-              packageMap[pkg.name] = dirname(relPath).replace(/\\/g, "/");
+            const pkg = PackageJsonSchema.safeParse(JSON.parse(content));
+            if (pkg.success && pkg.data.name) {
+              packageMap[pkg.data.name] = dirname(relPath).replace(/\\/g, "/");
             }
           } catch {
             // Ignore
@@ -497,9 +662,11 @@ export class SymbolIndexer {
           for (const file of outlineList) {
             const fileData = indexData.files[file];
             out += `${file}:\n`;
-            const classAndInterfaceSymbols = fileData.symbols?.filter(
-              (s: any) => s.type === "class" || s.type === "interface"
-            ) || [];
+            const classAndInterfaceSymbols =
+              fileData.symbols?.filter(
+                (symbol) =>
+                  symbol.type === "class" || symbol.type === "interface",
+              ) || [];
             if (classAndInterfaceSymbols.length > 0) {
               for (const sym of classAndInterfaceSymbols) {
                 out += `  - ${sym.type} ${sym.name} (line ${sym.line})\n`;
@@ -513,7 +680,7 @@ export class SymbolIndexer {
 
         // Show remaining files as simple paths
         const simpleFiles = sortedFiles.filter(
-          (f) => !detailedFiles.has(f) && !outlineFiles.has(f)
+          (f) => !detailedFiles.has(f) && !outlineFiles.has(f),
         );
         if (simpleFiles.length > 0) {
           out += "### Other Files\n";
@@ -579,22 +746,7 @@ export class SymbolIndexer {
         const remainder = importPath.substring(matchedPackageKey.length);
         const targetPath = join(pkgDir, remainder).replace(/\\/g, "/");
 
-        const candidates = [
-          targetPath,
-          targetPath + ".ts",
-          targetPath + ".tsx",
-          targetPath + ".js",
-          targetPath + ".jsx",
-          targetPath + ".d.ts",
-          join(targetPath, "src/index.ts").replace(/\\/g, "/"),
-          join(targetPath, "src/index.tsx").replace(/\\/g, "/"),
-          join(targetPath, "src/index.js").replace(/\\/g, "/"),
-          join(targetPath, "src/main.ts").replace(/\\/g, "/"),
-          join(targetPath, "src/main.tsx").replace(/\\/g, "/"),
-          join(targetPath, "index.ts").replace(/\\/g, "/"),
-          join(targetPath, "index.tsx").replace(/\\/g, "/"),
-          join(targetPath, "index.js").replace(/\\/g, "/"),
-        ];
+        const candidates = this.getImportCandidates(targetPath, true);
 
         for (const cand of candidates) {
           const cleanCand = cand.replace(/^\.\//, "");
@@ -610,18 +762,7 @@ export class SymbolIndexer {
     const joined = join(fromDir, importPath);
     const normalized = joined.replace(/\\/g, "/");
 
-    const candidates = [
-      normalized,
-      normalized + ".ts",
-      normalized + ".tsx",
-      normalized + ".js",
-      normalized + ".jsx",
-      normalized + ".d.ts",
-      join(normalized, "index.ts").replace(/\\/g, "/"),
-      join(normalized, "index.tsx").replace(/\\/g, "/"),
-      join(normalized, "index.js").replace(/\\/g, "/"),
-      join(normalized, "index.jsx").replace(/\\/g, "/"),
-    ];
+    const candidates = this.getImportCandidates(normalized, false);
 
     for (const cand of candidates) {
       const cleanCand = cand.replace(/^\.\//, "");
@@ -633,8 +774,41 @@ export class SymbolIndexer {
     return null;
   }
 
+  private getImportCandidates(
+    targetPath: string,
+    includePackageEntrypoints: boolean,
+  ): string[] {
+    const withoutRuntimeExtension = targetPath.replace(
+      /\.(?:mjs|cjs|js|jsx)$/i,
+      "",
+    );
+    const bases = Array.from(new Set([targetPath, withoutRuntimeExtension]));
+    const candidates = bases.flatMap((base) => [
+      base,
+      `${base}.ts`,
+      `${base}.tsx`,
+      `${base}.js`,
+      `${base}.jsx`,
+      `${base}.d.ts`,
+      join(base, "index.ts").replace(/\\/g, "/"),
+      join(base, "index.tsx").replace(/\\/g, "/"),
+      join(base, "index.js").replace(/\\/g, "/"),
+      join(base, "index.jsx").replace(/\\/g, "/"),
+    ]);
+    if (includePackageEntrypoints) {
+      candidates.push(
+        join(withoutRuntimeExtension, "src/index.ts").replace(/\\/g, "/"),
+        join(withoutRuntimeExtension, "src/index.tsx").replace(/\\/g, "/"),
+        join(withoutRuntimeExtension, "src/index.js").replace(/\\/g, "/"),
+        join(withoutRuntimeExtension, "src/main.ts").replace(/\\/g, "/"),
+        join(withoutRuntimeExtension, "src/main.tsx").replace(/\\/g, "/"),
+      );
+    }
+    return Array.from(new Set(candidates));
+  }
+
   private computePageRank(
-    files: Record<string, any>,
+    files: Record<string, FileIndex>,
     resolvedEdges: Map<string, Set<string>>,
   ): Record<string, number> {
     const nodes = Object.keys(files);
@@ -704,6 +878,27 @@ export class SymbolIndexer {
     }
 
     return pr;
+  }
+
+  private parseSymbolIndex(raw: string): SymbolIndex | null {
+    const parsed = SymbolIndexSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) return null;
+
+    const files: Record<string, FileIndex> = {};
+    for (const [filePath, fileIndex] of Object.entries(parsed.data.files)) {
+      if (isAbsolute(filePath)) continue;
+      try {
+        resolveSafePath(this.cwd, filePath);
+        files[filePath] = fileIndex;
+      } catch {
+        // Ignore cache entries that no longer resolve inside the workspace.
+      }
+    }
+    return { ...parsed.data, files };
+  }
+
+  private initializeIndexPath(): void {
+    this.indexPath = getOrbitCachePath(this.cwd, "symbols.json");
   }
 
   private parseFile(

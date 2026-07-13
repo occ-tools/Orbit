@@ -7,13 +7,44 @@ import {
 } from "@orbit-build/core";
 import { Prompt, Renderer, DiffView } from "@orbit-build/tui";
 import picocolors from "picocolors";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, watch } from "fs";
-import { join, dirname, resolve } from "path";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  watch,
+  writeFileSync,
+} from "fs";
+import { dirname, resolve } from "path";
 import { homedir } from "os";
 import http from "http";
+import { randomBytes, timingSafeEqual } from "crypto";
+import { z } from "zod";
 import { SymbolIndexer } from "@orbit-build/context-engine";
 import { FullscreenTui, pageText } from "../tui/FullscreenTui.js";
 import { CommandRouter, getAutocompleteCandidates } from "./CommandRouter.js";
+import { stopOrbitWebUi } from "./webui/index.js";
+import { resolveSafePath } from "@orbit-build/shared";
+import { readCliVersion } from "./CliVersion.js";
+
+const AutocompleteRequestSchema = z.object({
+  prefix: z.string().max(20000),
+  suffix: z.string().max(20000),
+  windowId: z.string().max(1000).optional(),
+});
+const AUTOCOMPLETE_BODY_LIMIT_BYTES = 100_000;
+const AUTOCOMPLETE_MAX_CONCURRENCY = 4;
+
+const LocalStateSchema = z.object({
+  lastSessionId: z.string().optional(),
+  lastModel: z.string().optional(),
+});
+
+const AutocompleteEndpointSchema = z.object({
+  port: z.number().int().min(1).max(65535),
+  token: z.string().min(32).max(256),
+});
 
 interface LocalState {
   lastSessionId?: string;
@@ -37,79 +68,131 @@ export class ReplController {
   ) {}
 
   private getLocalState(): LocalState {
-    const statePath = join(this.cwd, ".orbit", "state.json");
-    if (!existsSync(statePath)) return {};
     try {
-      return JSON.parse(readFileSync(statePath, "utf8"));
+      const statePath = resolveSafePath(this.cwd, ".orbit/state.json");
+      if (!existsSync(statePath)) return {};
+      const parsed = LocalStateSchema.safeParse(
+        JSON.parse(readFileSync(statePath, "utf8")),
+      );
+      return parsed.success ? parsed.data : {};
     } catch {
       return {};
     }
   }
 
   private saveLocalState(state: LocalState): void {
-    const statePath = join(this.cwd, ".orbit", "state.json");
     try {
+      const statePath = resolveSafePath(this.cwd, ".orbit/state.json");
       const dir = dirname(statePath);
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
       }
       const current = this.getLocalState();
-      const updated = { ...current, ...state };
-      writeFileSync(statePath, JSON.stringify(updated, null, 2), "utf8");
+      const updated = LocalStateSchema.parse({ ...current, ...state });
+      const temporaryPath = `${statePath}.${process.pid}.tmp`;
+      writeFileSync(temporaryPath, JSON.stringify(updated, null, 2), "utf8");
+      renameSync(temporaryPath, statePath);
     } catch {}
   }
 
   private startAutocompleteServer() {
     const engine = new AutocompleteEngine();
+    const token = randomBytes(32).toString("base64url");
+    const endpointPath = resolveSafePath(this.cwd, ".orbit/autocomplete.json");
+    let activeRequests = 0;
     const server = http.createServer(async (req, res) => {
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-      if (req.method === "OPTIONS") {
-        res.writeHead(200);
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      const host = req.headers.host || "";
+      if (!/^127\.0\.0\.1:\d+$/.test(host)) {
+        res.writeHead(403);
+        res.end();
+        return;
+      }
+      if (req.headers.origin) {
+        res.writeHead(403);
+        res.end();
+        return;
+      }
+      if (!hasBearerToken(req, token)) {
+        res.writeHead(401);
+        res.end();
+        return;
+      }
+      if (req.method !== "POST" || req.url !== "/autocomplete") {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      if (!req.headers["content-type"]?.startsWith("application/json")) {
+        res.writeHead(415);
+        res.end();
+        return;
+      }
+      if (activeRequests >= AUTOCOMPLETE_MAX_CONCURRENCY) {
+        res.writeHead(429);
         res.end();
         return;
       }
 
-      if (req.method === "POST" && req.url === "/autocomplete") {
-        let body = "";
-        req.on("data", (chunk) => {
-          body += chunk;
+      activeRequests++;
+      try {
+        const body = await readLimitedBody(req, AUTOCOMPLETE_BODY_LIMIT_BYTES);
+        const parsed = AutocompleteRequestSchema.parse(JSON.parse(body));
+        const completion = await engine.autocomplete(
+          parsed.prefix,
+          parsed.suffix,
+          this.config,
+          parsed.windowId,
+        );
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ completion }));
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        res.writeHead(message === "Request body too large." ? 413 : 400, {
+          "Content-Type": "application/json",
         });
-        req.on("end", async () => {
-          try {
-            const parsed = JSON.parse(body);
-            const prefix = parsed.prefix || "";
-            const suffix = parsed.suffix || "";
-            const completion = await engine.autocomplete(
-              prefix,
-              suffix,
-              this.config,
-            );
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ completion }));
-          } catch (e: any) {
-            res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: e.message }));
-          }
-        });
-      } else {
-        res.writeHead(404);
-        res.end();
+        res.end(JSON.stringify({ error: message }));
+      } finally {
+        activeRequests--;
       }
     });
 
     let currentPort = 6018;
     server.once("listening", () => {
+      const dir = dirname(endpointPath);
+      mkdirSync(dir, { recursive: true });
+      const temporaryPath = `${endpointPath}.${process.pid}.tmp`;
+      writeFileSync(
+        temporaryPath,
+        JSON.stringify({ port: currentPort, token }, null, 2),
+        { encoding: "utf8", mode: 0o600 },
+      );
+      renameSync(temporaryPath, endpointPath);
       eventBus.emitEvent("info", {
         message: `Autocomplete bridge server running on http://127.0.0.1:${currentPort}`,
       });
     });
-    server.on("error", (err: any) => {
-      if (err.code === "EADDRINUSE") {
+    server.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE" && currentPort < 6037) {
         currentPort++;
         server.listen(currentPort, "127.0.0.1");
+      } else {
+        eventBus.emitEvent("error", {
+          message: `Autocomplete bridge failed: ${err.message}`,
+        });
+      }
+    });
+    server.once("close", () => {
+      try {
+        const current = AutocompleteEndpointSchema.parse(
+          JSON.parse(readFileSync(endpointPath, "utf8")),
+        );
+        if (current.token === token) {
+          rmSync(endpointPath, { force: true });
+        }
+      } catch {
+        // The discovery file may already be gone.
       }
     });
     server.listen(currentPort, "127.0.0.1");
@@ -117,7 +200,7 @@ export class ReplController {
   }
 
   public async start(): Promise<void> {
-    const version = "v0.1.0";
+    const version = `v${readCliVersion()}`;
     const sigintHandler = () => {
       // Prevent process exit on Ctrl+C during agent execution or REPL waiting.
     };
@@ -335,6 +418,7 @@ export class ReplController {
         loop.getSessionId(),
         this.config.models.default,
         this.cwd,
+        version,
       );
     }
 
@@ -394,121 +478,89 @@ export class ReplController {
         const trimmed = input.trim();
         if (!trimmed) continue;
 
-        const routeResult = await commandRouter.route(trimmed);
-        if (routeResult.shouldExit) {
-          break;
-        }
-        if (routeResult.processed) {
+        const releaseTerminalRun = commandRouter.beginTerminalRun();
+        if (!releaseTerminalRun) {
+          tuiInteraction.showText(
+            this.config.language === "zh"
+              ? "⚠️ Web UI 正在处理任务，请等待完成或在浏览器中停止后再提交终端指令。"
+              : "⚠️ The Web UI is processing a task. Wait for it to finish or stop it in the browser before submitting a terminal command.",
+          );
           continue;
         }
 
-        loop.prepareUserTurn(trimmed);
-
-        // Auto-generate session title if it's the default title
-        const activeSession = loop.sessionManager.getActiveSession();
-        if (
-          activeSession &&
-          (activeSession.title === "New Orbit Session" || !activeSession.title)
-        ) {
-          const fastModel =
-            this.config.models.fast || this.config.models.default;
-          const firstPrompt = trimmed;
-          Promise.resolve().then(async () => {
-            try {
-              const stream = this.providerInstance.chat({
-                model: fastModel,
-                messages: [
-                  {
-                    id: `msg_title_gen_${Date.now()}`,
-                    role: "user",
-                    createdAt: new Date().toISOString(),
-                    content: [
-                      {
-                        type: "text",
-                        text: `Summarize the following user task into a very concise title (max 5 words, e.g. "Fix button layout" or "Add login unit tests"). Output ONLY the title, no markdown, no punctuation, no quotes:\n\n${firstPrompt.substring(0, 1000)}`,
-                      },
-                    ],
-                  },
-                ],
-                tools: [],
-              });
-              let title = "";
-              for await (const event of stream) {
-                if (event.type === "text_delta") {
-                  title += event.text;
-                }
-              }
-              const finalTitle = title.trim().replace(/^["']|["']$/g, "");
-              if (
-                finalTitle &&
-                activeSession.id === loop.sessionManager.getActiveSession()?.id
-              ) {
-                activeSession.title = finalTitle;
-                loop.sessionManager
-                  .getSessionStore()
-                  .updateSession(activeSession);
-              }
-            } catch {
-              // Ignore background title generation errors
-            }
-          });
-        }
-
-        let orchestratorInstance: Orchestrator | null = null;
-        if (this.multi) {
-          orchestratorInstance = new Orchestrator(
-            this.cwd,
-            this.config,
-            this.providerInstance,
-            trimmed,
-            tuiInteraction,
-          );
-          tui.setActiveRunnable(orchestratorInstance);
-        } else {
-          tui.setActiveRunnable(loop);
-        }
-
-        tui.startThinkingInput();
-
         try {
-          if (orchestratorInstance) {
-            await orchestratorInstance.run();
-          } else {
-            await loop.run();
+          const routeResult = await commandRouter.route(trimmed);
+          if (routeResult.shouldExit) {
+            break;
           }
-        } catch {
-          // Fallback
-        } finally {
-          tui.stopThinkingInput();
-          tui.setActiveRunnable(null);
-        }
+          if (routeResult.processed) {
+            continue;
+          }
 
-        // If a guided correction was entered during execution, loop to append and rerun
-        while (tui.pendingGuidedStatement) {
-          const guidedTask = tui.pendingGuidedStatement;
-          tui.pendingGuidedStatement = null;
+          loop.prepareUserTurn(trimmed);
 
-          const isZh = this.config.language === "zh";
-          tuiInteraction.showText(
-            isZh
-              ? `\n● 收到引导指令。正在重新规划思考...`
-              : `\n● Guided instruction received. Replanning execution...`,
-          );
+          // Auto-generate session title if it's the default title
+          const activeSession = loop.sessionManager.getActiveSession();
+          if (
+            activeSession &&
+            (activeSession.title === "New Orbit Session" ||
+              !activeSession.title)
+          ) {
+            const fastModel =
+              this.config.models.fast || this.config.models.default;
+            const firstPrompt = trimmed;
+            Promise.resolve().then(async () => {
+              try {
+                const stream = this.providerInstance.chat({
+                  model: fastModel,
+                  messages: [
+                    {
+                      id: `msg_title_gen_${Date.now()}`,
+                      role: "user",
+                      createdAt: new Date().toISOString(),
+                      content: [
+                        {
+                          type: "text",
+                          text: `Summarize the following user task into a very concise title (max 5 words, e.g. "Fix button layout" or "Add login unit tests"). Output ONLY the title, no markdown, no punctuation, no quotes:\n\n${firstPrompt.substring(0, 1000)}`,
+                        },
+                      ],
+                    },
+                  ],
+                  tools: [],
+                });
+                let title = "";
+                for await (const event of stream) {
+                  if (event.type === "text_delta") {
+                    title += event.text;
+                  }
+                }
+                const finalTitle = title.trim().replace(/^["']|["']$/g, "");
+                if (
+                  finalTitle &&
+                  activeSession.id ===
+                    loop.sessionManager.getActiveSession()?.id
+                ) {
+                  activeSession.title = finalTitle;
+                  loop.sessionManager
+                    .getSessionStore()
+                    .updateSession(activeSession);
+                }
+              } catch {
+                // Ignore background title generation errors
+              }
+            });
+          }
 
-          loop.prepareUserTurn(guidedTask);
-
-          tui.syncFromLoop(loop);
-
-          let subOrchestrator: Orchestrator | null = null;
+          let orchestratorInstance: Orchestrator | null = null;
           if (this.multi) {
-            subOrchestrator = new Orchestrator(
+            orchestratorInstance = new Orchestrator(
               this.cwd,
               this.config,
               this.providerInstance,
-              guidedTask,
+              trimmed,
               tuiInteraction,
             );
-            tui.setActiveRunnable(subOrchestrator);
+            tui.setActiveRunnable(orchestratorInstance);
           } else {
             tui.setActiveRunnable(loop);
           }
@@ -516,8 +568,8 @@ export class ReplController {
           tui.startThinkingInput();
 
           try {
-            if (subOrchestrator) {
-              await subOrchestrator.run();
+            if (orchestratorInstance) {
+              await orchestratorInstance.run();
             } else {
               await loop.run();
             }
@@ -527,17 +579,65 @@ export class ReplController {
             tui.stopThinkingInput();
             tui.setActiveRunnable(null);
           }
-        }
-        tui.syncFromLoop(loop);
-        tui.finishAttempt();
 
-        // Refresh candidates in the background asynchronously
-        getAutocompleteCandidates(this.cwd, this.config)
-          .then((c) => {
-            this.candidates = c;
-            tui.setCandidates(c);
-          })
-          .catch(() => {});
+          // If a guided correction was entered during execution, loop to append and rerun
+          while (tui.pendingGuidedStatement) {
+            const guidedTask = tui.pendingGuidedStatement;
+            tui.pendingGuidedStatement = null;
+
+            const isZh = this.config.language === "zh";
+            tuiInteraction.showText(
+              isZh
+                ? `\n● 收到引导指令。正在重新规划思考...`
+                : `\n● Guided instruction received. Replanning execution...`,
+            );
+
+            loop.prepareUserTurn(guidedTask);
+
+            tui.syncFromLoop(loop);
+
+            let subOrchestrator: Orchestrator | null = null;
+            if (this.multi) {
+              subOrchestrator = new Orchestrator(
+                this.cwd,
+                this.config,
+                this.providerInstance,
+                guidedTask,
+                tuiInteraction,
+              );
+              tui.setActiveRunnable(subOrchestrator);
+            } else {
+              tui.setActiveRunnable(loop);
+            }
+
+            tui.startThinkingInput();
+
+            try {
+              if (subOrchestrator) {
+                await subOrchestrator.run();
+              } else {
+                await loop.run();
+              }
+            } catch {
+              // Fallback
+            } finally {
+              tui.stopThinkingInput();
+              tui.setActiveRunnable(null);
+            }
+          }
+          tui.syncFromLoop(loop);
+          tui.finishAttempt();
+
+          // Refresh candidates in the background asynchronously
+          getAutocompleteCandidates(this.cwd, this.config)
+            .then((c) => {
+              this.candidates = c;
+              tui.setCandidates(c);
+            })
+            .catch(() => {});
+        } finally {
+          releaseTerminalRun();
+        }
       }
     } finally {
       process.off("SIGINT", sigintHandler);
@@ -552,6 +652,7 @@ export class ReplController {
       if (useFullscreenTui) {
         Prompt.setTuiInstance(null);
       }
+      await stopOrbitWebUi();
       tui.dispose();
       this.autocompleteServer?.close();
     }
@@ -587,4 +688,32 @@ export class ReplController {
       return [allHits, lastWord];
     };
   }
+}
+
+function hasBearerToken(req: http.IncomingMessage, expected: string): boolean {
+  const authorization = req.headers.authorization;
+  if (!authorization?.startsWith("Bearer ")) return false;
+  const provided = Buffer.from(authorization.slice(7));
+  const expectedBuffer = Buffer.from(expected);
+  return (
+    provided.length === expectedBuffer.length &&
+    timingSafeEqual(provided, expectedBuffer)
+  );
+}
+
+async function readLimitedBody(
+  req: http.IncomingMessage,
+  limitBytes: number,
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > limitBytes) {
+      throw new Error("Request body too large.");
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }

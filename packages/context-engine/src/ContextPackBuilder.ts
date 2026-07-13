@@ -2,7 +2,8 @@ import { basename, isAbsolute, join, resolve } from "path";
 import { promises as fsPromises } from "fs";
 import { homedir } from "os";
 import { estimateTokenCount } from "@orbit-build/shared";
-import { ConfigLoader } from "@orbit-build/config";
+import { ConfigLoader, type OrbitConfig } from "@orbit-build/config";
+import type { ModelProvider } from "@orbit-build/model-providers";
 import { ActiveSkill, ContextPack, SkillSummary } from "./types.js";
 import { ProjectIndexer } from "./ProjectIndexer.js";
 import { FileSummarizer } from "./FileSummarizer.js";
@@ -56,7 +57,7 @@ export class ContextPackBuilder {
         let chunksText = "";
         let referencesText = "";
         try {
-          let provider: any = null;
+          let provider: ModelProvider | null = null;
           try {
             provider = getEmbeddingProvider(config);
           } catch {
@@ -64,7 +65,7 @@ export class ContextPackBuilder {
           }
 
           const embedFn = async (texts: string[]) => {
-            if (provider && typeof provider.embed === "function") {
+            if (provider?.embed) {
               const modelName =
                 config.models?.embedding || "text-embedding-3-small";
               return await provider.embed(texts, { model: modelName });
@@ -198,23 +199,10 @@ export class ContextPackBuilder {
   }
 
   private async loadSkills(
-    config: any,
+    config: OrbitConfig,
     userQuery?: string,
   ): Promise<{ index: SkillSummary[]; active: ActiveSkill[] }> {
-    const skillsConfig = {
-      enabled: true,
-      directories: [
-        ".orbit/skills",
-        ".agents/skills",
-        ".claude/skills",
-        "~/.claude/skills",
-      ],
-      activation: "auto",
-      maxActive: 3,
-      maxSkillBytes: 24000,
-      maxAutoSkillBytes: 8000,
-      ...(config.skills || {}),
-    };
+    const skillsConfig = config.skills;
     if (skillsConfig.enabled === false) {
       return { index: [], active: [] };
     }
@@ -364,10 +352,10 @@ export class ContextPackBuilder {
       SkillSummary & { content: string; truncatedByRead?: boolean }
     >,
     userQuery: string | undefined,
-    skillsConfig: any,
+    skillsConfig: OrbitConfig["skills"],
   ): ActiveSkill[] {
     const query = (userQuery || "").toLowerCase();
-    if (!query || (skillsConfig.maxActive || 3) <= 0) {
+    if (!query || skillsConfig.maxActive <= 0) {
       return [];
     }
 
@@ -396,16 +384,14 @@ export class ContextPackBuilder {
       .sort(
         (a, b) => b.score - a.score || a.skill.name.localeCompare(b.skill.name),
       )
-      .slice(0, skillsConfig.maxActive || 3);
+      .slice(0, skillsConfig.maxActive);
 
     return scored.map(({ skill, explicit }) => {
       const activation = explicit ? "explicit" : "auto";
       const autoByteLimit =
         skillsConfig.maxAutoSkillBytes ||
-        Math.min(8000, skillsConfig.maxSkillBytes || 24000);
-      const byteLimit = explicit
-        ? skillsConfig.maxSkillBytes || 24000
-        : autoByteLimit;
+        Math.min(8000, skillsConfig.maxSkillBytes);
+      const byteLimit = explicit ? skillsConfig.maxSkillBytes : autoByteLimit;
       const content = skill.content.slice(0, byteLimit);
       return {
         name: skill.name,

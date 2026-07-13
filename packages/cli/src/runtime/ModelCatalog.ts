@@ -8,16 +8,16 @@ type ConfigLike = {
   providers?: Record<string, ProviderConfigLike | undefined>;
 };
 
-const DEEPSEEK_MODELS = [
-  "deepseek-v4-flash",
-  "deepseek-v4-pro",
-];
+const DEEPSEEK_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro"];
 
 export const DEEPSEEK_LEGACY_ALIAS_DEPRECATION = "2026-07-24T15:59:00Z";
 
-const DEEPSEEK_LEGACY_ALIAS_REPLACEMENTS: Record<string, string> = {
-  "deepseek-chat": "deepseek-v4-flash",
-  "deepseek-reasoner": "deepseek-v4-pro",
+const DEEPSEEK_LEGACY_ALIAS_MIGRATIONS: Record<
+  string,
+  { model: string; thinking: "disabled" | "high" }
+> = {
+  "deepseek-chat": { model: "deepseek-v4-flash", thinking: "disabled" },
+  "deepseek-reasoner": { model: "deepseek-v4-flash", thinking: "high" },
 };
 
 const OPENAI_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"];
@@ -50,6 +50,9 @@ export function getProviderModelCandidates(
   }
 
   const providerType = providerConfig?.type;
+  if (providerId?.toLowerCase().includes("deepseek")) {
+    return DEEPSEEK_MODELS;
+  }
   if (providerType === "anthropic" || providerType === "anthropic-compatible") {
     return ANTHROPIC_MODELS;
   }
@@ -57,9 +60,7 @@ export function getProviderModelCandidates(
     return OPENAI_MODELS;
   }
   if (providerType === "openai-compatible") {
-    return providerId?.toLowerCase().includes("deepseek")
-      ? DEEPSEEK_MODELS
-      : uniqueModels([...OPENAI_MODELS, ...DEEPSEEK_MODELS]);
+    return uniqueModels([...OPENAI_MODELS, ...DEEPSEEK_MODELS]);
   }
   if (providerType === "ollama") {
     return OLLAMA_MODELS;
@@ -73,13 +74,19 @@ export function getProviderModelCandidates(
 
 export function isDeprecatedDeepSeekAlias(model: string): boolean {
   return Object.prototype.hasOwnProperty.call(
-    DEEPSEEK_LEGACY_ALIAS_REPLACEMENTS,
+    DEEPSEEK_LEGACY_ALIAS_MIGRATIONS,
     model.trim().toLowerCase(),
   );
 }
 
 export function getDeepSeekAliasReplacement(model: string): string | undefined {
-  return DEEPSEEK_LEGACY_ALIAS_REPLACEMENTS[model.trim().toLowerCase()];
+  return getDeepSeekAliasMigration(model)?.model;
+}
+
+export function getDeepSeekAliasMigration(
+  model: string,
+): { model: string; thinking: "disabled" | "high" } | undefined {
+  return DEEPSEEK_LEGACY_ALIAS_MIGRATIONS[model.trim().toLowerCase()];
 }
 
 export function describeDeprecatedDeepSeekAliases(models: string[]): string {
@@ -89,22 +96,25 @@ export function describeDeprecatedDeepSeekAliases(models: string[]): string {
   }
 
   const replacements = deprecated
-    .map((model) => `${model} -> ${getDeepSeekAliasReplacement(model)}`)
+    .map((model) => {
+      const migration = getDeepSeekAliasMigration(model)!;
+      return `${model} -> ${migration.model} (thinking ${migration.thinking})`;
+    })
     .join(", ");
   return `Deprecated DeepSeek aliases configured: ${replacements}. They are scheduled for removal after ${DEEPSEEK_LEGACY_ALIAS_DEPRECATION}; prefer deepseek-v4-flash/pro.`;
 }
 
 export function formatModelOptionLabel(model: string): string {
   const lower = model.toLowerCase();
-  const replacement = getDeepSeekAliasReplacement(model);
-  if (replacement) {
-    return `${model} (deprecated -> ${replacement})`;
+  const migration = getDeepSeekAliasMigration(model);
+  if (migration) {
+    return `${model} (deprecated -> ${migration.model}; thinking ${migration.thinking})`;
   }
   if (lower.includes("deepseek-v4-flash") || lower.includes("flash")) {
-    return `${model} (fast / flash)`;
+    return `${model} (high concurrency / low latency; thinking available)`;
   }
   if (lower.includes("deepseek-v4-pro") || lower.includes("pro")) {
-    return `${model} (reasoning / pro)`;
+    return `${model} (quality / pro; thinking available)`;
   }
   if (lower.includes("gpt-5.5") || lower.includes("gpt-5.4")) {
     return `${model} (OpenAI)`;

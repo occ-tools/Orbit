@@ -1,9 +1,26 @@
 import { describe, it, expect } from "vitest";
-import { MCPClient } from "./MCPClient.js";
+import { buildMcpEnvironment, MCPClient } from "./MCPClient.js";
 import path from "path";
 import { writeFileSync, unlinkSync } from "fs";
 
 describe("MCPClient", () => {
+  it("inherits only runtime variables and explicitly requested names", () => {
+    const result = buildMcpEnvironment(
+      { EXPLICIT_VALUE: "configured" },
+      ["ALLOWED_VALUE"],
+      {
+        PATH: "runtime-path",
+        ALLOWED_VALUE: "allowed",
+        OPENAI_API_KEY: "must-not-leak",
+      },
+    );
+
+    expect(result.PATH).toBe("runtime-path");
+    expect(result.ALLOWED_VALUE).toBe("allowed");
+    expect(result.EXPLICIT_VALUE).toBe("configured");
+    expect(result.OPENAI_API_KEY).toBeUndefined();
+  });
+
   it("should handshake and list/call tools from a stdio MCP server", async () => {
     const dummyServerPath = path.resolve(
       process.cwd(),
@@ -30,7 +47,7 @@ rl.on('line', (line) => {
       result: {
         protocolVersion: '2024-11-05',
         capabilities: {},
-        serverInfo: { name: 'dummy', version: '0.1.0' }
+        serverInfo: { name: 'dummy', version: '0.1.3' }
       }
     }) + '\\n');
   } else if (msg.method === 'tools/list') {
@@ -69,9 +86,7 @@ rl.on('line', (line) => {
       expect(tools[0].name).toBe("hello");
 
       const res = await client.callTool("hello", { name: "Orbit" });
-      expect(res.result?.content || res.content).toBeDefined();
-      const content = res.result?.content || res.content;
-      expect(content[0].text).toBe("Hello, Orbit!");
+      expect(res.content[0].text).toBe("Hello, Orbit!");
     } finally {
       await client.stop();
       try {

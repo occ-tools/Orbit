@@ -25,9 +25,9 @@ export class FileSummarizer {
         (lines.length > maxLines ? "\n... [TRUNCATED] ..." : "");
 
       return { summary, excerpt };
-    } catch (e: any) {
-      return { summary: `Error reading file: ${e.message}`, excerpt: "" };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { summary: `Error reading file: ${message}`, excerpt: "" };
     }
   }
 }
-

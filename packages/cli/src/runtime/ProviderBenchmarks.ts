@@ -8,6 +8,7 @@ import {
 import { createHash } from "crypto";
 import { dirname, join } from "path";
 import picocolors from "picocolors";
+import { z } from "zod";
 
 export interface ProviderBenchmarkResult {
   providerId: string;
@@ -17,15 +18,51 @@ export interface ProviderBenchmarkResult {
   promptChars: number;
   maxTokens: number;
   firstDeltaMs?: number;
+  firstThinkingMs?: number;
+  firstTextMs?: number;
   totalMs: number;
   outputTokens: number;
+  reasoningTokens?: number;
   textChars: number;
+  reasoningChars?: number;
   throughputTokensPerSec: number;
+  endToEndTokensPerSec?: number;
+  thinkingMode?: "disabled" | "high" | "max";
   cacheReadTokens: number;
   cacheInputTokens: number;
   cacheHitRate: number;
   error?: string;
 }
+
+const ProviderBenchmarkResultSchema = z
+  .object({
+    providerId: z.string().min(1),
+    model: z.string().min(1),
+    checkedAt: z.string().min(1),
+    promptHash: z.string().min(1),
+    promptChars: z.number().int().nonnegative(),
+    maxTokens: z.number().int().positive(),
+    firstDeltaMs: z.number().nonnegative().optional(),
+    firstThinkingMs: z.number().nonnegative().optional(),
+    firstTextMs: z.number().nonnegative().optional(),
+    totalMs: z.number().positive(),
+    outputTokens: z.number().int().nonnegative(),
+    reasoningTokens: z.number().int().nonnegative().optional(),
+    textChars: z.number().int().nonnegative(),
+    reasoningChars: z.number().int().nonnegative().optional(),
+    throughputTokensPerSec: z.number().nonnegative(),
+    endToEndTokensPerSec: z.number().nonnegative().optional(),
+    thinkingMode: z.enum(["disabled", "high", "max"]).optional(),
+    cacheReadTokens: z.number().int().nonnegative(),
+    cacheInputTokens: z.number().int().nonnegative(),
+    cacheHitRate: z.number().min(0).max(1),
+    error: z.string().optional(),
+  })
+  .passthrough();
+
+const ProviderBenchmarkStoreSchema = z.object({
+  results: z.array(ProviderBenchmarkResultSchema),
+});
 
 export function providerBenchmarkPath(cwd: string): string {
   return join(cwd, ".orbit", "provider-benchmarks.json");
@@ -39,8 +76,10 @@ export function readProviderBenchmarks(cwd: string): ProviderBenchmarkResult[] {
   const path = providerBenchmarkPath(cwd);
   if (!existsSync(path)) return [];
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return Array.isArray(parsed?.results) ? parsed.results : [];
+    const parsed = ProviderBenchmarkStoreSchema.safeParse(
+      JSON.parse(readFileSync(path, "utf8")),
+    );
+    return parsed.success ? parsed.data.results : [];
   } catch {
     return [];
   }
@@ -106,24 +145,26 @@ export function formatProviderBenchmarkSummary(
     .map((item) => item.firstDeltaMs)
     .filter((value): value is number => typeof value === "number");
   const totals = successful.map((item) => item.totalMs);
+  const firstText = successful
+    .map((item) => item.firstTextMs)
+    .filter((value): value is number => typeof value === "number");
   const tps = successful
     .map((item) => item.throughputTokensPerSec)
     .filter((value) => value > 0);
-  const cacheHit = successful.map((item) => item.cacheHitRate);
   const latestText = latest.error
     ? `latest failed=${latest.error}`
-    : `latest first=${latest.firstDeltaMs ?? "n/a"}ms total=${latest.totalMs}ms`;
+    : `latest model=${latest.firstDeltaMs ?? "n/a"}ms answer=${latest.firstTextMs ?? "n/a"}ms total=${latest.totalMs}ms`;
   const firstP50 = percentile(firstDeltas, 0.5);
   const firstP90 = percentile(firstDeltas, 0.9);
+  const textP50 = percentile(firstText, 0.5);
   const totalP50 = percentile(totals, 0.5);
   const avgTps = avg(tps);
-  const avgCache = avg(cacheHit);
-  const slowFirstToken =
-    typeof firstP50 === "number" && firstP50 >= 2500 ? " slow-first-token" : "";
+  const slowFirstDelta =
+    typeof firstP50 === "number" && firstP50 >= 2500 ? " slow-first-delta" : "";
 
-  const color = slowFirstToken ? picocolors.yellow : picocolors.green;
+  const color = slowFirstDelta ? picocolors.yellow : picocolors.green;
   return color(
-    `● Provider benchmark:${slowFirstToken} samples=${successful.length}/${samples.length}; ${latestText}; p50 first=${firstP50 ?? "n/a"}ms p90 first=${firstP90 ?? "n/a"}ms p50 total=${totalP50 ?? "n/a"}ms avg=${avgTps ? avgTps.toFixed(1) : "n/a"} tok/s cache=${Math.round((avgCache || 0) * 100)}%.`,
+    `● Provider benchmark:${slowFirstDelta} samples=${successful.length}/${samples.length}; ${latestText}; p50 model=${firstP50 ?? "n/a"}ms p50 answer=${textP50 ?? "n/a"}ms p90 model=${firstP90 ?? "n/a"}ms p50 total=${totalP50 ?? "n/a"}ms decode=${avgTps ? avgTps.toFixed(1) : "n/a"} tok/s latest-cache=${Math.round((latest.cacheHitRate || 0) * 100)}%.`,
   );
 }
 
@@ -156,6 +197,11 @@ export function compareProviderBenchmarkResults(
           .filter((value): value is number => typeof value === "number"),
       );
       const total = avg(items.map((item) => item.totalMs));
+      const firstAnswer = avg(
+        items
+          .map((item) => item.firstTextMs)
+          .filter((value): value is number => typeof value === "number"),
+      );
       const throughput = avg(
         items
           .map((item) => item.throughputTokensPerSec)
@@ -166,24 +212,28 @@ export function compareProviderBenchmarkResults(
         providerId,
         model,
         samples: items.length,
-        first: first || Number.POSITIVE_INFINITY,
-        total: total || Number.POSITIVE_INFINITY,
+        first: first ?? Number.POSITIVE_INFINITY,
+        firstAnswer: firstAnswer ?? Number.POSITIVE_INFINITY,
+        total: total ?? Number.POSITIVE_INFINITY,
         throughput: throughput || 0,
         cache: cache || 0,
       };
     })
     .sort(
       (a, b) =>
-        a.first - b.first || a.total - b.total || b.throughput - a.throughput,
+        a.firstAnswer - b.firstAnswer ||
+        a.first - b.first ||
+        a.total - b.total ||
+        b.throughput - a.throughput,
     );
 
   const lines = [picocolors.bold("Benchmark Comparison")];
   rows.forEach((row, index) => {
     const leader = index === 0 ? "best " : "";
     lines.push(
-      `${index + 1}. ${leader}${row.providerId} / ${row.model}: first=${Math.round(
+      `${index + 1}. ${leader}${row.providerId} / ${row.model}: model=${Math.round(
         row.first,
-      )}ms total=${Math.round(row.total)}ms avg=${row.throughput.toFixed(
+      )}ms answer=${Number.isFinite(row.firstAnswer) ? `${Math.round(row.firstAnswer)}ms` : "n/a"} total=${Math.round(row.total)}ms decode=${row.throughput.toFixed(
         1,
       )} tok/s cache=${Math.round(row.cache * 100)}% samples=${row.samples}`,
     );

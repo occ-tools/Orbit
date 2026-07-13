@@ -4,6 +4,9 @@ import { BM25Store, tokenize } from "./BM25.js";
 import { HybridSearch } from "./HybridSearch.js";
 import { ASTChunker } from "./ASTChunker.js";
 import { join } from "path";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { ReferencesRetriever } from "./ReferencesRetriever.js";
+import { getOrbitCachePath } from "./cachePaths.js";
 
 describe("RAG Core Engine Tests", () => {
   const tempCwd = "./rag-test-temp";
@@ -263,7 +266,9 @@ const a = new List<string>();
       const retriever = new ReferencesRetriever(tempCwd);
 
       // Symbol names containing regex special characters
-      const outputSpecial = await retriever.getReferencesContext(["List<string>"]);
+      const outputSpecial = await retriever.getReferencesContext([
+        "List<string>",
+      ]);
       expect(outputSpecial).toContain("src/caller.ts");
       expect(outputSpecial).toContain("new List<string>()");
 
@@ -327,6 +332,80 @@ const a = new List<string>();
       // Mismatch query vector dimension (2 instead of 3)
       const searchResDimMismatch = await storeC.search([1.0, 0.0], 2);
       expect(searchResDimMismatch.length).toBe(0);
+    });
+  });
+
+  describe("Cache and workspace boundaries", () => {
+    it("rejects unsafe cache names", () => {
+      expect(() => getOrbitCachePath(tempCwd, "../escape.json")).toThrow(
+        "Invalid Orbit cache file name",
+      );
+    });
+
+    it("discards malformed vector and lexical cache payloads", async () => {
+      const root = join(tempCwd, `invalid-cache-${Date.now()}`);
+      const orbitDir = join(root, ".orbit");
+      mkdirSync(orbitDir, { recursive: true });
+      writeFileSync(
+        join(orbitDir, "vector_store.json"),
+        JSON.stringify({
+          header: null,
+          documents: [
+            {
+              id: "bad",
+              text: "poisoned",
+              metadata: {
+                filePath: "src/a.ts",
+                startLine: "one",
+                endLine: 2,
+              },
+            },
+          ],
+        }),
+        "utf8",
+      );
+      writeFileSync(
+        join(orbitDir, "bm25_store.json"),
+        JSON.stringify({
+          docs: {
+            bad: {
+              id: "bad",
+              filePath: "src/a.ts",
+              terms: { poisoned: -1 },
+              docLen: 1,
+            },
+          },
+        }),
+        "utf8",
+      );
+
+      try {
+        expect(await new JSVectorStore(root).search([1, 0], 5)).toEqual([]);
+        expect(await new BM25Store(root).search("poisoned", 5)).toEqual([]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("does not follow forged symbol-index paths outside the workspace", async () => {
+      const parent = join(tempCwd, `reference-boundary-${Date.now()}`);
+      const root = join(parent, "workspace");
+      mkdirSync(join(root, ".orbit"), { recursive: true });
+      writeFileSync(join(parent, "outside.ts"), "outsideSecret();", "utf8");
+      writeFileSync(
+        join(root, ".orbit", "symbols.json"),
+        JSON.stringify({ files: { "../outside.ts": {} } }),
+        "utf8",
+      );
+
+      try {
+        const output = await new ReferencesRetriever(root).getReferencesContext(
+          ["outsideSecret"],
+        );
+        expect(output).toBe("");
+      } finally {
+        rmSync(parent, { recursive: true, force: true });
+      }
     });
   });
 });

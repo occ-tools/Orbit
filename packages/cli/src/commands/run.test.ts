@@ -3,6 +3,7 @@ import {
   nextCodePointIndex,
   parseMouseWheelDirection,
   previousCodePointIndex,
+  shouldUseStoredModel,
 } from "./run.js";
 import {
   filterPromptOptionIndices,
@@ -305,6 +306,16 @@ describe("Unicode cursor navigation", () => {
   it("clamps cursor indexes to valid text boundaries", () => {
     expect(previousCodePointIndex("abc", -10)).toBe(0);
     expect(nextCodePointIndex("abc", 99)).toBe(3);
+  });
+});
+
+describe("CLI model precedence", () => {
+  it("keeps an explicit --model override ahead of stored session state", () => {
+    expect(
+      shouldUseStoredModel({ models: { default: "deepseek-v4-pro" } }),
+    ).toBe(false);
+    expect(shouldUseStoredModel({ models: {} })).toBe(true);
+    expect(shouldUseStoredModel(undefined)).toBe(true);
   });
 });
 

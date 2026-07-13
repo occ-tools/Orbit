@@ -28,20 +28,40 @@ function askQuestion(query: string): Promise<string> {
 }
 
 function askSecret(query: string): Promise<string> {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    const stdin = process.stdin as any;
-    const stdout = process.stdout as any;
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    const stdout = process.stdout;
+    if (
+      !stdin.isTTY ||
+      !stdout.isTTY ||
+      typeof stdin.setRawMode !== "function"
+    ) {
+      reject(
+        new Error(
+          "Secure API-key input requires an interactive terminal. Open Command Prompt or PowerShell and run orbit login again.",
+        ),
+      );
+      return;
+    }
 
     stdout.write(query);
+    const wasRaw = stdin.isRaw;
     stdin.setRawMode(true);
     stdin.resume();
 
     let input = "";
+
+    const cleanup = () => {
+      stdin.removeListener("data", onData);
+      stdin.removeListener("end", onEnd);
+      stdin.setRawMode(Boolean(wasRaw));
+      if (!wasRaw) stdin.pause();
+    };
+
+    const onEnd = () => {
+      cleanup();
+      reject(new Error("Secure API-key input ended before a value was read."));
+    };
 
     const onData = (char: Buffer) => {
       const charStr = char.toString("utf8");
@@ -49,19 +69,13 @@ function askSecret(query: string): Promise<string> {
         case "\n":
         case "\r":
         case "\u0004": // EOF
-          stdin.setRawMode(false);
-          stdin.pause();
-          stdin.removeListener("data", onData);
+          cleanup();
           stdout.write("\n");
-          rl.close();
           resolve(input.trim());
           break;
         case "\u0003": // Ctrl+C
-          stdin.setRawMode(false);
-          stdin.pause();
-          stdin.removeListener("data", onData);
+          cleanup();
           stdout.write("\n");
-          rl.close();
           process.exit(130);
           break;
         case "\u0008":
@@ -82,15 +96,18 @@ function askSecret(query: string): Promise<string> {
     };
 
     stdin.on("data", onData);
+    stdin.once("end", onEnd);
   });
 }
 
 export async function runLogin(): Promise<void> {
   console.log(picocolors.bold("\n--- Configure Orbit API Keys ---"));
   console.log("Select an API provider to configure:\n");
-  
+
   for (const [key, provider] of Object.entries(PROVIDERS)) {
-    console.log(`  ${picocolors.cyan(key)}) ${picocolors.bold(provider.name)} (saves to ${provider.envVar})`);
+    console.log(
+      `  ${picocolors.cyan(key)}) ${picocolors.bold(provider.name)} (saves to ${provider.envVar})`,
+    );
   }
   console.log("");
 
@@ -102,7 +119,11 @@ export async function runLogin(): Promise<void> {
     return;
   }
 
-  console.log(picocolors.cyan(`\nConfiguring API Key for provider "${picocolors.bold(provider.name)}"...`));
+  console.log(
+    picocolors.cyan(
+      `\nConfiguring API Key for provider "${picocolors.bold(provider.name)}"...`,
+    ),
+  );
   const apiKey = await askSecret("Enter API Key (input will be hidden): ");
 
   if (!apiKey) {
@@ -113,8 +134,13 @@ export async function runLogin(): Promise<void> {
   try {
     const credsManager = new CredentialsManager();
     credsManager.storeSecret(provider.envVar, apiKey);
-    console.log(picocolors.green(`\n✔ API Key for "${provider.name}" stored securely!`));
-  } catch (error: any) {
-    console.log(picocolors.red(`\n✖ Failed to store API Key securely: ${error.message}`));
+    console.log(
+      picocolors.green(`\n✔ API Key for "${provider.name}" stored securely!`),
+    );
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(
+      picocolors.red(`\n✖ Failed to store API Key securely: ${message}`),
+    );
   }
 }

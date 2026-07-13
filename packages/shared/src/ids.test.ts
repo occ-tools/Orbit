@@ -14,6 +14,8 @@ describe("ids generator", () => {
 
   it("should generate standard UUID when no prefix is provided", () => {
     const id = generateId();
-    expect(id).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
+    expect(id).toMatch(
+      /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/,
+    );
   });
 });

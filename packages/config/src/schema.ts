@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const ORBIT_CONFIG_SCHEMA_VERSION = 1 as const;
+
 export const ProviderConfigSchema = z.object({
   type: z.enum([
     "openai",
@@ -8,13 +10,31 @@ export const ProviderConfigSchema = z.object({
     "anthropic-compatible",
     "ollama",
   ]),
-  baseUrl: z.string().optional(),
-  apiKeyEnv: z.string().optional(),
-  apiKey: z.string().optional(),
-  apiKeyHeader: z.string().optional(),
-  apiKeyPrefix: z.string().optional(),
-  headers: z.record(z.string()).optional(),
-  models: z.array(z.string()).optional(),
+  baseUrl: z.string().url().max(4096).optional(),
+  apiKeyEnv: z
+    .string()
+    .regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/)
+    .optional(),
+  apiKey: z.string().min(1).max(16384).optional(),
+  apiKeyHeader: z
+    .string()
+    .regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/)
+    .optional(),
+  apiKeyPrefix: z
+    .string()
+    .max(1024)
+    .refine((value) => !/[\r\n]/.test(value))
+    .optional(),
+  headers: z
+    .record(
+      z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/),
+      z
+        .string()
+        .max(16384)
+        .refine((value) => !/[\r\n]/.test(value)),
+    )
+    .optional(),
+  models: z.array(z.string().min(1).max(1024)).max(1000).optional(),
   requestTimeoutMs: z.number().int().min(1000).max(600000).optional(),
   streamTimeoutMs: z.number().int().min(1000).max(600000).optional(),
   maxRetries: z.number().int().min(0).max(5).optional(),
@@ -28,8 +48,8 @@ export const ProviderConfigSchema = z.object({
       thinking: z.boolean().optional(),
       vision: z.boolean().optional(),
       promptCaching: z.boolean().optional(),
-      maxContextTokens: z.number().int().positive().optional(),
-      maxOutputTokens: z.number().int().positive().optional(),
+      maxContextTokens: z.number().int().positive().max(10_000_000).optional(),
+      maxOutputTokens: z.number().int().positive().max(10_000_000).optional(),
     })
     .optional(),
   modelCapabilities: z
@@ -41,8 +61,13 @@ export const ProviderConfigSchema = z.object({
         thinking: z.boolean().optional(),
         vision: z.boolean().optional(),
         promptCaching: z.boolean().optional(),
-        maxContextTokens: z.number().int().positive().optional(),
-        maxOutputTokens: z.number().int().positive().optional(),
+        maxContextTokens: z
+          .number()
+          .int()
+          .positive()
+          .max(10_000_000)
+          .optional(),
+        maxOutputTokens: z.number().int().positive().max(10_000_000).optional(),
       }),
     )
     .optional(),
@@ -52,6 +77,7 @@ export const McpServerConfigSchema = z.object({
   command: z.string(),
   args: z.array(z.string()).default([]),
   env: z.record(z.string()).optional(),
+  inheritEnv: z.array(z.string()).default([]),
   tools: z
     .record(
       z.object({
@@ -64,19 +90,28 @@ export const McpServerConfigSchema = z.object({
 });
 
 export const ModelPriceSchema = z.object({
-  inputCostPer1M: z.number().default(0),
-  outputCostPer1M: z.number().default(0),
-  cacheReadCostPer1M: z.number().optional(),
+  inputCostPer1M: z.number().finite().nonnegative().default(0),
+  outputCostPer1M: z.number().finite().nonnegative().default(0),
+  cacheReadCostPer1M: z.number().finite().nonnegative().optional(),
 });
 
+export const PricingTableSchema = z.record(ModelPriceSchema);
+
 export const ConfigSchema = z.object({
-  name: z.string().default("orbit-project"),
-  editor: z.string().default("notepad.exe"),
+  schemaVersion: z.literal(ORBIT_CONFIG_SCHEMA_VERSION).default(1),
+  name: z.string().min(1).max(256).default("orbit-project"),
+  editor: z.string().min(1).max(4096).default("notepad.exe"),
   autoCommit: z.boolean().default(false),
   language: z.enum(["en", "zh"]).default("en"),
+  security: z
+    .object({
+      trustProjectExecutables: z.boolean().default(false),
+    })
+    .default({}),
   provider: z
     .object({
-      default: z.string().default("deepseek-openai"),
+      default: z.string().min(1).max(256).default("deepseek-openai"),
+      embedding: z.string().min(1).max(256).optional(),
     })
     .default({}),
   models: z
@@ -115,8 +150,8 @@ export const ConfigSchema = z.object({
     .default({}),
   context: z
     .object({
-      maxFilesToIndex: z.number().default(5000),
-      maxFileSizeKb: z.number().default(512),
+      maxFilesToIndex: z.number().int().min(1).max(100_000).default(5000),
+      maxFileSizeKb: z.number().int().min(1).max(102_400).default(512),
       ignore: z
         .array(z.string())
         .default([
@@ -141,7 +176,7 @@ export const ConfigSchema = z.object({
           "**/.orbit/**",
         ]),
       autoCompact: z.boolean().default(true),
-      compactThreshold: z.number().default(0.75),
+      compactThreshold: z.number().finite().min(0.1).max(1).default(0.75),
       autoRepair: z.boolean().default(false),
       testCommands: z.array(z.string()).default([]),
     })
@@ -149,6 +184,8 @@ export const ConfigSchema = z.object({
   agent: z
     .object({
       maxIterations: z.number().int().min(1).max(50).default(8),
+      fastMaxOutputTokens: z.number().int().min(256).max(384000).default(8192),
+      maxOutputTokens: z.number().int().min(256).max(384000).default(16384),
     })
     .default({}),
   autocomplete: z
@@ -156,7 +193,7 @@ export const ConfigSchema = z.object({
       enabled: z.boolean().default(true),
       provider: z.string().default("ollama"),
       model: z.string().default("qwen2.5-coder:1.5b"),
-      debounceMs: z.number().default(150),
+      debounceMs: z.number().int().min(0).max(10_000).default(150),
       speculative: z
         .object({
           enabled: z.boolean().default(false),
@@ -178,7 +215,7 @@ export const ConfigSchema = z.object({
       bash: z
         .object({
           enabled: z.boolean().default(true),
-          timeoutMs: z.number().default(120000),
+          timeoutMs: z.number().int().min(1000).max(600_000).default(120000),
         })
         .default({}),
       webSearch: z
@@ -225,8 +262,8 @@ export const ConfigSchema = z.object({
       postEdit: z.string().optional(),
     })
     .default({}),
-  pricing: z.record(ModelPriceSchema).default({}),
-  budgetLimit: z.number().default(10.0),
+  pricing: PricingTableSchema.default({}),
+  budgetLimit: z.number().finite().nonnegative().default(10.0),
   session: z
     .object({
       store: z.enum(["sqlite", "jsonl"]).default("sqlite"),

@@ -1,7 +1,9 @@
 import { existsSync, promises as fsPromises } from "fs";
-import { join, dirname } from "path";
-import { Document } from "./VectorStore.js";
-import { getGitBranch } from "@orbit-build/shared";
+import { dirname, resolve } from "path";
+import { randomUUID } from "crypto";
+import { z } from "zod";
+import { Document, DocumentSchema } from "./VectorStore.js";
+import { getOrbitCachePath } from "./cachePaths.js";
 
 export function tokenize(text: string): string[] {
   const rawWords = text
@@ -71,29 +73,43 @@ export function tokenize(text: string): string[] {
   return rawWords.filter((w) => !keywords.has(w));
 }
 
-interface IndexDoc {
-  id: string;
-  filePath: string;
-  terms: Record<string, number>;
-  docLen: number;
+const IndexDocSchema = z.object({
+  id: z.string().min(1).max(4096),
+  filePath: z.string().min(1).max(4096),
+  terms: z.record(z.number().int().positive()),
+  docLen: z.number().int().positive(),
+});
+
+type IndexDoc = z.infer<typeof IndexDocSchema>;
+
+const BM25FileSchema = z.object({
+  docs: z.record(IndexDocSchema),
+});
+
+function createRecord<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
 }
 
 export class BM25Store {
-  private docs: Record<string, IndexDoc> = {};
-  private df: Record<string, number> = {};
+  private docs: Record<string, IndexDoc> = createRecord<IndexDoc>();
+  private df: Record<string, number> = createRecord<number>();
   private avgdl: number = 0;
   private dbPath: string;
+  private cachePathInitialized = false;
   private loaded = false;
+  private cacheState: "uninitialized" | "missing" | "valid" | "invalid" =
+    "uninitialized";
 
   constructor(private cwd: string) {
-    const branchName = getGitBranch(cwd);
-    this.dbPath = branchName
-      ? join(cwd, ".orbit", "branches", branchName, "bm25_store.json")
-      : join(cwd, ".orbit", "bm25_store.json");
+    this.dbPath = resolve(cwd, ".orbit", "bm25_store.json");
   }
 
   public async addDocuments(documents: Document[]): Promise<void> {
-    for (const doc of documents) {
+    if (!this.loaded) {
+      await this.load();
+    }
+    const validatedDocuments = z.array(DocumentSchema).parse(documents);
+    for (const doc of validatedDocuments) {
       const tokens = tokenize(doc.text);
       if (tokens.length === 0) continue;
 
@@ -109,7 +125,7 @@ export class BM25Store {
       }
 
       // Calculate term frequencies
-      const terms: Record<string, number> = {};
+      const terms = createRecord<number>();
       for (const t of tokens) {
         terms[t] = (terms[t] || 0) + 1;
       }
@@ -132,6 +148,9 @@ export class BM25Store {
   }
 
   public async deleteByFilePath(filePath: string): Promise<void> {
+    if (!this.loaded) {
+      await this.load();
+    }
     let changed = false;
     for (const [id, doc] of Object.entries(this.docs)) {
       if (doc.filePath === filePath) {
@@ -156,6 +175,9 @@ export class BM25Store {
     query: string,
     limit: number,
   ): Promise<Array<{ id: string; score: number }>> {
+    if (!Number.isInteger(limit) || limit <= 0) {
+      return [];
+    }
     if (Object.keys(this.docs).length === 0) {
       await this.load();
     }
@@ -210,6 +232,7 @@ export class BM25Store {
   }
 
   public async save(): Promise<void> {
+    this.initializeCachePath();
     try {
       const parentDir = dirname(this.dbPath);
       if (!existsSync(parentDir)) {
@@ -220,11 +243,14 @@ export class BM25Store {
         df: this.df,
         avgdl: this.avgdl,
       };
+      const tmpPath = `${this.dbPath}.tmp-${process.pid}-${randomUUID()}`;
       await fsPromises.writeFile(
-        this.dbPath,
+        tmpPath,
         JSON.stringify(data, null, 2),
         "utf8",
       );
+      await fsPromises.rename(tmpPath, this.dbPath);
+      this.cacheState = "valid";
     } catch {
       // Ignore
     }
@@ -232,31 +258,48 @@ export class BM25Store {
 
   public async load(): Promise<void> {
     if (this.loaded) return;
+    this.initializeCachePath();
     this.loaded = true;
     if (!existsSync(this.dbPath)) {
-      this.docs = {};
-      this.df = {};
+      this.docs = createRecord<IndexDoc>();
+      this.df = createRecord<number>();
       this.avgdl = 0;
+      this.cacheState = "missing";
       return;
     }
     try {
       const raw = await fsPromises.readFile(this.dbPath, "utf8");
-      const parsed = JSON.parse(raw);
-      this.docs = parsed.docs || {};
-      this.df = parsed.df || {};
-      this.avgdl = parsed.avgdl || 0;
+      const parsed = BM25FileSchema.safeParse(JSON.parse(raw));
+      if (!parsed.success) {
+        throw new Error("Invalid BM25 cache file.");
+      }
+      this.docs = createRecord<IndexDoc>();
+      for (const [id, doc] of Object.entries(parsed.data.docs)) {
+        if (id === doc.id) {
+          this.docs[id] = {
+            ...doc,
+            terms: Object.assign(createRecord<number>(), doc.terms),
+          };
+        }
+      }
+      this.rebuildDocumentFrequencies();
+      this.recalculateStats();
+      this.cacheState = "valid";
     } catch {
-      this.docs = {};
-      this.df = {};
+      this.docs = createRecord<IndexDoc>();
+      this.df = createRecord<number>();
       this.avgdl = 0;
+      this.cacheState = "invalid";
     }
   }
 
   public async clear(): Promise<void> {
-    this.docs = {};
-    this.df = {};
+    this.initializeCachePath();
+    this.docs = createRecord<IndexDoc>();
+    this.df = createRecord<number>();
     this.avgdl = 0;
-    this.loaded = false;
+    this.loaded = true;
+    this.cacheState = "missing";
     if (existsSync(this.dbPath)) {
       try {
         await fsPromises.unlink(this.dbPath);
@@ -264,5 +307,25 @@ export class BM25Store {
         // Ignore
       }
     }
+  }
+
+  private rebuildDocumentFrequencies(): void {
+    this.df = createRecord<number>();
+    for (const doc of Object.values(this.docs)) {
+      for (const term of Object.keys(doc.terms)) {
+        this.df[term] = (this.df[term] || 0) + 1;
+      }
+    }
+  }
+
+  /** Reports whether an on-disk cache was present and passed validation. */
+  public hasValidCache(): boolean {
+    return this.cacheState === "valid";
+  }
+
+  private initializeCachePath(): void {
+    if (this.cachePathInitialized) return;
+    this.dbPath = getOrbitCachePath(this.cwd, "bm25_store.json");
+    this.cachePathInitialized = true;
   }
 }

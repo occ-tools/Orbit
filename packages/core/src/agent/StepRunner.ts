@@ -22,7 +22,9 @@ export class StepRunner {
     }
 
     let parsedArgs: unknown;
-    let validated: { success: true; data: any } | { success: false; error: any };
+    let validated:
+      | { success: true; data: any }
+      | { success: false; error: any };
     try {
       parsedArgs = JSON.parse(toolCall.arguments);
       validated = tool.inputSchema.safeParse(parsedArgs);

@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { BUILTIN_SLASH_COMMANDS, CommandRouter } from "./CommandRouter.js";
 import { Prompt } from "@orbit-build/tui";
+import type { AgentLoopRunOutcome } from "@orbit-build/core";
 
 describe("CommandRouter Unit Tests", () => {
   afterEach(() => {
@@ -45,6 +46,119 @@ describe("CommandRouter Unit Tests", () => {
 
   it("includes the Orbit Web UI command in built-in slash commands", () => {
     expect(BUILTIN_SLASH_COMMANDS).toContain("/webui");
+  });
+
+  it("serializes terminal turns while a Web UI turn owns the agent loop", async () => {
+    let finishWebRun: (() => void) | undefined;
+    const loop = {
+      ...mockLoop,
+      prepareUserTurn: vi.fn(),
+      getSessionId: () => "session-web",
+      run: vi.fn(
+        () =>
+          new Promise<AgentLoopRunOutcome>((resolve) => {
+            finishWebRun = () =>
+              resolve({
+                status: "completed",
+                sessionId: "session-web",
+                attempts: 1,
+              });
+          }),
+      ),
+    };
+    const tui = {
+      ...mockTui,
+      hasActiveRunnable: vi.fn(() => false),
+      setActiveRunnable: vi.fn(),
+      finishAttempt: vi.fn(),
+    };
+    const router = new CommandRouter(
+      "/dummy/cwd",
+      mockConfig,
+      mockProvider,
+      vi.fn(),
+      loop as any,
+      tui as any,
+      true,
+      () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+      vi.fn(),
+      () => localState,
+      vi.fn(),
+      mockInteraction as any,
+      false,
+    );
+    const submitWebPrompt = (
+      router as unknown as {
+        submitWebPrompt(prompt: string): Promise<{ ok: boolean }>;
+      }
+    ).submitWebPrompt.bind(router);
+
+    const pendingWebTurn = submitWebPrompt("long browser task");
+    await vi.waitFor(() => expect(loop.run).toHaveBeenCalledOnce());
+
+    expect(router.isWebUiBusy()).toBe(true);
+    expect(router.beginTerminalRun()).toBeUndefined();
+
+    finishWebRun?.();
+    await expect(pendingWebTurn).resolves.toEqual({ ok: true });
+
+    const releaseTerminalRun = router.beginTerminalRun();
+    expect(releaseTerminalRun).toBeTypeOf("function");
+    releaseTerminalRun?.();
+  });
+
+  it("returns structured agent failures to the Web UI", async () => {
+    const loop = {
+      ...mockLoop,
+      prepareUserTurn: vi.fn(),
+      getSessionId: () => "session-failed",
+      run: vi.fn(
+        async (): Promise<AgentLoopRunOutcome> => ({
+          status: "failed",
+          sessionId: "session-failed",
+          attempts: 1,
+          error: {
+            code: "provider_error",
+            message: "Provider rejected the request.",
+          },
+        }),
+      ),
+    };
+    const tui = {
+      ...mockTui,
+      hasActiveRunnable: vi.fn(() => false),
+      setActiveRunnable: vi.fn(),
+      finishAttempt: vi.fn(),
+    };
+    const router = new CommandRouter(
+      "/dummy/cwd",
+      mockConfig,
+      mockProvider,
+      vi.fn(),
+      loop as any,
+      tui as any,
+      true,
+      () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+      vi.fn(),
+      () => localState,
+      vi.fn(),
+      mockInteraction as any,
+      false,
+    );
+    const result = await (
+      router as unknown as {
+        submitWebPrompt(prompt: string): Promise<{
+          ok: boolean;
+          message?: string;
+        }>;
+      }
+    ).submitWebPrompt("request with a bad credential");
+
+    expect(result).toEqual({
+      ok: false,
+      message: "Provider rejected the request.",
+    });
+    expect(router.isWebUiBusy()).toBe(false);
   });
 
   it("should output help message when /help is executed", async () => {
@@ -180,6 +294,7 @@ describe("CommandRouter Unit Tests", () => {
         getActiveSession: () => ({ id: "active-session" }),
       },
       getSessions: vi.fn(() => sessions),
+      getSessionId: vi.fn(() => "active-session"),
       deleteSession,
       startNewSession: vi.fn(),
       resumeSession: vi.fn(),
@@ -259,18 +374,20 @@ describe("CommandRouter Unit Tests", () => {
       .spyOn(Prompt, "askSelectWithDelete")
       .mockResolvedValueOnce({ action: "delete", value: "session-1" })
       .mockResolvedValueOnce({ action: "cancel" });
+    const sessionState = { sessionId: "session-1" };
     const loop = {
       ...mockLoop,
-      state: { sessionId: "session-1" },
+      state: sessionState,
       sessionManager: {
         getActiveSession: () => ({ id: "session-1" }),
       },
       getSessions: vi.fn(() => sessions),
+      getSessionId: vi.fn(() => sessionState.sessionId),
       getHistory: vi.fn(() => reloadedHistory),
       deleteSession,
       startNewSession: vi.fn(),
       resumeSession: vi.fn((id: string) => {
-        loop.state.sessionId = id;
+        sessionState.sessionId = id;
         return true;
       }),
     };

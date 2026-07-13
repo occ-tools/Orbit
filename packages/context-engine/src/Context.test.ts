@@ -123,25 +123,29 @@ describe("ContextPackBuilder tests", () => {
     expect(pack.activeSkills?.[0].content).toContain("Prioritize bugs");
   });
 
-  it("honors maxAutoSkillBytes when selecting automatic skills", () => {
-    const builder = new ContextPackBuilder(tempDir);
-    const active = (builder as any).selectActiveSkills(
+  it("honors maxAutoSkillBytes when selecting automatic skills", async () => {
+    const skillDir = join(tempDir, ".orbit", "skills", "api-tuning");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      join(skillDir, "SKILL.md"),
       [
-        {
-          name: "api-tuning",
-          description: "provider throughput",
-          path: ".orbit/skills/api-tuning/SKILL.md",
-          content: "Use streaming. ".repeat(200),
-        },
-      ],
-      "optimize provider throughput",
-      {
-        activation: "auto",
-        maxActive: 3,
-        maxSkillBytes: 4096,
-        maxAutoSkillBytes: 512,
-      },
+        "---",
+        "name: api-tuning",
+        "description: provider throughput",
+        "---",
+        "",
+        "Use streaming. ".repeat(200),
+      ].join("\n"),
+      "utf8",
     );
+    writeFileSync(
+      join(tempDir, "orbit.config.yaml"),
+      "skills:\n  maxAutoSkillBytes: 512\n",
+      "utf8",
+    );
+    const builder = new ContextPackBuilder(tempDir);
+    const pack = await builder.build([], "optimize provider throughput");
+    const active = pack.activeSkills ?? [];
 
     expect(active[0].activation).toBe("auto");
     expect(active[0].loadedBytes).toBeLessThanOrEqual(512);

@@ -1,7 +1,27 @@
 {
   "name": "@orbit-build/cli",
   "version": "0.1.3",
+  "description": "Local-first AI coding agent CLI, TUI, Web UI, diagnostics, and LSP runtime",
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "cli",
+    "deepseek",
+    "lsp"
+  ],
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hephaestus-DevKit/Orbit.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/Hephaestus-DevKit/Orbit#readme",
+  "bugs": {
+    "url": "https://github.com/Hephaestus-DevKit/Orbit/issues"
+  },
   "bin": {
     "orbit": "./dist/index.js"
   },
@@ -21,7 +41,8 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean"
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "prepack": "pnpm run build"
   },
   "dependencies": {
     "picocolors": "^1.0.1",

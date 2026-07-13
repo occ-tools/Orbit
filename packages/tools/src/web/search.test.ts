@@ -65,7 +65,10 @@ describe("WebSearchTool", () => {
 
     const tool = new WebSearchTool();
     const res = await tool.execute(
-      { query: "deepseek context caching prompt_cache_hit_tokens", maxResults: 1 },
+      {
+        query: "deepseek context caching prompt_cache_hit_tokens",
+        maxResults: 1,
+      },
       {
         cwd: process.cwd(),
         sessionId: "test",
@@ -91,7 +94,7 @@ describe("WebSearchTool", () => {
   });
 
   it("uses configured SearXNG JSON endpoint before HTML fallbacks", async () => {
-    const fetchMock = vi.fn(async () => {
+    const fetchMock = vi.fn(async (_input: Parameters<typeof fetch>[0]) => {
       return {
         ok: true,
         status: 200,
@@ -187,6 +190,8 @@ describe("WebSearchTool", () => {
   });
 
   it("returns structured Open-Meteo data for weather queries before generic search", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-28T02:00:00+08:00"));
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("geocoding-api.open-meteo.com")) {
         return {
@@ -353,22 +358,27 @@ describe("WebSearchTool", () => {
   it("passes the full 20-result cap to configured search providers", async () => {
     const previousApiKey = process.env.TEST_TAVILY_API_KEY;
     process.env.TEST_TAVILY_API_KEY = "test-key";
-    const fetchMock = vi.fn(async () => {
-      return {
-        status: 200,
-        statusText: "OK",
-        text: async () =>
-          JSON.stringify({
-            results: [
-              {
-                title: "Result",
-                url: "https://example.com/result",
-                content: "Result summary",
-              },
-            ],
-          }),
-      } as any;
-    });
+    const fetchMock = vi.fn(
+      async (
+        _input: Parameters<typeof fetch>[0],
+        _init?: Parameters<typeof fetch>[1],
+      ) => {
+        return {
+          status: 200,
+          statusText: "OK",
+          text: async () =>
+            JSON.stringify({
+              results: [
+                {
+                  title: "Result",
+                  url: "https://example.com/result",
+                  content: "Result summary",
+                },
+              ],
+            }),
+        } as any;
+      },
+    );
     global.fetch = fetchMock as any;
 
     try {

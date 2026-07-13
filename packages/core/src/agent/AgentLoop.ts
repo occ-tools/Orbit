@@ -1,9 +1,11 @@
 import { OrbitConfig } from "@orbit-build/config";
 import {
+  getDeepSeekV4ModelProfile,
   ModelProvider,
   OrbitMessage,
   OrbitContentBlock,
   OrbitToolCall,
+  TokenUsage,
 } from "@orbit-build/model-providers";
 import { PermissionEngine } from "@orbit-build/permissions";
 import { CheckpointManager, RollbackManager } from "@orbit-build/sandbox";
@@ -13,11 +15,14 @@ import {
   ContextPack,
 } from "@orbit-build/context-engine";
 import { SessionManager, Session } from "@orbit-build/session";
-import { toolRegistry } from "@orbit-build/tools";
+import { toolRegistry, type ToolResult } from "@orbit-build/tools";
 import { StatusBar, Prompt, Renderer } from "@orbit-build/tui";
 import { AgentState, createInitialState } from "./AgentState.js";
 import { z } from "zod";
-import { MessageBuilder } from "./MessageBuilder.js";
+import {
+  MessageBuilder,
+  VOLATILE_CONTEXT_MESSAGE_KIND,
+} from "./MessageBuilder.js";
 import { PromptCacheSlab, PromptCacheSlabBuilder } from "./PromptCacheSlab.js";
 import { StepRunner } from "./StepRunner.js";
 import { Planner } from "./Planner.js";
@@ -26,24 +31,77 @@ import picocolors from "picocolors";
 import path from "path";
 import fs from "fs";
 import { createHash } from "crypto";
-import { exec } from "child_process";
+import { exec, execFile } from "child_process";
 import { promisify } from "util";
 const execPromise = promisify(exec);
+const execFilePromise = promisify(execFile);
+import { createRequire } from "module";
 import { MCPClient, DynamicMCPTool } from "@orbit-build/mcp";
-import { resolveSafePath } from "@orbit-build/shared";
+import {
+  estimateTokenCount,
+  redactSecrets,
+  resolveSafePath,
+} from "@orbit-build/shared";
 import { VerificationContractManager } from "../verification/VerificationContractManager.js";
 
-const DEEPSEEK_CACHE_PRIMER_ROUNDS = 2;
-const DEEPSEEK_CACHE_PRIMER_TTL_MS = 240000;
-const DEEPSEEK_CACHE_REPAIR_HIT_RATE = 0.85;
-const DEEPSEEK_FLASH_CACHE_PRIMER_LATENCY_BUDGET_MS = 800;
-const DEEPSEEK_REASONING_CACHE_PRIMER_LATENCY_BUDGET_MS = 1500;
-const DEEPSEEK_CACHE_KEEPALIVE_INTERVAL_MS = 210000;
-const DEEPSEEK_CACHE_KEEPALIVE_PROMPT = "0";
+const DEEPSEEK_CACHE_DEGRADED_HIT_RATE = 0.85;
 const DEEPSEEK_VERBOSE_CACHE_ENV = "ORBIT_DEEPSEEK_VERBOSE_CACHE";
 const NETWORK_TOOL_RESULT_MAX_RESULTS = 10;
 const NETWORK_TOOL_RESULT_SUMMARY_CHARS = 280;
 const NETWORK_TOOL_RESULT_MAX_CHARS = 6000;
+const AGENT_LOOP_ERROR_MESSAGE_MAX_CHARS = 2000;
+
+export type AgentLoopFailureCode = "provider_error" | "execution_error";
+export type AgentLoopAbortReason = "immediate" | "interrupted" | "rollback";
+
+export type AgentLoopRunOutcome =
+  | {
+      status: "completed";
+      sessionId: string;
+      attempts: number;
+    }
+  | {
+      status: "failed";
+      sessionId: string;
+      attempts: number;
+      error: {
+        code: AgentLoopFailureCode;
+        message: string;
+      };
+    }
+  | {
+      status: "aborted";
+      sessionId: string;
+      attempts: number;
+      reason: AgentLoopAbortReason;
+      message: string;
+    };
+
+class AgentLoopExecutionError extends Error {
+  public readonly name = "AgentLoopExecutionError";
+
+  constructor(
+    public readonly code: AgentLoopFailureCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function safeAgentLoopErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const normalized = redactSecrets(raw)
+    .replace(
+      /\b(api[-_ ]?key|authorization|token|secret)(\s*[:=]\s*)["']?[^\s"',;]+/gi,
+      "$1$2***REDACTED***",
+    )
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const message = normalized || "Agent execution failed.";
+  if (message.length <= AGENT_LOOP_ERROR_MESSAGE_MAX_CHARS) return message;
+  return `${message.slice(0, AGENT_LOOP_ERROR_MESSAGE_MAX_CHARS - 1)}…`;
+}
 
 export interface UserInteraction {
   askApproval(reason: string, preview?: string): Promise<boolean>;
@@ -66,27 +124,20 @@ export class AgentLoop {
   private verificationManager: VerificationContractManager;
   private mcpClients: MCPClient[] = [];
   private abortController: AbortController | null = null;
+  private interruptMode: "prompt" | "abort" = "prompt";
   private sessionCost = 0;
   private totalInputTokens = 0;
   private totalCacheReadTokens = 0;
   private totalOutputTokens = 0;
   private statusBar: StatusBar;
-  private gitCheckpoints: Array<{ hash: string; isTemporary: boolean }> = [];
   private cachedRepoMapText = "";
   private lastSymbolsMtime = 0;
   private cachedContextPack: ContextPack | null = null;
   private cachedRepoMapTextForRun: string | null = null;
   private activeModelForRun: string | null = null;
-  private primedCacheSlabs = new Set<string>();
-  private pendingCacheSlabs = new Set<string>();
+  private fallbackModelForRun: string | null = null;
   private approvedToolScopes = new Set<string>();
   private userId: string;
-  private keepaliveTimer: NodeJS.Timeout | null = null;
-  private lastChatParams: {
-    model: string;
-    system: string;
-  } | null = null;
-  private cacheKeepaliveInFlight = false;
 
   constructor(
     private cwd: string,
@@ -99,13 +150,19 @@ export class AgentLoop {
       systemPromptOverride?: string;
       allowedTools?: string[];
       disableStatusBar?: boolean;
-      detachBackgroundCachePrimer?: boolean;
       sessionId?: string;
     },
   ) {
     this.statusBar = new StatusBar(!!this.options?.disableStatusBar);
     this.sessionManager = new SessionManager(cwd);
-    this.userId = createHash("sha256").update(cwd).digest("hex");
+    const workspaceIdentity = path.resolve(cwd).replace(/\\/g, "/");
+    this.userId = createHash("sha256")
+      .update(
+        process.platform === "win32"
+          ? workspaceIdentity.toLowerCase()
+          : workspaceIdentity,
+      )
+      .digest("hex");
 
     let session;
     if (options?.sessionId) {
@@ -135,10 +192,15 @@ export class AgentLoop {
         this.state.history = savedHistory;
         const lastUser = [...savedHistory]
           .reverse()
-          .find((m) => m.role === "user");
+          .find(
+            (message) =>
+              message.role === "user" &&
+              message.metadata?.kind !== VOLATILE_CONTEXT_MESSAGE_KIND &&
+              message.metadata?.kind !== "history_compaction_summary",
+          );
         if (lastUser) {
           const userText = lastUser.content
-            .map((c: any) => (c.type === "text" ? c.text : ""))
+            .map((content) => (content.type === "text" ? content.text : ""))
             .join("");
           this.state.task = userText;
         }
@@ -154,17 +216,20 @@ export class AgentLoop {
       cwd,
       session.id,
       this.checkpointManager,
+      config.security?.trustProjectExecutables ?? false,
+      config.tools.bash.timeoutMs,
     );
   }
 
-  public abort(): void {
+  public abort(mode: "prompt" | "immediate" = "prompt"): void {
+    this.interruptMode = mode === "immediate" ? "abort" : "prompt";
     if (this.abortController) {
       this.abortController.abort();
     }
   }
 
   private getMaxLoopAttempts(): number {
-    const raw = (this.config as any).agent?.maxIterations;
+    const raw = this.config.agent?.maxIterations;
     if (!Number.isFinite(raw)) {
       return 8;
     }
@@ -188,11 +253,12 @@ export class AgentLoop {
     return null;
   }
 
-  private buildToolResultContent(toolName: string, result: any): string {
+  private buildToolResultContent(
+    toolName: string,
+    result: ToolResult<unknown>,
+  ): string {
     const content = result.ok
-      ? typeof result.data === "string"
-        ? result.data
-        : JSON.stringify(result.data)
+      ? this.serializeToolResultData(result.data, result.display)
       : result.error || "Unknown error";
 
     if (!result.ok || toolName !== "web_search") {
@@ -204,6 +270,17 @@ export class AgentLoop {
       content,
       result.display || "",
     );
+  }
+
+  private serializeToolResultData(data: unknown, display?: string): string {
+    if (typeof data === "string") return data;
+    if (data === undefined) return display?.trim() || "Done";
+
+    try {
+      return JSON.stringify(data) ?? String(data);
+    } catch {
+      return String(data);
+    }
   }
 
   private compactNetworkToolResult(
@@ -283,309 +360,356 @@ export class AgentLoop {
     return `${text.slice(0, Math.max(0, maxChars - 32)).trimEnd()}\n... [truncated for context budget]`;
   }
 
-  public async run(): Promise<void> {
+  public async run(): Promise<AgentLoopRunOutcome> {
+    if (this.isImmediateAbortRequested()) {
+      this.interruptMode = "prompt";
+      return this.createAbortedOutcome(
+        "immediate",
+        "Execution was aborted before it started.",
+      );
+    }
+
     try {
-      eventBus.emitEvent("agent_start", {
-        taskId: this.state.sessionId,
-        task: this.state.task,
-      });
-      this.cachedContextPack = null;
-      this.cachedRepoMapTextForRun = null;
-      this.activeModelForRun = null;
-      this.approvedToolScopes.clear();
-      this.sessionManager.saveHistory(this.state.history);
-
-      // Start workspace symbol indexing in the background asynchronously
-      const symbolIndexer = new SymbolIndexer(this.cwd);
-      symbolIndexer.index().catch(() => {});
-
-      // Initialize MCP Servers if enabled
-      if (this.config.tools.mcp.enabled && this.config.mcpServers) {
-        this.interaction.showText(`● Initializing MCP servers...`);
-        for (const [serverName, serverConfig] of Object.entries(
-          this.config.mcpServers,
-        )) {
-          try {
-            const client = new MCPClient(
-              serverName,
-              serverConfig.command,
-              serverConfig.args || [],
-              serverConfig.env || {},
-            );
-            const tools = await client.start();
-            this.mcpClients.push(client);
-
-            for (const toolDef of tools) {
-              const configuredTool = serverConfig.tools?.[toolDef.name];
-              const risk = configuredTool?.risk || "execute";
-
-              const dynamicTool = new DynamicMCPTool(
-                serverName,
-                toolDef,
-                risk,
-                client,
-              );
-              toolRegistry.register(dynamicTool);
-              this.interaction.showText(
-                `  ✔ Registered MCP tool: ${dynamicTool.name} (${risk})`,
-              );
-            }
-          } catch (err: any) {
-            this.interaction.showText(
-              `  ✖ Failed to start MCP server "${serverName}": ${err.message}`,
-            );
-          }
-        }
+      return await this.executeRun();
+    } catch (error: unknown) {
+      if (
+        (error instanceof Error && error.name === "AbortError") ||
+        this.isImmediateAbortRequested()
+      ) {
+        this.interruptMode = "prompt";
+        return this.createAbortedOutcome(
+          "interrupted",
+          "Execution was interrupted.",
+        );
       }
 
-      const sigintListener = () => {
-        if (this.abortController) {
-          this.interaction.showText(
-            "\n● Interrupt received. Aborting current execution...",
-          );
-          this.abortController.abort();
-        }
+      const code =
+        error instanceof AgentLoopExecutionError
+          ? error.code
+          : "execution_error";
+      return {
+        status: "failed",
+        sessionId: this.state.sessionId,
+        attempts: this.state.attemptCount,
+        error: {
+          code,
+          message: safeAgentLoopErrorMessage(error),
+        },
       };
-      process.on("SIGINT", sigintListener);
+    }
+  }
 
-      const exitListener = () => {
-        for (const client of this.mcpClients) {
+  private async executeRun(): Promise<AgentLoopRunOutcome> {
+    const runStartedAt = new Date();
+    eventBus.emitEvent("agent_start", {
+      taskId: this.state.sessionId,
+      task: this.state.task,
+    });
+    this.cachedContextPack = null;
+    this.cachedRepoMapTextForRun = null;
+    this.activeModelForRun = null;
+    this.fallbackModelForRun = null;
+    this.approvedToolScopes.clear();
+    this.verificationManager.initialize();
+    this.sessionManager.saveHistory(this.state.history);
+    void this.provider.initialize?.().catch(() => {});
+
+    // Start workspace symbol indexing in the background asynchronously
+    const symbolIndexer = new SymbolIndexer(this.cwd);
+    symbolIndexer.index().catch(() => {});
+
+    // Initialize MCP Servers if enabled
+    if (this.config.tools.mcp.enabled && this.config.mcpServers) {
+      this.interaction.showText(`● Initializing MCP servers...`);
+      for (const [serverName, serverConfig] of Object.entries(
+        this.config.mcpServers,
+      )) {
+        try {
+          const client = new MCPClient(
+            serverName,
+            serverConfig.command,
+            serverConfig.args || [],
+            serverConfig.env || {},
+            serverConfig.inheritEnv || [],
+          );
+          const tools = await client.start();
+          this.mcpClients.push(client);
+
+          for (const toolDef of tools) {
+            const configuredTool = serverConfig.tools?.[toolDef.name];
+            const risk = configuredTool?.risk || "execute";
+
+            const dynamicTool = new DynamicMCPTool(
+              serverName,
+              toolDef,
+              risk,
+              client,
+            );
+            toolRegistry.register(dynamicTool);
+            this.interaction.showText(
+              `  ✔ Registered MCP tool: ${dynamicTool.name} (${risk})`,
+            );
+          }
+        } catch (err: any) {
+          this.interaction.showText(
+            `  ✖ Failed to start MCP server "${serverName}": ${err.message}`,
+          );
+        }
+      }
+    }
+
+    const sigintListener = () => {
+      if (this.abortController) {
+        this.interaction.showText(
+          "\n● Interrupt received. Aborting current execution...",
+        );
+        this.abortController.abort();
+      }
+    };
+    process.on("SIGINT", sigintListener);
+
+    const exitListener = () => {
+      for (const client of this.mcpClients) {
+        try {
+          client.stop().catch(() => {});
+        } catch {
+          // Ignore
+        }
+      }
+    };
+    process.on("exit", exitListener);
+
+    try {
+      if (this.state.history.length === 0) {
+        const initPack = await this.contextBuilder.build([]);
+        this.interaction.showText(
+          `● Workspace profiles: ${initPack.projectIndex.detectedLanguages.join(", ")} project detected.`,
+        );
+        this.state.history.push({
+          id: `msg_user_init_${Date.now()}`,
+          role: "user",
+          createdAt: new Date().toISOString(),
+          content: [{ type: "text", text: this.state.task }],
+        });
+        this.sessionManager.saveHistory(this.state.history);
+      }
+
+      while (
+        !this.state.done &&
+        this.state.attemptCount < this.state.maxAttempts
+      ) {
+        // Compact only near the model's real context limit. V4 supports 1M
+        // tokens, so message-count thresholds would destroy useful cache
+        // prefixes long before compaction is necessary.
+        if (this.config.context.autoCompact && this.shouldCompactHistory()) {
+          this.interaction.showText(
+            "● Dialogue history is too long. Auto-compacting older history to save tokens...",
+          );
+          await this.autoCompactHistory();
+        }
+
+        if (this.sessionCost > this.config.budgetLimit) {
+          this.interaction.showText(
+            picocolors.red(
+              `\n✖ Budget Exceeded: The session cost has reached $${this.sessionCost.toFixed(4)}, which exceeds the limit of $${this.config.budgetLimit.toFixed(2)}.`,
+            ),
+          );
+          const confirm = await this.interaction.askApproval(
+            `Session cost limit reached. Do you want to increase the budget limit by $10.00 and continue?`,
+          );
+          if (confirm) {
+            this.config.budgetLimit += 10.0;
+          } else {
+            this.state.done = true;
+            break;
+          }
+        }
+
+        this.state.attemptCount++;
+        eventBus.emitEvent("loop_start", {
+          attempt: this.state.attemptCount,
+        });
+
+        // Runaway Iteration Guard
+        if (
+          this.state.attemptCount > 1 &&
+          Number.isFinite(this.getRunawayPromptInterval()) &&
+          (this.state.attemptCount - 1) % this.getRunawayPromptInterval() === 0
+        ) {
+          const continueExec = await this.interaction.askApproval(
+            `Agent loop has run for ${this.state.attemptCount - 1} iterations. Continue executing to prevent runaway costs?`,
+          );
+          if (!continueExec) {
+            this.interaction.showText(
+              "● Terminated by user to prevent runaway iterations.",
+            );
+            this.state.done = true;
+            break;
+          }
+        }
+
+        // Repository Tree builder (Hierarchical Summary via PageRank Repo Map)
+        let repoMapText = "";
+        if (this.cachedRepoMapTextForRun !== null) {
+          repoMapText = this.cachedRepoMapTextForRun;
+        } else {
           try {
-            client.stop().catch(() => {});
+            const indexer = new SymbolIndexer(this.cwd);
+            const indexPath = indexer.indexPath;
+            if (fs.existsSync(indexPath)) {
+              const stat = fs.statSync(indexPath);
+              if (
+                stat.mtimeMs === this.lastSymbolsMtime &&
+                this.cachedRepoMapText
+              ) {
+                repoMapText = this.cachedRepoMapText;
+              } else {
+                const landmarkMap = await indexer.getRepoMapText(2048);
+                if (landmarkMap) {
+                  repoMapText = `\n\n${landmarkMap}\n\nNote: To find where a symbol (class, function, etc.) is declared or referenced, use the "search_symbols" and "find_symbol_references" tools dynamically.`;
+                  this.cachedRepoMapText = repoMapText;
+                  this.lastSymbolsMtime = stat.mtimeMs;
+                }
+              }
+            }
           } catch {
             // Ignore
           }
+          this.cachedRepoMapTextForRun = repoMapText;
         }
-      };
-      process.on("exit", exitListener);
 
-      try {
-        if (this.state.history.length === 0) {
-          const initPack = await this.contextBuilder.build([]);
-          this.interaction.showText(
-            `● Workspace profiles: ${initPack.projectIndex.detectedLanguages.join(", ")} project detected.`,
+        // 1. Dynamic routing selection
+        // Explore vs. Write/Repair phase detection
+        let nextModel =
+          this.options?.modelOverride || this.config.models.default;
+
+        // Verification repair turns require the quality lane (V4 Pro by default).
+        const isRepairTurn =
+          this.state.history.length > 0 &&
+          this.state.history[this.state.history.length - 1].role === "user" &&
+          this.state.history[this.state.history.length - 1].content.some(
+            (b) =>
+              b.type === "text" && b.text.includes("[Verification Failed]"),
           );
-          this.state.history.push({
-            id: `msg_user_init_${Date.now()}`,
-            role: "user",
-            createdAt: new Date().toISOString(),
-            content: [{ type: "text", text: this.state.task }],
-          });
-          this.sessionManager.saveHistory(this.state.history);
-        }
 
-        while (
-          !this.state.done &&
-          this.state.attemptCount < this.state.maxAttempts
-        ) {
-          // Auto-compact dialogue history if length exceeds 40
-          if (
-            this.config.context.autoCompact &&
-            this.state.history.length > 40
-          ) {
-            this.interaction.showText(
-              "● Dialogue history is too long. Auto-compacting older history to save tokens...",
-            );
-            await this.autoCompactHistory();
-          }
+        // Route from the current user turn only. Older complex requests must not
+        // permanently force later simple turns onto the slower thinking lane.
+        const currentUserMessage = [...this.state.history]
+          .reverse()
+          .find(
+            (message) =>
+              message.role === "user" &&
+              message.metadata?.kind !== VOLATILE_CONTEXT_MESSAGE_KIND &&
+              message.metadata?.kind !== "history_compaction_summary",
+          );
+        const userQueryText = (
+          currentUserMessage?.content
+            .filter((block) => block.type === "text")
+            .map((block) => (block.type === "text" ? block.text : ""))
+            .join("\n") || this.state.task
+        ).toLowerCase();
 
-          if (this.sessionCost > this.config.budgetLimit) {
-            this.interaction.showText(
-              picocolors.red(
-                `\n✖ Budget Exceeded: The session cost has reached $${this.sessionCost.toFixed(4)}, which exceeds the limit of $${this.config.budgetLimit.toFixed(2)}.`,
-              ),
-            );
-            const confirm = await this.interaction.askApproval(
-              `Session cost limit reached. Do you want to increase the budget limit by $10.00 and continue?`,
-            );
-            if (confirm) {
-              this.config.budgetLimit += 10.0;
-            } else {
-              this.state.done = true;
-              break;
-            }
-          }
+        // Heuristic task classification: High complexity vs Trivial
+        const highComplexityKeywords = [
+          "debug",
+          "investigate",
+          "root cause",
+          "why does",
+          "race condition",
+          "architecture",
+          "refactor",
+          "migrate",
+          "design",
+          "tradeoff",
+          "optimize",
+          "security",
+          "vulnerability",
+          "concurrency",
+          "deadlock",
+          "memory leak",
+          "reason",
+          "think",
+          "explain why",
+          "diagnose",
+          "trace",
+          "why does",
+          "what's wrong",
+          "compare",
+          "evaluate",
+          "assess",
+          "decide",
+          "choose",
+          "推理",
+          "分析",
+          "诊断",
+          "调试",
+          "设计",
+          "评估",
+          "原因",
+          "为什么",
+          "调查",
+          "死锁",
+          "内存泄漏",
+          "并发",
+          "优化",
+          "重构",
+          "安全",
+          "漏洞",
+          "架构",
+          "异常",
+          "报错",
+          "崩溃",
+          "故障",
+        ];
 
-          this.state.attemptCount++;
-          eventBus.emitEvent("loop_start", {
-            attempt: this.state.attemptCount,
-          });
+        const trivialKeywords = [
+          "what is",
+          "list",
+          "show",
+          "echo",
+          "print",
+          "rename",
+          "lint",
+          "format",
+          "ty",
+          "thanks",
+          "yes",
+          "no",
+          "ok",
+          "continue",
+          "search",
+          "find",
+          "什么是",
+          "列出",
+          "显示",
+          "输出",
+          "打印",
+          "重命名",
+          "格式化",
+          "谢谢",
+          "继续",
+          "是",
+          "否",
+          "好的",
+        ];
 
-          // Runaway Iteration Guard
-          if (
-            this.state.attemptCount > 1 &&
-            Number.isFinite(this.getRunawayPromptInterval()) &&
-            (this.state.attemptCount - 1) % this.getRunawayPromptInterval() ===
-              0
-          ) {
-            const continueExec = await this.interaction.askApproval(
-              `Agent loop has run for ${this.state.attemptCount - 1} iterations. Continue executing to prevent runaway costs?`,
-            );
-            if (!continueExec) {
-              this.interaction.showText(
-                "● Terminated by user to prevent runaway iterations.",
-              );
-              this.state.done = true;
-              break;
-            }
-          }
+        const isComplexTask =
+          isRepairTurn ||
+          highComplexityKeywords.some((kw) => userQueryText.includes(kw));
 
-          // Repository Tree builder (Hierarchical Summary via PageRank Repo Map)
-          let repoMapText = "";
-          if (this.cachedRepoMapTextForRun !== null) {
-            repoMapText = this.cachedRepoMapTextForRun;
-          } else {
-            try {
-              const indexPath = path.join(this.cwd, ".orbit", "symbols.json");
-              const indexer = new SymbolIndexer(this.cwd);
-              if (!fs.existsSync(indexPath)) {
-                await indexer.index();
-              }
-              if (fs.existsSync(indexPath)) {
-                const stat = fs.statSync(indexPath);
-                if (
-                  stat.mtimeMs === this.lastSymbolsMtime &&
-                  this.cachedRepoMapText
-                ) {
-                  repoMapText = this.cachedRepoMapText;
-                } else {
-                  const landmarkMap = await indexer.getRepoMapText(2048);
-                  if (landmarkMap) {
-                    repoMapText = `\n\n${landmarkMap}\n\nNote: To find where a symbol (class, function, etc.) is declared or referenced, use the "search_symbols" and "find_symbol_references" tools dynamically.`;
-                    this.cachedRepoMapText = repoMapText;
-                    this.lastSymbolsMtime = stat.mtimeMs;
-                  }
-                }
-              }
-            } catch {
-              // Ignore
-            }
-            this.cachedRepoMapTextForRun = repoMapText;
-          }
+        const isSimpleTask =
+          !isRepairTurn &&
+          (trivialKeywords.some((kw) => userQueryText.includes(kw)) ||
+            userQueryText.length < 50) &&
+          !highComplexityKeywords.some((kw) => userQueryText.includes(kw));
 
-          // 1. Dynamic routing selection
-          // Explore vs. Write/Repair phase detection
-          let nextModel =
-            this.options?.modelOverride || this.config.models.default;
-
-          // If it's a verification failure (Auto-Repair), it MUST be R1/Pro
-          const isRepairTurn =
-            this.state.history.length > 0 &&
-            this.state.history[this.state.history.length - 1].role === "user" &&
-            this.state.history[this.state.history.length - 1].content.some(
-              (b) =>
-                b.type === "text" && b.text.includes("[Verification Failed]"),
-            );
-
-          // Get user query input for heuristic routing
-          const userQueryText = (
-            this.state.history
-              .filter((m) => m.role === "user")
-              .map((m) =>
-                m.content
-                  .filter((b) => b.type === "text")
-                  .map((b: any) => b.text)
-                  .join("\n"),
-              )
-              .join("\n") || this.state.task
-          ).toLowerCase();
-
-          // Heuristic task classification: High complexity vs Trivial
-          const highComplexityKeywords = [
-            "debug",
-            "investigate",
-            "root cause",
-            "why does",
-            "race condition",
-            "architecture",
-            "refactor",
-            "migrate",
-            "design",
-            "tradeoff",
-            "optimize",
-            "security",
-            "vulnerability",
-            "concurrency",
-            "deadlock",
-            "memory leak",
-            "reason",
-            "think",
-            "explain why",
-            "diagnose",
-            "trace",
-            "why does",
-            "what's wrong",
-            "compare",
-            "evaluate",
-            "assess",
-            "decide",
-            "choose",
-            "推理",
-            "分析",
-            "诊断",
-            "调试",
-            "设计",
-            "评估",
-            "原因",
-            "为什么",
-            "调查",
-            "死锁",
-            "内存泄漏",
-            "并发",
-            "优化",
-            "重构",
-            "安全",
-            "漏洞",
-            "架构",
-            "异常",
-            "报错",
-            "崩溃",
-            "故障",
-          ];
-
-          const trivialKeywords = [
-            "what is",
-            "list",
-            "show",
-            "echo",
-            "print",
-            "rename",
-            "lint",
-            "format",
-            "ty",
-            "thanks",
-            "yes",
-            "no",
-            "ok",
-            "continue",
-            "search",
-            "find",
-            "什么是",
-            "列出",
-            "显示",
-            "输出",
-            "打印",
-            "重命名",
-            "格式化",
-            "谢谢",
-            "继续",
-            "是",
-            "否",
-            "好的",
-          ];
-
-          const isComplexTask =
-            isRepairTurn ||
-            highComplexityKeywords.some((kw) => userQueryText.includes(kw));
-
-          const isSimpleTask =
-            !isRepairTurn &&
-            (trivialKeywords.some((kw) => userQueryText.includes(kw)) ||
-              userQueryText.length < 50) &&
-            !highComplexityKeywords.some((kw) => userQueryText.includes(kw));
-
-          // Check if the user request has tool execution or is complex
-          const hasWrittenFiles = this.state.history.some(
+        // Check if the user request has tool execution or is complex
+        const currentTurnStartIndex = currentUserMessage
+          ? this.state.history.lastIndexOf(currentUserMessage)
+          : 0;
+        const hasWrittenFiles = this.state.history
+          .slice(Math.max(0, currentTurnStartIndex))
+          .some(
             (msg) =>
               msg.role === "assistant" &&
               msg.content.some(
@@ -596,319 +720,460 @@ export class AgentLoop {
               ),
           );
 
-          if (this.options?.modelOverride) {
-            nextModel = this.options.modelOverride;
-          } else {
-            if (!this.activeModelForRun) {
-              if (isComplexTask) {
-                nextModel = this.config.models.default;
-              } else if (isSimpleTask && this.config.models.fast) {
+        const qualityModel =
+          this.config.models.coder || this.config.models.default;
+
+        if (this.fallbackModelForRun) {
+          nextModel = this.fallbackModelForRun;
+        } else if (this.options?.modelOverride) {
+          nextModel = this.options.modelOverride;
+        } else {
+          if (!this.activeModelForRun) {
+            if (isComplexTask) {
+              nextModel = qualityModel;
+            } else if (isSimpleTask && this.config.models.fast) {
+              nextModel = this.config.models.fast;
+            } else {
+              if (!hasWrittenFiles && this.config.models.fast) {
                 nextModel = this.config.models.fast;
               } else {
-                if (!hasWrittenFiles && this.config.models.fast) {
-                  nextModel = this.config.models.fast;
-                } else {
-                  nextModel = this.config.models.default;
-                }
+                nextModel = this.config.models.default;
               }
-              this.activeModelForRun = nextModel;
-            } else {
-              if (
-                this.activeModelForRun === this.config.models.fast &&
-                this.config.models.default
-              ) {
-                if (isComplexTask || hasWrittenFiles) {
-                  this.activeModelForRun = this.config.models.default;
-                }
+            }
+            this.activeModelForRun = nextModel;
+          } else {
+            if (
+              this.activeModelForRun === this.config.models.fast &&
+              qualityModel
+            ) {
+              if (isComplexTask || hasWrittenFiles) {
+                this.activeModelForRun = qualityModel;
               }
-              nextModel = this.activeModelForRun;
+            }
+            nextModel = this.activeModelForRun;
+          }
+        }
+
+        const activeModel = nextModel;
+        if (!this.cachedContextPack) {
+          // Find the initiating user message of the current turn (the last user message in history)
+          let latestUserQuery = this.state.task;
+          for (let i = this.state.history.length - 1; i >= 0; i--) {
+            const message = this.state.history[i];
+            if (
+              message.role === "user" &&
+              message.metadata?.kind !== VOLATILE_CONTEXT_MESSAGE_KIND &&
+              message.metadata?.kind !== "history_compaction_summary"
+            ) {
+              const text = message.content
+                .filter((b) => b.type === "text")
+                .map((b) => b.text)
+                .join("\n");
+              if (text.trim()) {
+                latestUserQuery = text;
+                break;
+              }
             }
           }
 
-          const activeModel = nextModel;
-          if (!this.cachedContextPack) {
-            // Find the initiating user message of the current turn (the last user message in history)
-            let latestUserQuery = this.state.task;
-            for (let i = this.state.history.length - 1; i >= 0; i--) {
-              if (this.state.history[i].role === "user") {
-                const text = this.state.history[i].content
-                  .filter((b) => b.type === "text")
-                  .map((b: any) => b.text)
-                  .join("\n");
-                if (text.trim()) {
-                  latestUserQuery = text;
+          this.cachedContextPack = await this.contextBuilder.build(
+            this.state.relevantFiles,
+            latestUserQuery,
+          );
+        }
+        let toolDefs = toolRegistry.getDefinitions();
+        if (!this.config.tools.webSearch.enabled) {
+          toolDefs = toolDefs.filter((tool) => tool.name !== "web_search");
+        }
+        if (!this.config.tools.bash.enabled) {
+          toolDefs = toolDefs.filter(
+            (tool) => tool.name !== "bash" && tool.name !== "run_tests",
+          );
+        }
+        if (this.options?.allowedTools) {
+          toolDefs = toolDefs.filter((t) =>
+            this.options!.allowedTools!.includes(t.name),
+          );
+        }
+        toolDefs.sort((a, b) => a.name.localeCompare(b.name));
+
+        const capabilities = (typeof this.provider.getModelCapabilities ===
+        "function"
+          ? this.provider.getModelCapabilities(activeModel)
+          : this.provider?.capabilities) || {
+          streaming: true,
+          toolCalls: true,
+          jsonMode: true,
+          thinking:
+            activeModel.toLowerCase().includes("reasoner") ||
+            activeModel.toLowerCase().includes("r1") ||
+            activeModel.toLowerCase().includes("v4"),
+          vision: false,
+          promptCaching: true,
+        };
+
+        // DeepSeek cache-aware layering:
+        // Stable system: core rules + canonical tool prompt + project profile.
+        // Turn context (RAG, repo map, file excerpts) is persisted immediately
+        // before the current user request so older conversation prefixes remain
+        // byte-stable across future turns.
+        const baseSystemPrompt =
+          this.options?.systemPromptOverride ||
+          Planner.makeSystemPrompt(activeModel, this.config.language);
+        const toolsPrompt = capabilities.toolCalls
+          ? generateNativeToolsPrompt(toolDefs)
+          : generateXMLToolsPrompt(toolDefs);
+        const contextPack = this.cachedContextPack;
+        const cacheSlab = PromptCacheSlabBuilder.build({
+          cwd: this.cwd,
+          model: activeModel,
+          baseSystemPrompt,
+          toolsPrompt,
+          repoMapText,
+          contextPack,
+        });
+        const builtMessages = MessageBuilder.build(
+          cacheSlab.text,
+          this.state,
+          contextPack,
+          { now: runStartedAt, repoMapText },
+        );
+        const system = builtMessages.system;
+        if (builtMessages.contextMessageAdded) {
+          this.state.history = builtMessages.messages;
+          this.sessionManager.saveHistory(this.state.history);
+        }
+        // Keep the provider request array immutable while history grows with the
+        // assistant response and tool results.
+        const messages = [...builtMessages.messages];
+        const supportsThinking = capabilities.thinking;
+        const modelName = activeModel.toLowerCase();
+        const deepSeekProfile = getDeepSeekV4ModelProfile(activeModel);
+        const thinkingEnabled = supportsThinking
+          ? deepSeekProfile?.legacyAlias
+            ? deepSeekProfile.optimizedThinkingDefault
+            : isRepairTurn ||
+              isComplexTask ||
+              modelName.includes("v4-pro") ||
+              modelName.includes("reasoner") ||
+              modelName.includes("r1")
+          : false;
+
+        this.statusBar.start(
+          `Calling ${activeModel}... | Cost: $${this.sessionCost.toFixed(4)}`,
+        );
+
+        this.abortController = new AbortController();
+        if (this.interruptMode === "abort") {
+          this.abortController.abort();
+        }
+
+        // 2. Dynamic thinking budget configuration based on complexity
+        let thinkingBudget = 1024;
+        if (isRepairTurn) {
+          thinkingBudget = 8192; // Max thinking budget for repair
+        } else if (isComplexTask || modelName.includes("v4-pro")) {
+          thinkingBudget = 4096; // Standard high thinking budget
+        }
+
+        eventBus.emitEvent("model_request", {
+          model: activeModel,
+          messages: messages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+        });
+
+        const stream = this.provider.chat({
+          model: activeModel,
+          messages,
+          system,
+          tools: toolDefs,
+          stream: true,
+          maxTokens:
+            activeModel === this.config.models.fast
+              ? (this.config.agent?.fastMaxOutputTokens ?? 8192)
+              : (this.config.agent?.maxOutputTokens ?? 16384),
+          userId: this.userId,
+          abortSignal: this.abortController.signal,
+          thinking: supportsThinking
+            ? { enabled: thinkingEnabled, budgetTokens: thinkingBudget }
+            : undefined,
+        });
+
+        let responseText = "";
+        let thinkingText = "";
+        let thinkingSignature = "";
+        let finalUsage: TokenUsage | undefined;
+        const toolCallsToExecute: OrbitToolCall[] = [];
+
+        try {
+          for await (const event of stream) {
+            this.statusBar.stop();
+            if (event.type === "text_delta") {
+              responseText += event.text;
+              eventBus.emitEvent("model_delta", { text: event.text });
+            } else if (event.type === "thinking_delta") {
+              if (event.text) {
+                thinkingText += event.text;
+                eventBus.emitEvent("thinking_delta", { text: event.text });
+              }
+              if (event.signature) {
+                thinkingSignature += event.signature;
+              }
+            } else if (event.type === "usage") {
+              this.accumulateCost(activeModel, event.usage);
+              finalUsage = event.usage;
+              if (capabilities.promptCaching) {
+                this.emitCacheTelemetry(cacheSlab, event.usage);
+              }
+            } else if (event.type === "tool_call") {
+              toolCallsToExecute.push(event.toolCall);
+            } else if (event.type === "error") {
+              throw event.error;
+            }
+          }
+        } catch (chatError: unknown) {
+          const chatErrorName =
+            chatError instanceof Error ? chatError.name : "Error";
+          const chatErrorMessage =
+            chatError instanceof Error ? chatError.message : String(chatError);
+          if (chatErrorName === "AbortError") {
+            if (!this.abortController?.signal.aborted) {
+              this.persistAbortedAssistantMessage(
+                activeModel,
+                responseText,
+                thinkingText,
+                thinkingSignature,
+              );
+              return this.createAbortedOutcome(
+                "interrupted",
+                "The model request was aborted.",
+              );
+            }
+            // User-initiated aborts are handled below so prompt-mode
+            // interruptions can still be resumed.
+          } else if (this.abortController?.signal.aborted) {
+            // User-initiated abort, handled below.
+          } else {
+            const canFallbackToFlash =
+              !this.fallbackModelForRun &&
+              activeModel !== this.config.models.fast &&
+              Boolean(this.config.models.fast) &&
+              /(?:insufficient_system_resource|resources were insufficient|overloaded|temporarily unavailable|HTTP 429|HTTP 500|HTTP 503|timed out)/i.test(
+                chatErrorMessage,
+              );
+            if (canFallbackToFlash) {
+              this.fallbackModelForRun = this.config.models.fast;
+              this.activeModelForRun = this.config.models.fast;
+              this.interaction.showText(
+                picocolors.yellow(
+                  `⚠ ${activeModel} is temporarily unavailable; retrying this turn with ${this.config.models.fast}.`,
+                ),
+              );
+              continue;
+            }
+            const safeMessage = safeAgentLoopErrorMessage(chatError);
+            this.interaction.showText(
+              `[Error] LLM Call failed: ${safeMessage}`,
+            );
+            throw new AgentLoopExecutionError("provider_error", safeMessage);
+          }
+        } finally {
+          this.statusBar.stop();
+        }
+
+        if (toolCallsToExecute.length === 0 && responseText) {
+          const xmlToolCalls = parseXMLToolCalls(responseText);
+          if (xmlToolCalls.length > 0) {
+            toolCallsToExecute.push(...xmlToolCalls);
+          } else {
+            const srBlocks = parseSearchReplaceBlocks(responseText);
+            let idCounter = 1;
+            for (const block of srBlocks) {
+              toolCallsToExecute.push({
+                id: `sr_call_${idCounter++}_${Date.now()}`,
+                name: "edit_file",
+                arguments: JSON.stringify({
+                  path: block.filePath,
+                  oldText: block.oldText,
+                  newText: block.newText,
+                }),
+              });
+            }
+          }
+        }
+
+        eventBus.emitEvent("model_response", {
+          model: activeModel,
+          text: responseText || undefined,
+          reasoning_content: thinkingText || undefined,
+          usage: finalUsage
+            ? {
+                inputTokens: finalUsage.inputTokens,
+                outputTokens: finalUsage.outputTokens,
+                cacheReadTokens: finalUsage.cacheReadTokens,
+                cacheWriteTokens: finalUsage.cacheWriteTokens,
+              }
+            : undefined,
+          toolCalls:
+            toolCallsToExecute.length > 0 ? toolCallsToExecute : undefined,
+        });
+
+        if (this.abortController?.signal.aborted) {
+          const action = await this.handleInterrupt();
+          if (action === "continue") {
+            this.interaction.showText("● Resuming execution...");
+            this.abortController = null;
+            continue;
+          } else if (action === "rollback_exit") {
+            this.persistAbortedAssistantMessage(
+              activeModel,
+              responseText,
+              thinkingText,
+              thinkingSignature,
+            );
+            await this.rollbackLastCheckpoint();
+            this.state.done = true;
+            return this.createAbortedOutcome(
+              "rollback",
+              "Execution was interrupted and the last checkpoint was rolled back.",
+            );
+          } else {
+            this.persistAbortedAssistantMessage(
+              activeModel,
+              responseText,
+              thinkingText,
+              thinkingSignature,
+            );
+            this.interaction.showText("● Aborted. Returning to REPL prompt.");
+            this.state.done = true;
+            return this.createAbortedOutcome(
+              "interrupted",
+              "Execution was interrupted by the user.",
+            );
+          }
+        }
+
+        const assistantBlocks: OrbitContentBlock[] = [];
+        if (thinkingText) {
+          assistantBlocks.push({
+            type: "thinking",
+            text: thinkingText,
+            ...(thinkingSignature ? { signature: thinkingSignature } : {}),
+          });
+        }
+        if (responseText) {
+          assistantBlocks.push({ type: "text", text: responseText });
+        }
+        for (const tc of toolCallsToExecute) {
+          assistantBlocks.push({ type: "tool_call", toolCall: tc });
+        }
+
+        const assistantMsg: OrbitMessage = {
+          id: `msg_asst_${Date.now()}`,
+          role: "assistant",
+          createdAt: new Date().toISOString(),
+          content: assistantBlocks,
+          metadata: { model: activeModel },
+        };
+        this.state.history.push(assistantMsg);
+        this.sessionManager.saveHistory(this.state.history);
+
+        if (responseText) {
+          if (toolCallsToExecute.length > 0) {
+            this.interaction.showText(Renderer.formatThought(responseText));
+          } else {
+            this.interaction.showText(
+              `\nOrbit: ${Renderer.formatMarkdown(responseText)}`,
+            );
+          }
+        }
+
+        if (toolCallsToExecute.length === 0) {
+          const hasEdits = this.state.history.some(
+            (msg) =>
+              msg.role === "assistant" &&
+              msg.content.some(
+                (b) =>
+                  b.type === "tool_call" &&
+                  (b.toolCall.name === "write_file" ||
+                    b.toolCall.name === "edit_file" ||
+                    b.toolCall.name === "replace_file_content" ||
+                    b.toolCall.name === "multi_replace_file_content"),
+              ),
+          );
+
+          if (hasEdits) {
+            if (this.verificationManager.hasContract()) {
+              this.interaction.showText(
+                "\n● Verification: Running contract verification checks...",
+              );
+              const verifyResult =
+                await this.verificationManager.runVerification();
+              if (!verifyResult.success) {
+                const repairAttempts = this.state.history.filter(
+                  (m) =>
+                    m.role === "user" &&
+                    m.content.some(
+                      (b) =>
+                        b.type === "text" &&
+                        b.text.includes("[Verification Failed]"),
+                    ),
+                ).length;
+
+                if (repairAttempts >= 3 || !this.config.context.autoRepair) {
+                  this.interaction.showText(
+                    picocolors.red(
+                      `\n✖ Verification Failed: Workspace violates contract. Rolling back all changes for safety...`,
+                    ),
+                  );
+                  await this.rollbackLastCheckpoint();
+                  this.state.done = true;
                   break;
                 }
-              }
-            }
 
-            this.cachedContextPack = await this.contextBuilder.build(
-              this.state.relevantFiles,
-              latestUserQuery,
-            );
-          }
-          let toolDefs = toolRegistry.getDefinitions();
-          if (!this.config.tools.webSearch.enabled) {
-            toolDefs = toolDefs.filter((tool) => tool.name !== "web_search");
-          }
-          if (!this.config.tools.bash.enabled) {
-            toolDefs = toolDefs.filter(
-              (tool) => tool.name !== "bash" && tool.name !== "run_tests",
-            );
-          }
-          if (this.options?.allowedTools) {
-            toolDefs = toolDefs.filter((t) =>
-              this.options!.allowedTools!.includes(t.name),
-            );
-          }
-          toolDefs.sort((a, b) => a.name.localeCompare(b.name));
-
-          // DeepSeek cache-first layering:
-          // Stable slab: core rules + canonical tool prompt + repo profile/map.
-          // Volatile suffix: RAG snippets, selected file excerpts, current history.
-          const baseSystemPrompt =
-            this.options?.systemPromptOverride ||
-            Planner.makeSystemPrompt(activeModel, this.config.language);
-          const toolsPrompt = generateXMLToolsPrompt(toolDefs);
-          const contextPack = this.cachedContextPack;
-          const cacheSlab = PromptCacheSlabBuilder.build({
-            cwd: this.cwd,
-            model: activeModel,
-            baseSystemPrompt,
-            toolsPrompt,
-            repoMapText,
-            contextPack,
-          });
-          const cachePrimer = await this.primeDeepSeekCache(
-            activeModel,
-            cacheSlab,
-          );
-          const { system, messages } = MessageBuilder.build(
-            cacheSlab.text,
-            this.state,
-            contextPack,
-          );
-
-          const capabilities = (typeof this.provider.getModelCapabilities ===
-          "function"
-            ? this.provider.getModelCapabilities(activeModel)
-            : this.provider?.capabilities) || {
-            streaming: true,
-            toolCalls: true,
-            jsonMode: true,
-            thinking:
-              activeModel.toLowerCase().includes("reasoner") ||
-              activeModel.toLowerCase().includes("r1") ||
-              activeModel.toLowerCase().includes("v4-pro"),
-            vision: false,
-            promptCaching: true,
-          };
-
-          const isReasoner = capabilities.thinking;
-
-          this.statusBar.start(
-            `Calling ${activeModel}... | Cost: $${this.sessionCost.toFixed(4)}`,
-          );
-
-          this.abortController = new AbortController();
-
-          // 2. Dynamic thinking budget configuration based on complexity
-          let thinkingBudget = 1024;
-          if (isRepairTurn) {
-            thinkingBudget = 8192; // Max thinking budget for repair
-          } else if (isComplexTask) {
-            thinkingBudget = 4096; // Standard high thinking budget
-          }
-
-          this.stopKeepaliveTimer();
-          this.lastChatParams = this.isDeepSeekCacheProvider(activeModel)
-            ? { model: activeModel, system: cacheSlab.text }
-            : null;
-
-          eventBus.emitEvent("model_request", {
-            model: activeModel,
-            messages: messages.map((m: any) => ({
-              role: m.role,
-              content: m.content,
-            })),
-          });
-
-          const stream = this.provider.chat({
-            model: activeModel,
-            messages,
-            system,
-            tools: toolDefs,
-            stream: true,
-            abortSignal: this.abortController.signal,
-            thinking: isReasoner
-              ? { enabled: true, budgetTokens: thinkingBudget }
-              : undefined,
-          });
-
-          let responseText = "";
-          let thinkingText = "";
-          let thinkingSignature = "";
-          let finalUsage: any = undefined;
-          const toolCallsToExecute: OrbitToolCall[] = [];
-
-          try {
-            for await (const event of stream) {
-              this.statusBar.stop();
-              if (event.type === "text_delta") {
-                responseText += event.text;
-                eventBus.emitEvent("model_delta", { text: event.text });
-              } else if (event.type === "thinking_delta") {
-                if (event.text) {
-                  thinkingText += event.text;
-                  eventBus.emitEvent("thinking_delta", { text: event.text });
-                }
-                if (event.signature) {
-                  thinkingSignature = event.signature;
-                }
-              } else if (event.type === "usage") {
-                this.accumulateCost(activeModel, event.usage);
-                finalUsage = event.usage;
-                this.emitCacheTelemetry(
-                  activeModel,
-                  cacheSlab,
-                  event.usage,
-                  cachePrimer.primed,
-                );
-              } else if (event.type === "tool_call") {
-                toolCallsToExecute.push(event.toolCall);
-              } else if (event.type === "error") {
-                throw event.error;
-              }
-            }
-          } catch (chatError: any) {
-            if (
-              chatError.name === "AbortError" ||
-              this.abortController?.signal.aborted
-            ) {
-              // Aborted, handled below
-            } else {
-              this.interaction.showText(
-                `[Error] LLM Call failed: ${chatError.message}`,
-              );
-              this.state.done = true;
-              break;
-            }
-          } finally {
-            this.statusBar.stop();
-            this.startKeepaliveTimer();
-          }
-
-          if (toolCallsToExecute.length === 0 && responseText) {
-            const xmlToolCalls = parseXMLToolCalls(responseText);
-            if (xmlToolCalls.length > 0) {
-              toolCallsToExecute.push(...xmlToolCalls);
-            } else {
-              const srBlocks = parseSearchReplaceBlocks(responseText);
-              let idCounter = 1;
-              for (const block of srBlocks) {
-                toolCallsToExecute.push({
-                  id: `sr_call_${idCounter++}_${Date.now()}`,
-                  name: "edit_file",
-                  arguments: JSON.stringify({
-                    path: block.filePath,
-                    oldText: block.oldText,
-                    newText: block.newText,
-                  }),
-                });
-              }
-            }
-          }
-
-          eventBus.emitEvent("model_response", {
-            model: activeModel,
-            text: responseText || undefined,
-            reasoning_content: thinkingText || undefined,
-            usage: finalUsage
-              ? {
-                  inputTokens: finalUsage.inputTokens,
-                  outputTokens: finalUsage.outputTokens,
-                  cacheReadTokens: finalUsage.cacheReadTokens,
-                  cacheWriteTokens: finalUsage.cacheWriteTokens,
-                }
-              : undefined,
-            toolCalls:
-              toolCallsToExecute.length > 0 ? toolCallsToExecute : undefined,
-          });
-
-          if (this.abortController?.signal.aborted) {
-            const action = await this.handleInterrupt();
-            if (action === "continue") {
-              this.interaction.showText("● Resuming execution...");
-              this.abortController = null;
-              continue;
-            } else if (action === "rollback_exit") {
-              await this.rollbackLastCheckpoint();
-              this.state.done = true;
-              process.exit(0);
-            } else {
-              this.interaction.showText("● Aborted. Returning to REPL prompt.");
-              this.state.done = true;
-              break;
-            }
-          }
-
-          const assistantBlocks: OrbitContentBlock[] = [];
-          if (thinkingText) {
-            assistantBlocks.push({
-              type: "thinking",
-              text: thinkingText,
-              ...(thinkingSignature ? { signature: thinkingSignature } : {}),
-            });
-          }
-          if (responseText) {
-            assistantBlocks.push({ type: "text", text: responseText });
-          }
-          for (const tc of toolCallsToExecute) {
-            assistantBlocks.push({ type: "tool_call", toolCall: tc });
-          }
-
-          const assistantMsg: OrbitMessage = {
-            id: `msg_asst_${Date.now()}`,
-            role: "assistant",
-            createdAt: new Date().toISOString(),
-            content: assistantBlocks,
-            metadata: { model: activeModel },
-          };
-          this.state.history.push(assistantMsg);
-          this.sessionManager.saveHistory(this.state.history);
-
-          if (responseText) {
-            if (toolCallsToExecute.length > 0) {
-              Renderer.printThought(responseText);
-            } else {
-              this.interaction.showText(
-                `\nOrbit: ${Renderer.formatMarkdown(responseText)}`,
-              );
-            }
-          }
-
-          if (toolCallsToExecute.length === 0) {
-            const hasEdits = this.state.history.some(
-              (msg) =>
-                msg.role === "assistant" &&
-                msg.content.some(
-                  (b) =>
-                    b.type === "tool_call" &&
-                    (b.toolCall.name === "write_file" ||
-                      b.toolCall.name === "edit_file" ||
-                      b.toolCall.name === "replace_file_content" ||
-                      b.toolCall.name === "multi_replace_file_content"),
-                ),
-            );
-
-            if (hasEdits) {
-              if (this.verificationManager.hasContract()) {
                 this.interaction.showText(
-                  "\n● Verification: Running contract verification checks...",
+                  picocolors.red(
+                    `✖ Verification failed! Entering auto-repair loop (Attempt ${repairAttempts + 1}/3)...`,
+                  ),
                 );
-                const verifyResult =
-                  await this.verificationManager.runVerification();
-                if (!verifyResult.success) {
+
+                const feedbackPrompt = `[Verification Failed] The changes made failed the verification contract. Details:\n\n${verifyResult.error}\n\nPlease analyze this failure, fix the codebase, and ensure it passes the verification contract.`;
+
+                const systemMsg: OrbitMessage = {
+                  id: `msg_validation_err_${Date.now()}`,
+                  role: "user",
+                  createdAt: new Date().toISOString(),
+                  content: [{ type: "text", text: feedbackPrompt }],
+                };
+                this.state.history.push(systemMsg);
+                this.sessionManager.saveHistory(this.state.history);
+                continue;
+              } else {
+                this.interaction.showText(
+                  picocolors.green(
+                    `✔ Verification contract passed successfully.`,
+                  ),
+                );
+              }
+            } else if (this.config.context.autoRepair) {
+              const testTool = toolRegistry.get("run_tests");
+              if (testTool) {
+                this.interaction.showText(
+                  "\n● Auto-Repair: Running project tests to verify changes...",
+                );
+                const preferredCommand = this.config.context.testCommands?.[0];
+                const result = await testTool.execute(
+                  { command: preferredCommand },
+                  {
+                    cwd: this.cwd,
+                    sessionId: this.state.sessionId,
+                    abortSignal: this.abortController?.signal,
+                  },
+                );
+
+                if (!result.ok) {
                   const repairAttempts = this.state.history.filter(
                     (m) =>
                       m.role === "user" &&
@@ -919,13 +1184,10 @@ export class AgentLoop {
                       ),
                   ).length;
 
-                  if (
-                    repairAttempts >= 3 ||
-                    !(this.config.context as any)?.autoRepair
-                  ) {
+                  if (repairAttempts >= 3) {
                     this.interaction.showText(
                       picocolors.red(
-                        `\n✖ Verification Failed: Workspace violates contract. Rolling back all changes for safety...`,
+                        `\n✖ Auto-Repair: Max attempts (3) reached. Codebase is unstable. Rolling back all changes for safety...`,
                       ),
                     );
                     await this.rollbackLastCheckpoint();
@@ -935,11 +1197,58 @@ export class AgentLoop {
 
                   this.interaction.showText(
                     picocolors.red(
-                      `✖ Verification failed! Entering auto-repair loop (Attempt ${repairAttempts + 1}/3)...`,
+                      `✖ Tests failed! Entering auto-repair loop (Attempt ${repairAttempts + 1}/3)...`,
                     ),
                   );
+                  const rawLog = result.error || result.display || "";
+                  let errLog = cleanAndTruncateTestLog(rawLog);
 
-                  const feedbackPrompt = `[Verification Failed] The changes made failed the verification contract. Details:\n\n${verifyResult.error}\n\nPlease analyze this failure, fix the codebase, and ensure it passes the verification contract.`;
+                  // 3. Pre-Analysis Error Distillation via V4-Flash
+                  if (this.config.models.fast) {
+                    this.interaction.showText(
+                      `● Auto-Repair: Compressing test failure logs using ${this.config.models.fast}...`,
+                    );
+                    try {
+                      const fastModel = this.config.models.fast;
+                      const distillationPrompt = `Extract and summarize the core compile error or assertion failure from the following test logs. Keep the output extremely dense and precise. Specify only:
+1. The exact file path and line number of the failure.
+2. The failing test description.
+3. The assert details (e.g. Expected X, Got Y).
+Do not include any other markdown formatting or conversational text. Output ONLY the summary:
+
+${errLog}`;
+                      const distStream = this.provider.chat({
+                        model: fastModel,
+                        messages: [
+                          {
+                            id: `msg_distill_${Date.now()}`,
+                            role: "user",
+                            createdAt: new Date().toISOString(),
+                            content: [
+                              { type: "text", text: distillationPrompt },
+                            ],
+                          },
+                        ],
+                        tools: [],
+                      });
+                      let distilledLog = "";
+                      for await (const event of distStream) {
+                        if (event.type === "text_delta") {
+                          distilledLog += event.text;
+                        }
+                      }
+                      if (distilledLog.trim()) {
+                        errLog = distilledLog.trim();
+                        this.interaction.showText(
+                          picocolors.gray(`● Compressed logs:\n${errLog}`),
+                        );
+                      }
+                    } catch {
+                      // Fallback to normal cleaned log on distillation failure
+                    }
+                  }
+
+                  const feedbackPrompt = `[Verification Failed] The changes made caused test failures. Test command: "${preferredCommand || "auto-detected runner"}". Output:\n\n${errLog}\n\nPlease analyze this failure log, locate the files causing assertion or compile errors, and fix the codebase so that the tests pass successfully.`;
 
                   const systemMsg: OrbitMessage = {
                     id: `msg_validation_err_${Date.now()}`,
@@ -953,251 +1262,267 @@ export class AgentLoop {
                 } else {
                   this.interaction.showText(
                     picocolors.green(
-                      `✔ Verification contract passed successfully.`,
+                      `✔ All tests passed successfully! Verification green.`,
                     ),
                   );
                 }
-              } else if ((this.config.context as any)?.autoRepair) {
-                const testTool = toolRegistry.get("run_tests");
-                if (testTool) {
-                  this.interaction.showText(
-                    "\n● Auto-Repair: Running project tests to verify changes...",
-                  );
-                  const preferredCommand = (this.config.context as any)
-                    ?.testCommands?.[0];
-                  const result = await testTool.execute(
-                    { command: preferredCommand },
-                    {
-                      cwd: this.cwd,
-                      sessionId: this.state.sessionId,
-                      abortSignal: this.abortController?.signal,
-                    },
-                  );
-
-                  if (!result.ok) {
-                    const repairAttempts = this.state.history.filter(
-                      (m) =>
-                        m.role === "user" &&
-                        m.content.some(
-                          (b) =>
-                            b.type === "text" &&
-                            b.text.includes("[Verification Failed]"),
-                        ),
-                    ).length;
-
-                    if (repairAttempts >= 3) {
-                      this.interaction.showText(
-                        picocolors.red(
-                          `\n✖ Auto-Repair: Max attempts (3) reached. Codebase is unstable. Rolling back all changes for safety...`,
-                        ),
-                      );
-                      await this.rollbackLastCheckpoint();
-                      this.state.done = true;
-                      break;
-                    }
-
-                    this.interaction.showText(
-                      picocolors.red(
-                        `✖ Tests failed! Entering auto-repair loop (Attempt ${repairAttempts + 1}/3)...`,
-                      ),
-                    );
-                    const rawLog =
-                      result.error || (result as any).display || "";
-                    let errLog = cleanAndTruncateTestLog(rawLog);
-
-                    // 3. Pre-Analysis Error Distillation via V4-Flash
-                    if (this.config.models.fast) {
-                      this.interaction.showText(
-                        `● Auto-Repair: Compressing test failure logs using ${this.config.models.fast}...`,
-                      );
-                      try {
-                        const fastModel = this.config.models.fast;
-                        const distillationPrompt = `Extract and summarize the core compile error or assertion failure from the following test logs. Keep the output extremely dense and precise. Specify only:
-1. The exact file path and line number of the failure.
-2. The failing test description.
-3. The assert details (e.g. Expected X, Got Y).
-Do not include any other markdown formatting or conversational text. Output ONLY the summary:
-
-${errLog}`;
-                        const distStream = this.provider.chat({
-                          model: fastModel,
-                          messages: [
-                            {
-                              id: `msg_distill_${Date.now()}`,
-                              role: "user",
-                              createdAt: new Date().toISOString(),
-                              content: [
-                                { type: "text", text: distillationPrompt },
-                              ],
-                            },
-                          ],
-                          tools: [],
-                        });
-                        let distilledLog = "";
-                        for await (const event of distStream) {
-                          if (event.type === "text_delta") {
-                            distilledLog += event.text;
-                          }
-                        }
-                        if (distilledLog.trim()) {
-                          errLog = distilledLog.trim();
-                          this.interaction.showText(
-                            picocolors.gray(`● Compressed logs:\n${errLog}`),
-                          );
-                        }
-                      } catch {
-                        // Fallback to normal cleaned log on distillation failure
-                      }
-                    }
-
-                    const feedbackPrompt = `[Verification Failed] The changes made caused test failures. Test command: "${preferredCommand || "auto-detected runner"}". Output:\n\n${errLog}\n\nPlease analyze this failure log, locate the files causing assertion or compile errors, and fix the codebase so that the tests pass successfully.`;
-
-                    const systemMsg: OrbitMessage = {
-                      id: `msg_validation_err_${Date.now()}`,
-                      role: "user",
-                      createdAt: new Date().toISOString(),
-                      content: [{ type: "text", text: feedbackPrompt }],
-                    };
-                    this.state.history.push(systemMsg);
-                    this.sessionManager.saveHistory(this.state.history);
-                    continue;
-                  } else {
-                    this.interaction.showText(
-                      picocolors.green(
-                        `✔ All tests passed successfully! Verification green.`,
-                      ),
-                    );
-                  }
-                }
               }
             }
-
-            this.state.done = true;
-            break;
           }
 
-          const toolResultBlocks: OrbitContentBlock[] = [];
-          for (const tc of toolCallsToExecute) {
-            let argSummary = "";
-            try {
-              const parsed = JSON.parse(tc.arguments);
-              if (
-                tc.name === "write_file" ||
-                tc.name === "edit_file" ||
-                tc.name === "replace_file_content"
-              ) {
-                argSummary =
-                  parsed.path ||
-                  parsed.TargetFile ||
-                  parsed.filePath ||
-                  parsed.file ||
-                  "";
-              } else if (tc.name === "multi_replace_file_content") {
-                argSummary = parsed.TargetFile || "";
-              } else if (tc.name === "read_file") {
-                argSummary = parsed.path || parsed.AbsolutePath || "";
-              } else if (tc.name === "bash") {
-                argSummary = parsed.command || parsed.CommandLine || "";
-              } else if (tc.name === "run_tests") {
-                argSummary = parsed.command || "";
-              } else if (tc.name === "grep") {
-                argSummary = `"${parsed.query || parsed.Query}" in ${parsed.path || parsed.SearchPath || ""}`;
-              } else if (tc.name === "glob") {
-                argSummary = `"${parsed.pattern || parsed.Pattern}" in ${parsed.path || parsed.DirectoryPath || ""}`;
-              } else if (tc.name === "web_search") {
-                argSummary = parsed.query || "";
-              } else {
-                argSummary = tc.arguments;
-              }
-            } catch {
-              argSummary = tc.arguments;
-            }
+          this.state.done = true;
+          break;
+        }
 
-            if (argSummary.length > 80) {
-              argSummary = argSummary.substring(0, 77) + "...";
-            }
-            this.interaction.showText(
-              `\n  ${picocolors.cyan("✦")} ${picocolors.bold(picocolors.white(tc.name))} ${picocolors.gray(argSummary)}`,
-            );
-
-            const registeredTool = toolRegistry.get(tc.name);
-            const declaredRisk = registeredTool?.risk;
-            const evalArgs = JSON.parse(tc.arguments);
-
-            eventBus.emitEvent("tool_proposal", {
-              toolCallId: tc.id,
-              toolName: tc.name,
-              arguments: evalArgs,
-            });
-
-            let decision = this.permissionEngine.evaluate(
-              tc.name,
-              evalArgs,
-              declaredRisk,
-            );
-
+        const toolResultBlocks: OrbitContentBlock[] = [];
+        for (const tc of toolCallsToExecute) {
+          let argSummary = "";
+          try {
+            const parsed = JSON.parse(tc.arguments);
             if (
               tc.name === "write_file" ||
               tc.name === "edit_file" ||
-              tc.name === "replace_file_content" ||
-              tc.name === "multi_replace_file_content"
+              tc.name === "replace_file_content"
             ) {
-              const targetPath =
-                evalArgs.path ||
-                evalArgs.TargetFile ||
-                evalArgs.filePath ||
-                evalArgs.file;
-              if (targetPath) {
-                const relPath = path
-                  .relative(this.cwd, path.resolve(this.cwd, targetPath))
-                  .replace(/\\/g, "/");
-                const foundFile = this.state.relevantFiles.find(
-                  (f) => f.path === relPath,
+              argSummary =
+                parsed.path ||
+                parsed.TargetFile ||
+                parsed.filePath ||
+                parsed.file ||
+                "";
+            } else if (tc.name === "multi_replace_file_content") {
+              argSummary = parsed.TargetFile || "";
+            } else if (tc.name === "read_file") {
+              argSummary = parsed.path || parsed.AbsolutePath || "";
+            } else if (tc.name === "bash") {
+              argSummary = parsed.command || parsed.CommandLine || "";
+            } else if (tc.name === "run_tests") {
+              argSummary = parsed.command || "";
+            } else if (tc.name === "grep") {
+              argSummary = `"${parsed.query || parsed.Query}" in ${parsed.path || parsed.SearchPath || ""}`;
+            } else if (tc.name === "glob") {
+              argSummary = `"${parsed.pattern || parsed.Pattern}" in ${parsed.path || parsed.DirectoryPath || ""}`;
+            } else if (tc.name === "web_search") {
+              argSummary = parsed.query || "";
+            } else {
+              argSummary = tc.arguments;
+            }
+          } catch {
+            argSummary = tc.arguments;
+          }
+
+          if (argSummary.length > 80) {
+            argSummary = argSummary.substring(0, 77) + "...";
+          }
+          this.interaction.showText(
+            `\n  ${picocolors.cyan("✦")} ${picocolors.bold(picocolors.white(tc.name))} ${picocolors.gray(argSummary)}`,
+          );
+
+          const registeredTool = toolRegistry.get(tc.name);
+          const declaredRisk = registeredTool?.risk;
+          const evalArgs = JSON.parse(tc.arguments);
+
+          eventBus.emitEvent("tool_proposal", {
+            toolCallId: tc.id,
+            toolName: tc.name,
+            arguments: evalArgs,
+          });
+
+          let decision = this.permissionEngine.evaluate(
+            tc.name,
+            evalArgs,
+            declaredRisk,
+          );
+
+          if (
+            tc.name === "write_file" ||
+            tc.name === "edit_file" ||
+            tc.name === "replace_file_content" ||
+            tc.name === "multi_replace_file_content"
+          ) {
+            const targetPath =
+              evalArgs.path ||
+              evalArgs.TargetFile ||
+              evalArgs.filePath ||
+              evalArgs.file;
+            if (targetPath) {
+              const relPath = path
+                .relative(this.cwd, path.resolve(this.cwd, targetPath))
+                .replace(/\\/g, "/");
+              const foundFile = this.state.relevantFiles.find(
+                (f) => f.path === relPath,
+              );
+              if (foundFile && foundFile.readOnly) {
+                decision = {
+                  action: "deny",
+                  reason: `File "${relPath}" is marked as READ-ONLY reference and cannot be modified.`,
+                  risk: "write",
+                };
+              }
+            }
+          }
+
+          const reusableApprovalScope = this.getReusableApprovalScope(
+            tc.name,
+            decision.risk,
+          );
+          const reusedApproval =
+            decision.action === "ask" &&
+            reusableApprovalScope !== null &&
+            this.approvedToolScopes.has(reusableApprovalScope);
+          if (reusedApproval) {
+            decision = {
+              action: "allow",
+              reason: `Previously approved "${tc.name}" for this task.`,
+              risk: decision.risk,
+            };
+          }
+
+          if (decision.action === "deny") {
+            this.interaction.showText(`✖ Blocked: ${decision.reason}`);
+            eventBus.emitEvent("tool_approval", {
+              toolCallId: tc.id,
+              approved: false,
+              reason: `Blocked by safety policy: ${decision.reason}`,
+            });
+            eventBus.emitEvent("tool_result", {
+              toolCallId: tc.id,
+              toolName: tc.name,
+              error: `Blocked by safety policy: ${decision.reason}`,
+            });
+            toolResultBlocks.push({
+              type: "tool_result",
+              toolResult: {
+                toolCallId: tc.id,
+                name: tc.name,
+                content: `Blocked by safety policy: ${decision.reason}`,
+                isError: true,
+              },
+            });
+            this.sessionManager.recordToolExecution(
+              tc.name,
+              tc,
+              null,
+              decision.risk || "read",
+              decision.action,
+              "denied",
+            );
+            continue;
+          }
+
+          if (decision.action === "ask") {
+            let approved = false;
+            let currentArgs = tc.arguments;
+            if (reusableApprovalScope) {
+              approved = await Prompt.askApproval(
+                `Allow "${tc.name}" for this task? ${argSummary ? `Query: ${argSummary}` : decision.reason}`,
+              );
+              if (approved) {
+                this.approvedToolScopes.add(reusableApprovalScope);
+              }
+            } else {
+              while (true) {
+                const choice = await Prompt.askSelect(
+                  `Confirm execution of tool "${tc.name}"? Reason: ${decision.reason}`,
+                  [
+                    { value: "approve", label: "Approve execution" },
+                    { value: "edit", label: "Edit tool arguments" },
+                    { value: "deny", label: "Deny execution" },
+                  ],
                 );
-                if (foundFile && foundFile.readOnly) {
-                  decision = {
-                    action: "deny",
-                    reason: `File "${relPath}" is marked as READ-ONLY reference and cannot be modified.`,
-                    risk: "write",
-                  };
+                if (choice === "approve") {
+                  approved = true;
+                  break;
+                } else if (choice === "edit") {
+                  let edited: string | null = null;
+                  const isObjectSchema =
+                    registeredTool?.inputSchema instanceof z.ZodObject;
+
+                  if (isObjectSchema) {
+                    const editChoice = await Prompt.askSelect(
+                      "Choose edit mode:",
+                      [
+                        {
+                          value: "form",
+                          label: "(Recommended) Interactive form fields editor",
+                        },
+                        { value: "json", label: "Raw JSON string editor" },
+                        { value: "cancel", label: "Cancel" },
+                      ],
+                    );
+                    if (editChoice === "form") {
+                      edited = await this.promptSchemaGuided(
+                        registeredTool,
+                        currentArgs,
+                      );
+                    } else if (editChoice === "json") {
+                      edited = await Prompt.askText(
+                        "Edit tool arguments (JSON string):",
+                        currentArgs,
+                      );
+                    }
+                  } else {
+                    edited = await Prompt.askText(
+                      "Edit tool arguments (JSON string):",
+                      currentArgs,
+                    );
+                  }
+
+                  if (edited === null) {
+                    continue;
+                  }
+                  try {
+                    const parsed = JSON.parse(edited);
+                    if (registeredTool && registeredTool.inputSchema) {
+                      const validation =
+                        registeredTool.inputSchema.safeParse(parsed);
+                      if (!validation.success) {
+                        const errorMsgs = validation.error.errors
+                          .map(
+                            (e) =>
+                              `${e.path.join(".") || "root"}: ${e.message}`,
+                          )
+                          .join(", ");
+                        this.interaction.showText(
+                          `✖ Schema validation failed: ${errorMsgs}`,
+                        );
+                        continue;
+                      }
+                    }
+                    currentArgs = edited;
+                    tc.arguments = edited;
+                    this.interaction.showText(`✔ Arguments updated.`);
+                    approved = true;
+                    break;
+                  } catch (err: any) {
+                    this.interaction.showText(
+                      `✖ Invalid JSON: ${err.message}. Please try again.`,
+                    );
+                  }
+                } else {
+                  break;
                 }
               }
             }
 
-            const reusableApprovalScope = this.getReusableApprovalScope(
-              tc.name,
-              decision.risk,
-            );
-            const reusedApproval =
-              decision.action === "ask" &&
-              reusableApprovalScope !== null &&
-              this.approvedToolScopes.has(reusableApprovalScope);
-            if (reusedApproval) {
-              decision = {
-                action: "allow",
-                reason: `Previously approved "${tc.name}" for this task.`,
-                risk: decision.risk,
-              };
-            }
-
-            if (decision.action === "deny") {
-              this.interaction.showText(`✖ Blocked: ${decision.reason}`);
+            if (!approved) {
+              this.interaction.showText(`✖ Rejected by user.`);
               eventBus.emitEvent("tool_approval", {
                 toolCallId: tc.id,
                 approved: false,
-                reason: `Blocked by safety policy: ${decision.reason}`,
+                reason: "Rejected by user",
               });
               eventBus.emitEvent("tool_result", {
                 toolCallId: tc.id,
                 toolName: tc.name,
-                error: `Blocked by safety policy: ${decision.reason}`,
+                error: "Rejected by user",
               });
               toolResultBlocks.push({
                 type: "tool_result",
                 toolResult: {
                   toolCallId: tc.id,
                   name: tc.name,
-                  content: `Blocked by safety policy: ${decision.reason}`,
+                  content: "Rejected by user",
                   isError: true,
                 },
               });
@@ -1210,1150 +1535,1107 @@ ${errLog}`;
                 "denied",
               );
               continue;
-            }
-
-            if (decision.action === "ask") {
-              let approved = false;
-              let currentArgs = tc.arguments;
-              if (reusableApprovalScope) {
-                approved = await Prompt.askApproval(
-                  `Allow "${tc.name}" for this task? ${argSummary ? `Query: ${argSummary}` : decision.reason}`,
-                );
-                if (approved) {
-                  this.approvedToolScopes.add(reusableApprovalScope);
-                }
-              } else {
-                while (true) {
-                  const choice = await Prompt.askSelect(
-                    `Confirm execution of tool "${tc.name}"? Reason: ${decision.reason}`,
-                    [
-                      { value: "approve", label: "Approve execution" },
-                      { value: "edit", label: "Edit tool arguments" },
-                      { value: "deny", label: "Deny execution" },
-                    ],
-                  );
-                  if (choice === "approve") {
-                    approved = true;
-                    break;
-                  } else if (choice === "edit") {
-                    let edited: string | null = null;
-                    const isObjectSchema =
-                      registeredTool?.inputSchema instanceof z.ZodObject;
-
-                    if (isObjectSchema) {
-                      const editChoice = await Prompt.askSelect(
-                        "Choose edit mode:",
-                        [
-                          {
-                            value: "form",
-                            label:
-                              "(Recommended) Interactive form fields editor",
-                          },
-                          { value: "json", label: "Raw JSON string editor" },
-                          { value: "cancel", label: "Cancel" },
-                        ],
-                      );
-                      if (editChoice === "form") {
-                        edited = await this.promptSchemaGuided(
-                          registeredTool,
-                          currentArgs,
-                        );
-                      } else if (editChoice === "json") {
-                        edited = await Prompt.askText(
-                          "Edit tool arguments (JSON string):",
-                          currentArgs,
-                        );
-                      }
-                    } else {
-                      edited = await Prompt.askText(
-                        "Edit tool arguments (JSON string):",
-                        currentArgs,
-                      );
-                    }
-
-                    if (edited === null) {
-                      continue;
-                    }
-                    try {
-                      const parsed = JSON.parse(edited);
-                      if (registeredTool && registeredTool.inputSchema) {
-                        const validation =
-                          registeredTool.inputSchema.safeParse(parsed);
-                        if (!validation.success) {
-                          const errorMsgs = validation.error.errors
-                            .map(
-                              (e) =>
-                                `${e.path.join(".") || "root"}: ${e.message}`,
-                            )
-                            .join(", ");
-                          this.interaction.showText(
-                            `✖ Schema validation failed: ${errorMsgs}`,
-                          );
-                          continue;
-                        }
-                      }
-                      currentArgs = edited;
-                      tc.arguments = edited;
-                      this.interaction.showText(`✔ Arguments updated.`);
-                      approved = true;
-                      break;
-                    } catch (err: any) {
-                      this.interaction.showText(
-                        `✖ Invalid JSON: ${err.message}. Please try again.`,
-                      );
-                    }
-                  } else {
-                    break;
-                  }
-                }
-              }
-
-              if (!approved) {
-                this.interaction.showText(`✖ Rejected by user.`);
-                eventBus.emitEvent("tool_approval", {
-                  toolCallId: tc.id,
-                  approved: false,
-                  reason: "Rejected by user",
-                });
-                eventBus.emitEvent("tool_result", {
-                  toolCallId: tc.id,
-                  toolName: tc.name,
-                  error: "Rejected by user",
-                });
-                toolResultBlocks.push({
-                  type: "tool_result",
-                  toolResult: {
-                    toolCallId: tc.id,
-                    name: tc.name,
-                    content: "Rejected by user",
-                    isError: true,
-                  },
-                });
-                this.sessionManager.recordToolExecution(
-                  tc.name,
-                  tc,
-                  null,
-                  decision.risk || "read",
-                  decision.action,
-                  "denied",
-                );
-                continue;
-              } else {
-                eventBus.emitEvent("tool_approval", {
-                  toolCallId: tc.id,
-                  approved: true,
-                  reason: "Approved by user",
-                });
-              }
             } else {
               eventBus.emitEvent("tool_approval", {
                 toolCallId: tc.id,
                 approved: true,
-                reason: reusedApproval
-                  ? "Approved by earlier user confirmation"
-                  : "Auto-approved by policy",
+                reason: "Approved by user",
               });
             }
+          } else {
+            eventBus.emitEvent("tool_approval", {
+              toolCallId: tc.id,
+              approved: true,
+              reason: reusedApproval
+                ? "Approved by earlier user confirmation"
+                : "Auto-approved by policy",
+            });
+          }
 
-            let beforeContent: string | null = null;
-            let targetPath: string | undefined;
-            let parsedArgs: any = {};
+          let beforeContent: string | null = null;
+          let targetPath: string | undefined;
+          let parsedArgs: any = {};
+          try {
+            parsedArgs = JSON.parse(tc.arguments);
+            targetPath =
+              parsedArgs.path ||
+              parsedArgs.TargetFile ||
+              parsedArgs.filePath ||
+              parsedArgs.file;
+          } catch {
+            // Ignored
+          }
+          let absoluteTargetPath: string | undefined;
+          if (targetPath) {
             try {
-              parsedArgs = JSON.parse(tc.arguments);
-              targetPath =
-                parsedArgs.path ||
-                parsedArgs.TargetFile ||
-                parsedArgs.filePath ||
-                parsedArgs.file;
+              absoluteTargetPath = resolveSafePath(this.cwd, targetPath);
             } catch {
-              // Ignored
+              absoluteTargetPath = undefined;
             }
+          }
 
-            let skipToolExecution = false;
-            let hookResult: any = null;
+          let skipToolExecution = false;
+          let hookResult: any = null;
 
-            // Milestone 22: Git Auto-Commits with LLM Commit Messages & Pre-Commit Checks
-            if (tc.name === "git_commit") {
-              // 1. Pre-commit verification checks (run tests if available)
-              if (
-                contextPack.projectIndex.testCommands &&
-                contextPack.projectIndex.testCommands.length > 0
-              ) {
-                this.interaction.showText(
-                  `● Pre-commit checks: running verification tests...`,
-                );
-                const testCmd = contextPack.projectIndex.testCommands[0];
-                try {
-                  await execPromise(testCmd, { cwd: this.cwd });
-                  this.interaction.showText(`✔ Pre-commit checks passed.`);
-                } catch (err: any) {
-                  this.interaction.showText(
-                    picocolors.red(
-                      `✖ Pre-commit checks failed. Verification tests failed.`,
-                    ),
-                  );
-
-                  const choice = await Prompt.askSelect(
-                    `Pre-commit verification tests failed. How would you like to proceed?`,
-                    [
-                      { value: "yes", label: "Proceed with the commit anyway" },
-                      {
-                        value: "diagnose",
-                        label: "Let Agent auto-repair the failures (diagnose)",
-                      },
-                      { value: "no", label: "Abort the commit entirely" },
-                    ],
-                  );
-
-                  if (choice === "diagnose") {
-                    eventBus.emitEvent("tool_result", {
-                      toolCallId: tc.id,
-                      toolName: tc.name,
-                      error: `Commit aborted. Verification tests failed: ${err.stdout || err.stderr || err.message}`,
-                    });
-                    toolResultBlocks.push({
-                      type: "tool_result",
-                      toolResult: {
-                        toolCallId: tc.id,
-                        name: tc.name,
-                        content: `Commit aborted. Verification tests failed with the following log. Please diagnose and fix the codebase first:\n\n${err.stdout || err.stderr || err.message}`,
-                        isError: true,
-                      },
-                    });
-                    continue;
-                  } else if (choice !== "yes") {
-                    eventBus.emitEvent("tool_result", {
-                      toolCallId: tc.id,
-                      toolName: tc.name,
-                      error:
-                        "Commit aborted by user due to pre-commit test failures.",
-                    });
-                    toolResultBlocks.push({
-                      type: "tool_result",
-                      toolResult: {
-                        toolCallId: tc.id,
-                        name: tc.name,
-                        content:
-                          "Commit aborted by user due to pre-commit test failures.",
-                        isError: true,
-                      },
-                    });
-                    continue;
-                  }
-                }
-              }
-
-              // 2. Generate Commit Message via LLM if not provided
-              if (!parsedArgs.message) {
-                this.interaction.showText(
-                  `● Git Commit: generating commit message via LLM...`,
-                );
-                try {
-                  const { stdout } = await execPromise("git diff --cached", {
-                    cwd: this.cwd,
-                  });
-                  if (!stdout.trim()) {
-                    this.interaction.showText(
-                      `⚠ Warning: No staged changes found to commit.`,
-                    );
-                  } else {
-                    const fastModel =
-                      this.config.models.fast || this.config.models.default;
-                    const stream = this.provider.chat({
-                      model: fastModel,
-                      messages: [
-                        {
-                          id: `msg_commit_${Date.now()}`,
-                          role: "user",
-                          createdAt: new Date().toISOString(),
-                          content: [
-                            {
-                              type: "text",
-                              text: `Generate a concise, high-quality conventional git commit message (e.g. feat(cli): add autocomplete) for the following git diff. Output ONLY the commit message, no formatting, no markdown, no quotes, just the text:\n\n${stdout.substring(0, 20000)}`,
-                            },
-                          ],
-                        },
-                      ],
-                      tools: [],
-                    });
-
-                    let generatedMessage = "";
-                    for await (const event of stream) {
-                      if (event.type === "text_delta") {
-                        generatedMessage += event.text;
-                      }
-                    }
-
-                    generatedMessage = generatedMessage
-                      .trim()
-                      .replace(/^["']|["']$/g, "");
-                    if (generatedMessage) {
-                      parsedArgs.message = generatedMessage;
-                      tc.arguments = JSON.stringify(parsedArgs);
-                      this.interaction.showText(
-                        `● Generated Commit Message: "${generatedMessage}"`,
-                      );
-                    }
-                  }
-                } catch (err: any) {
-                  this.interaction.showText(
-                    `⚠ Failed to generate commit message: ${err.message}`,
-                  );
-                }
-              }
-            }
-
+          // Milestone 22: Git Auto-Commits with LLM Commit Messages & Pre-Commit Checks
+          if (tc.name === "git_commit") {
+            // 1. Pre-commit verification checks (run tests if available)
             if (
-              (tc.name === "write_file" ||
-                tc.name === "edit_file" ||
-                tc.name === "replace_file_content" ||
-                tc.name === "multi_replace_file_content") &&
-              targetPath
+              contextPack.projectIndex.testCommands &&
+              contextPack.projectIndex.testCommands.length > 0
             ) {
-              const checkpoint =
-                await this.checkpointManager.captureBeforeState(
-                  tc.id,
-                  targetPath,
-                );
-              beforeContent = checkpoint.backups[0].originalContent;
-
-              eventBus.emitEvent("checkpoint_created", {
-                checkpointId: checkpoint.id,
-                timestamp: checkpoint.timestamp,
-                message: `Before executing ${tc.name} on ${targetPath}`,
-              });
-
-              // Run pre-edit hook if configured
-              if (this.config.hooks?.preEdit) {
-                this.interaction.showText(`● Running pre-edit hook...`);
-                const hookRes = await this.runHook(
-                  this.config.hooks.preEdit,
-                  targetPath,
-                );
-                if (!hookRes.ok) {
-                  this.interaction.showText(
-                    `✖ Pre-edit hook failed: ${hookRes.output}`,
-                  );
-                  hookResult = {
-                    ok: false,
-                    error: `Pre-edit hook failed: ${hookRes.output}`,
-                  };
-                  skipToolExecution = true;
-                } else {
-                  this.interaction.showText(`✔ Pre-edit hook passed.`);
-                }
-              }
-            }
-
-            if (tc.name === "bash" || tc.name === "run_tests") {
-              const isGit = await this.isGitRepo();
-              if (isGit) {
-                await this.createGitCheckpoint(tc.id);
-              }
-            }
-
-            this.statusBar.start(
-              `Executing tool: ${tc.name}... | Cost: $${this.sessionCost.toFixed(4)}`,
-            );
-            const result = skipToolExecution
-              ? hookResult
-              : await this.stepRunner.run(tc, this.abortController?.signal);
-            this.statusBar.stop();
-
-            if (this.abortController?.signal.aborted) {
-              const action = await this.handleInterrupt();
-              if (action === "continue") {
-                this.interaction.showText("● Resuming execution...");
-                this.abortController = null;
-                eventBus.emitEvent("tool_result", {
-                  toolCallId: tc.id,
-                  toolName: tc.name,
-                  error: "Interrupted by user",
-                });
-                toolResultBlocks.push({
-                  type: "tool_result",
-                  toolResult: {
-                    toolCallId: tc.id,
-                    name: tc.name,
-                    content: "Interrupted by user",
-                    isError: true,
-                  },
-                });
-                continue;
-              } else if (action === "rollback_exit") {
-                await this.rollbackLastCheckpoint();
-                this.state.done = true;
-                process.exit(0);
-              } else {
-                this.interaction.showText(
-                  "● Aborted. Returning to REPL prompt.",
-                );
-                this.state.done = true;
-                break;
-              }
-            }
-
-            let finalResult = result;
-            // Run post-edit hook if tool succeeded and it's a file edit
-            if (
-              result.ok &&
-              !skipToolExecution &&
-              (tc.name === "write_file" || tc.name === "edit_file") &&
-              targetPath
-            ) {
-              if (this.config.hooks?.postEdit) {
-                this.interaction.showText(`● Running post-edit hook...`);
-                const hookRes = await this.runHook(
-                  this.config.hooks.postEdit,
-                  targetPath,
-                );
-                if (!hookRes.ok) {
-                  this.interaction.showText(
-                    `✖ Post-edit hook failed: ${hookRes.output}`,
-                  );
-                  finalResult = {
-                    ok: false,
-                    error: `Post-edit hook failed: ${hookRes.output}`,
-                  };
-                } else {
-                  this.interaction.showText(`✔ Post-edit hook passed.`);
-                }
-              }
-            }
-
-            // Type & Lint Guard Rails check
-            if (
-              finalResult.ok &&
-              targetPath &&
-              (tc.name === "write_file" ||
-                tc.name === "edit_file" ||
-                tc.name === "replace_file_content" ||
-                tc.name === "multi_replace_file_content")
-            ) {
-              // Run Auto-Formatters (Prettier / Biome / ESLint Fix)
+              this.interaction.showText(
+                `● Pre-commit checks: running verification tests...`,
+              );
+              const testCmd = contextPack.projectIndex.testCommands[0];
               try {
+                await execPromise(testCmd, { cwd: this.cwd });
+                this.interaction.showText(`✔ Pre-commit checks passed.`);
+              } catch (err: any) {
+                this.interaction.showText(
+                  picocolors.red(
+                    `✖ Pre-commit checks failed. Verification tests failed.`,
+                  ),
+                );
+
+                const choice = await Prompt.askSelect(
+                  `Pre-commit verification tests failed. How would you like to proceed?`,
+                  [
+                    { value: "yes", label: "Proceed with the commit anyway" },
+                    {
+                      value: "diagnose",
+                      label: "Let Agent auto-repair the failures (diagnose)",
+                    },
+                    { value: "no", label: "Abort the commit entirely" },
+                  ],
+                );
+
+                if (choice === "diagnose") {
+                  eventBus.emitEvent("tool_result", {
+                    toolCallId: tc.id,
+                    toolName: tc.name,
+                    error: `Commit aborted. Verification tests failed: ${err.stdout || err.stderr || err.message}`,
+                  });
+                  toolResultBlocks.push({
+                    type: "tool_result",
+                    toolResult: {
+                      toolCallId: tc.id,
+                      name: tc.name,
+                      content: `Commit aborted. Verification tests failed with the following log. Please diagnose and fix the codebase first:\n\n${err.stdout || err.stderr || err.message}`,
+                      isError: true,
+                    },
+                  });
+                  continue;
+                } else if (choice !== "yes") {
+                  eventBus.emitEvent("tool_result", {
+                    toolCallId: tc.id,
+                    toolName: tc.name,
+                    error:
+                      "Commit aborted by user due to pre-commit test failures.",
+                  });
+                  toolResultBlocks.push({
+                    type: "tool_result",
+                    toolResult: {
+                      toolCallId: tc.id,
+                      name: tc.name,
+                      content:
+                        "Commit aborted by user due to pre-commit test failures.",
+                      isError: true,
+                    },
+                  });
+                  continue;
+                }
+              }
+            }
+
+            // 2. Generate Commit Message via LLM if not provided
+            if (!parsedArgs.message) {
+              this.interaction.showText(
+                `● Git Commit: generating commit message via LLM...`,
+              );
+              try {
+                const { stdout } = await execPromise("git diff --cached", {
+                  cwd: this.cwd,
+                });
+                if (!stdout.trim()) {
+                  this.interaction.showText(
+                    `⚠ Warning: No staged changes found to commit.`,
+                  );
+                } else {
+                  const fastModel =
+                    this.config.models.fast || this.config.models.default;
+                  const stream = this.provider.chat({
+                    model: fastModel,
+                    messages: [
+                      {
+                        id: `msg_commit_${Date.now()}`,
+                        role: "user",
+                        createdAt: new Date().toISOString(),
+                        content: [
+                          {
+                            type: "text",
+                            text: `Generate a concise, high-quality conventional git commit message (e.g. feat(cli): add autocomplete) for the following git diff. Output ONLY the commit message, no formatting, no markdown, no quotes, just the text:\n\n${stdout.substring(0, 20000)}`,
+                          },
+                        ],
+                      },
+                    ],
+                    tools: [],
+                  });
+
+                  let generatedMessage = "";
+                  for await (const event of stream) {
+                    if (event.type === "text_delta") {
+                      generatedMessage += event.text;
+                    }
+                  }
+
+                  generatedMessage = generatedMessage
+                    .trim()
+                    .replace(/^["']|["']$/g, "");
+                  if (generatedMessage) {
+                    parsedArgs.message = generatedMessage;
+                    tc.arguments = JSON.stringify(parsedArgs);
+                    this.interaction.showText(
+                      `● Generated Commit Message: "${generatedMessage}"`,
+                    );
+                  }
+                }
+              } catch (err: any) {
+                this.interaction.showText(
+                  `⚠ Failed to generate commit message: ${err.message}`,
+                );
+              }
+            }
+          }
+
+          if (
+            (tc.name === "write_file" ||
+              tc.name === "edit_file" ||
+              tc.name === "replace_file_content" ||
+              tc.name === "multi_replace_file_content") &&
+            targetPath
+          ) {
+            const checkpoint = await this.checkpointManager.captureBeforeState(
+              tc.id,
+              targetPath,
+            );
+            beforeContent = checkpoint.backups[0].originalContent;
+
+            eventBus.emitEvent("checkpoint_created", {
+              checkpointId: checkpoint.id,
+              timestamp: checkpoint.timestamp,
+              message: `Before executing ${tc.name} on ${targetPath}`,
+            });
+
+            // Run pre-edit hook if configured
+            if (this.config.hooks?.preEdit) {
+              this.interaction.showText(`● Running pre-edit hook...`);
+              const hookRes = await this.runHook(
+                this.config.hooks.preEdit,
+                targetPath,
+              );
+              if (!hookRes.ok) {
+                this.interaction.showText(
+                  `✖ Pre-edit hook failed: ${hookRes.output}`,
+                );
+                hookResult = {
+                  ok: false,
+                  error: `Pre-edit hook failed: ${hookRes.output}`,
+                };
+                skipToolExecution = true;
+              } else {
+                this.interaction.showText(`✔ Pre-edit hook passed.`);
+              }
+            }
+          }
+
+          this.statusBar.start(
+            `Executing tool: ${tc.name}... | Cost: $${this.sessionCost.toFixed(4)}`,
+          );
+          const result = skipToolExecution
+            ? hookResult
+            : await this.stepRunner.run(tc, this.abortController?.signal);
+          this.statusBar.stop();
+
+          if (this.abortController?.signal.aborted) {
+            const action = await this.handleInterrupt();
+            if (action === "continue") {
+              this.interaction.showText("● Resuming execution...");
+              this.abortController = null;
+              eventBus.emitEvent("tool_result", {
+                toolCallId: tc.id,
+                toolName: tc.name,
+                error: "Interrupted by user",
+              });
+              toolResultBlocks.push({
+                type: "tool_result",
+                toolResult: {
+                  toolCallId: tc.id,
+                  name: tc.name,
+                  content: "Interrupted by user",
+                  isError: true,
+                },
+              });
+              continue;
+            } else if (action === "rollback_exit") {
+              await this.rollbackLastCheckpoint();
+              this.state.done = true;
+              return this.createAbortedOutcome(
+                "rollback",
+                "Execution was interrupted and the last checkpoint was rolled back.",
+              );
+            } else {
+              this.interaction.showText("● Aborted. Returning to REPL prompt.");
+              this.state.done = true;
+              return this.createAbortedOutcome(
+                "interrupted",
+                "Execution was interrupted by the user.",
+              );
+            }
+          }
+
+          let finalResult = result;
+          // Run post-edit hook if tool succeeded and it's a file edit
+          if (
+            result.ok &&
+            !skipToolExecution &&
+            (tc.name === "write_file" || tc.name === "edit_file") &&
+            targetPath
+          ) {
+            if (this.config.hooks?.postEdit) {
+              this.interaction.showText(`● Running post-edit hook...`);
+              const hookRes = await this.runHook(
+                this.config.hooks.postEdit,
+                targetPath,
+              );
+              if (!hookRes.ok) {
+                this.interaction.showText(
+                  `✖ Post-edit hook failed: ${hookRes.output}`,
+                );
+                finalResult = {
+                  ok: false,
+                  error: `Post-edit hook failed: ${hookRes.output}`,
+                };
+              } else {
+                this.interaction.showText(`✔ Post-edit hook passed.`);
+              }
+            }
+          }
+
+          // Type & Lint Guard Rails check
+          if (
+            finalResult.ok &&
+            targetPath &&
+            absoluteTargetPath &&
+            (tc.name === "write_file" ||
+              tc.name === "edit_file" ||
+              tc.name === "replace_file_content" ||
+              tc.name === "multi_replace_file_content")
+          ) {
+            // Run Auto-Formatters (Prettier / Biome / ESLint Fix)
+            try {
+              if (
+                fs.existsSync(path.join(this.cwd, "biome.json")) ||
+                fs.existsSync(path.join(this.cwd, "biome.jsonc"))
+              ) {
+                this.interaction.showText(`● Running Biome Auto-Format...`);
+                await executeLocalPackageBinary(
+                  this.cwd,
+                  "@biomejs/biome",
+                  "biome",
+                  ["format", "--write", absoluteTargetPath],
+                );
+              } else {
+                const prettierCandidates = [
+                  ".prettierrc",
+                  ".prettierrc.json",
+                  ".prettierrc.yml",
+                  ".prettierrc.yaml",
+                  ".prettierrc.js",
+                  "prettier.config.js",
+                ];
+                let hasPrettierConfig = false;
+                for (const c of prettierCandidates) {
+                  if (fs.existsSync(path.join(this.cwd, c))) {
+                    hasPrettierConfig = true;
+                    break;
+                  }
+                }
+                if (hasPrettierConfig) {
+                  this.interaction.showText(
+                    `● Running Prettier Auto-Format...`,
+                  );
+                  await executeLocalPackageBinary(
+                    this.cwd,
+                    "prettier",
+                    "prettier",
+                    ["--write", absoluteTargetPath],
+                  );
+                }
+              }
+              const eslintCandidates = [
+                ".eslintrc",
+                ".eslintrc.json",
+                ".eslintrc.js",
+                "eslint.config.js",
+              ];
+              let hasEslintConfig = false;
+              for (const c of eslintCandidates) {
+                if (fs.existsSync(path.join(this.cwd, c))) {
+                  hasEslintConfig = true;
+                  break;
+                }
+              }
+              if (hasEslintConfig) {
+                await executeLocalPackageBinary(this.cwd, "eslint", "eslint", [
+                  "--fix",
+                  absoluteTargetPath,
+                ]);
+              }
+            } catch {
+              // Ignore formatting failures
+            }
+
+            if (
+              targetPath.endsWith(".ts") ||
+              targetPath.endsWith(".tsx") ||
+              targetPath.endsWith(".js") ||
+              targetPath.endsWith(".jsx")
+            ) {
+              try {
+                let lintPackage = "eslint";
+                let lintBinary = "eslint";
+                let lintArgs = ["--quiet", absoluteTargetPath];
                 if (
                   fs.existsSync(path.join(this.cwd, "biome.json")) ||
                   fs.existsSync(path.join(this.cwd, "biome.jsonc"))
                 ) {
-                  this.interaction.showText(`● Running Biome Auto-Format...`);
-                  await execPromise(
-                    `npx @biomejs/biome format --write "${targetPath}"`,
-                    { cwd: this.cwd },
-                  );
-                } else {
-                  const prettierCandidates = [
-                    ".prettierrc",
-                    ".prettierrc.json",
-                    ".prettierrc.yml",
-                    ".prettierrc.yaml",
-                    ".prettierrc.js",
-                    "prettier.config.js",
-                  ];
-                  let hasPrettierConfig = false;
-                  for (const c of prettierCandidates) {
-                    if (fs.existsSync(path.join(this.cwd, c))) {
-                      hasPrettierConfig = true;
-                      break;
-                    }
-                  }
-                  if (hasPrettierConfig) {
-                    this.interaction.showText(
-                      `● Running Prettier Auto-Format...`,
-                    );
-                    await execPromise(`npx prettier --write "${targetPath}"`, {
-                      cwd: this.cwd,
-                    });
-                  }
+                  lintPackage = "@biomejs/biome";
+                  lintBinary = "biome";
+                  lintArgs = ["lint", absoluteTargetPath];
                 }
-                const eslintCandidates = [
-                  ".eslintrc",
-                  ".eslintrc.json",
-                  ".eslintrc.js",
-                  "eslint.config.js",
-                ];
-                let hasEslintConfig = false;
-                for (const c of eslintCandidates) {
-                  if (fs.existsSync(path.join(this.cwd, c))) {
-                    hasEslintConfig = true;
-                    break;
-                  }
-                }
-                if (hasEslintConfig) {
-                  await execPromise(`npx eslint --fix "${targetPath}"`, {
-                    cwd: this.cwd,
-                  });
-                }
-              } catch {
-                // Ignore formatting failures
-              }
+                this.interaction.showText(
+                  `● Verifying file syntax & type safety for ${targetPath}...`,
+                );
+                await executeLocalPackageBinary(
+                  this.cwd,
+                  lintPackage,
+                  lintBinary,
+                  lintArgs,
+                );
+                this.interaction.showText(`✔ Syntax verification passed.`);
+              } catch (err: any) {
+                let lintError = err;
+                this.interaction.showText(
+                  picocolors.yellow(
+                    `⚠ Syntax/Lint validation warning for ${targetPath}:`,
+                  ),
+                );
+                this.interaction.showText(
+                  picocolors.red(
+                    lintError.stdout || lintError.stderr || lintError.message,
+                  ),
+                );
 
-              if (
-                targetPath.endsWith(".ts") ||
-                targetPath.endsWith(".tsx") ||
-                targetPath.endsWith(".js") ||
-                targetPath.endsWith(".jsx")
-              ) {
+                let checkPassedAfterAutoInstall = false;
+                const outputText = lintError.stdout || lintError.stderr || "";
+
                 try {
-                  let lintCmd = `npx eslint --quiet "${targetPath}"`;
-                  if (
-                    fs.existsSync(path.join(this.cwd, "biome.json")) ||
-                    fs.existsSync(path.join(this.cwd, "biome.jsonc"))
-                  ) {
-                    lintCmd = `npx @biomejs/biome lint "${targetPath}"`;
+                  const missingModules: string[] = [];
+                  const moduleMatch1 = [
+                    ...outputText.matchAll(/Cannot find module '([^']+)'/g),
+                  ];
+                  for (const m of moduleMatch1) {
+                    if (m[1]) missingModules.push(m[1]);
                   }
-                  this.interaction.showText(
-                    `● Verifying file syntax & type safety for ${targetPath}...`,
-                  );
-                  await execPromise(lintCmd, { cwd: this.cwd });
-                  this.interaction.showText(`✔ Syntax verification passed.`);
-                } catch (err: any) {
-                  let lintError = err;
-                  this.interaction.showText(
-                    picocolors.yellow(
-                      `⚠ Syntax/Lint validation warning for ${targetPath}:`,
+                  const moduleMatch2 = [
+                    ...outputText.matchAll(/Cannot find name '([^']+)'/g),
+                  ];
+                  for (const m of moduleMatch2) {
+                    if (
+                      m[1] &&
+                      (m[1].toLowerCase() === m[1] || m[1].startsWith("@"))
+                    ) {
+                      missingModules.push(m[1]);
+                    }
+                  }
+                  const typesMatch = [
+                    ...outputText.matchAll(
+                      /Could not find a declaration file for module '([^']+)'/g,
                     ),
-                  );
-                  this.interaction.showText(
-                    picocolors.red(
-                      lintError.stdout || lintError.stderr || lintError.message,
-                    ),
-                  );
+                  ];
+                  for (const m of typesMatch) {
+                    if (m[1]) missingModules.push(`@types/${m[1]}`);
+                  }
 
-                  let checkPassedAfterAutoInstall = false;
-                  const outputText = lintError.stdout || lintError.stderr || "";
-
-                  try {
-                    const missingModules: string[] = [];
-                    const moduleMatch1 = [
-                      ...outputText.matchAll(/Cannot find module '([^']+)'/g),
-                    ];
-                    for (const m of moduleMatch1) {
-                      if (m[1]) missingModules.push(m[1]);
-                    }
-                    const moduleMatch2 = [
-                      ...outputText.matchAll(/Cannot find name '([^']+)'/g),
-                    ];
-                    for (const m of moduleMatch2) {
-                      if (
-                        m[1] &&
-                        (m[1].toLowerCase() === m[1] || m[1].startsWith("@"))
-                      ) {
-                        missingModules.push(m[1]);
-                      }
-                    }
-                    const typesMatch = [
-                      ...outputText.matchAll(
-                        /Could not find a declaration file for module '([^']+)'/g,
-                      ),
-                    ];
-                    for (const m of typesMatch) {
-                      if (m[1]) missingModules.push(`@types/${m[1]}`);
-                    }
-
-                    if (missingModules.length > 0) {
-                      const uniqueModules = Array.from(new Set(missingModules));
-                      let dependenciesInstalled = false;
-                      for (const pkg of uniqueModules) {
-                        const installPkg = await Prompt.askApproval(
-                          `Missing dependency "${pkg}" detected. Install it automatically?`,
+                  if (missingModules.length > 0) {
+                    const uniqueModules = Array.from(new Set(missingModules));
+                    let dependenciesInstalled = false;
+                    for (const pkg of uniqueModules) {
+                      const installPkg = await Prompt.askApproval(
+                        `Missing dependency "${pkg}" detected. Install it automatically?`,
+                      );
+                      if (installPkg) {
+                        this.interaction.showText(`● Installing "${pkg}"...`);
+                        const isPnpm = fs.existsSync(
+                          path.join(this.cwd, "pnpm-lock.yaml"),
                         );
-                        if (installPkg) {
-                          this.interaction.showText(`● Installing "${pkg}"...`);
-                          const isPnpm = fs.existsSync(
-                            path.join(this.cwd, "pnpm-lock.yaml"),
-                          );
-                          const isYarn = fs.existsSync(
-                            path.join(this.cwd, "yarn.lock"),
-                          );
-                          const installCmd = isPnpm
-                            ? `npx pnpm add -D ${pkg}`
-                            : isYarn
-                              ? `yarn add -D ${pkg}`
-                              : `npm install --save-dev ${pkg}`;
-
-                          try {
-                            await execPromise(installCmd, { cwd: this.cwd });
-                            this.interaction.showText(
-                              `✔ Installed "${pkg}" successfully.`,
-                            );
-                            dependenciesInstalled = true;
-                          } catch (installErr: any) {
-                            this.interaction.showText(
-                              picocolors.red(
-                                `✖ Failed to install "${pkg}": ${installErr.message}`,
-                              ),
+                        const isYarn = fs.existsSync(
+                          path.join(this.cwd, "yarn.lock"),
+                        );
+                        try {
+                          if (!isValidPackageName(pkg)) {
+                            throw new Error(
+                              `Rejected invalid package name: ${pkg}`,
                             );
                           }
+                          const executable = isPnpm
+                            ? "pnpm"
+                            : isYarn
+                              ? "yarn"
+                              : "npm";
+                          const args =
+                            isPnpm || isYarn
+                              ? ["add", "-D", pkg]
+                              : ["install", "--save-dev", pkg];
+                          await execFilePromise(executable, args, {
+                            cwd: this.cwd,
+                          });
+                          this.interaction.showText(
+                            `✔ Installed "${pkg}" successfully.`,
+                          );
+                          dependenciesInstalled = true;
+                        } catch (installErr: any) {
+                          this.interaction.showText(
+                            picocolors.red(
+                              `✖ Failed to install "${pkg}": ${installErr.message}`,
+                            ),
+                          );
                         }
                       }
+                    }
 
-                      if (dependenciesInstalled) {
-                        try {
-                          this.interaction.showText(
-                            `● Re-verifying syntax after dependency installation...`,
+                    if (dependenciesInstalled) {
+                      try {
+                        this.interaction.showText(
+                          `● Re-verifying syntax after dependency installation...`,
+                        );
+                        await executeLocalPackageBinary(
+                          this.cwd,
+                          "eslint",
+                          "eslint",
+                          ["--quiet", absoluteTargetPath],
+                        );
+                        this.interaction.showText(
+                          `✔ Syntax verification passed after dependency installation.`,
+                        );
+                        checkPassedAfterAutoInstall = true;
+                      } catch (recheckErr: any) {
+                        lintError = recheckErr;
+                      }
+                    }
+                  }
+                } catch {
+                  // Ignore installer issues
+                }
+
+                let autoImported = false;
+                if (!checkPassedAfterAutoInstall) {
+                  try {
+                    const missingSymbols: string[] = [];
+                    const currentOutput =
+                      lintError.stdout || lintError.stderr || "";
+                    const match1 = [
+                      ...currentOutput.matchAll(/'([^']+)' is not defined/g),
+                    ];
+                    for (const m of match1) {
+                      if (m[1]) missingSymbols.push(m[1]);
+                    }
+                    const match2 = [
+                      ...currentOutput.matchAll(/Cannot find name '([^']+)'/g),
+                    ];
+                    for (const m of match2) {
+                      if (m[1]) missingSymbols.push(m[1]);
+                    }
+
+                    if (missingSymbols.length > 0) {
+                      const indexPath = new SymbolIndexer(this.cwd).indexPath;
+                      if (fs.existsSync(indexPath)) {
+                        const raw = fs.readFileSync(indexPath, "utf8");
+                        const index = JSON.parse(raw);
+                        if (index.files && typeof index.files === "object") {
+                          const fileContent = fs.readFileSync(
+                            absoluteTargetPath,
+                            "utf8",
                           );
-                          await execPromise(
-                            `npx eslint --quiet "${targetPath}"`,
-                            { cwd: this.cwd },
-                          );
-                          this.interaction.showText(
-                            `✔ Syntax verification passed after dependency installation.`,
-                          );
-                          checkPassedAfterAutoInstall = true;
-                        } catch (recheckErr: any) {
-                          lintError = recheckErr;
+                          let newImports = "";
+                          for (const symbol of new Set(missingSymbols)) {
+                            let foundFile: string | null = null;
+                            for (const [file, fileData] of Object.entries(
+                              index.files,
+                            )) {
+                              const data = fileData as any;
+                              if (data && Array.isArray(data.symbols)) {
+                                if (
+                                  data.symbols.some(
+                                    (s: any) => s.name === symbol,
+                                  )
+                                ) {
+                                  foundFile = file;
+                                  break;
+                                }
+                              }
+                            }
+
+                            if (foundFile) {
+                              const targetDir =
+                                path.dirname(absoluteTargetPath);
+                              const exportFileAbs = path.resolve(
+                                this.cwd,
+                                foundFile,
+                              );
+                              let relPath = path.relative(
+                                targetDir,
+                                exportFileAbs,
+                              );
+                              relPath = relPath.replace(/\\/g, "/");
+                              if (
+                                !relPath.startsWith("./") &&
+                                !relPath.startsWith("../")
+                              ) {
+                                relPath = "./" + relPath;
+                              }
+                              relPath = relPath.replace(
+                                /\.(ts|tsx|js|jsx)$/,
+                                ".js",
+                              );
+                              newImports += `import { ${symbol} } from '${relPath}';\n`;
+                            }
+                          }
+
+                          if (newImports) {
+                            fs.writeFileSync(
+                              absoluteTargetPath,
+                              newImports + fileContent,
+                              "utf8",
+                            );
+                            this.interaction.showText(
+                              `● Automatically resolved missing imports...`,
+                            );
+                            autoImported = true;
+                          }
                         }
                       }
                     }
                   } catch {
-                    // Ignore installer issues
+                    // Ignore autofix errors
                   }
+                }
 
-                  let autoImported = false;
-                  if (!checkPassedAfterAutoInstall) {
-                    try {
-                      const missingSymbols: string[] = [];
-                      const currentOutput =
-                        lintError.stdout || lintError.stderr || "";
-                      const match1 = [
-                        ...currentOutput.matchAll(/'([^']+)' is not defined/g),
-                      ];
-                      for (const m of match1) {
-                        if (m[1]) missingSymbols.push(m[1]);
-                      }
-                      const match2 = [
-                        ...currentOutput.matchAll(
-                          /Cannot find name '([^']+)'/g,
-                        ),
-                      ];
-                      for (const m of match2) {
-                        if (m[1]) missingSymbols.push(m[1]);
-                      }
-
-                      if (missingSymbols.length > 0) {
-                        const indexPath = path.join(
-                          this.cwd,
-                          ".orbit",
-                          "symbols.json",
-                        );
-                        if (fs.existsSync(indexPath)) {
-                          const raw = fs.readFileSync(indexPath, "utf8");
-                          const index = JSON.parse(raw);
-                          if (index.files && typeof index.files === "object") {
-                            const fileContent = fs.readFileSync(
-                              targetPath,
-                              "utf8",
-                            );
-                            let newImports = "";
-                            for (const symbol of new Set(missingSymbols)) {
-                              let foundFile: string | null = null;
-                              for (const [file, fileData] of Object.entries(
-                                index.files,
-                              )) {
-                                const data = fileData as any;
-                                if (data && Array.isArray(data.symbols)) {
-                                  if (
-                                    data.symbols.some(
-                                      (s: any) => s.name === symbol,
-                                    )
-                                  ) {
-                                    foundFile = file;
-                                    break;
-                                  }
-                                }
-                              }
-
-                              if (foundFile) {
-                                const targetDir = path.dirname(targetPath);
-                                const exportFileAbs = path.resolve(
-                                  this.cwd,
-                                  foundFile,
-                                );
-                                let relPath = path.relative(
-                                  targetDir,
-                                  exportFileAbs,
-                                );
-                                relPath = relPath.replace(/\\/g, "/");
-                                if (
-                                  !relPath.startsWith("./") &&
-                                  !relPath.startsWith("../")
-                                ) {
-                                  relPath = "./" + relPath;
-                                }
-                                relPath = relPath.replace(
-                                  /\.(ts|tsx|js|jsx)$/,
-                                  ".js",
-                                );
-                                newImports += `import { ${symbol} } from '${relPath}';\n`;
-                              }
-                            }
-
-                            if (newImports) {
-                              fs.writeFileSync(
-                                targetPath,
-                                newImports + fileContent,
-                                "utf8",
-                              );
-                              this.interaction.showText(
-                                `● Automatically resolved missing imports...`,
-                              );
-                              autoImported = true;
-                            }
-                          }
-                        }
-                      }
-                    } catch {
-                      // Ignore autofix errors
-                    }
-                  }
-
-                  let checkPassedAfterAutofix = false;
-                  if (autoImported) {
-                    try {
-                      this.interaction.showText(
-                        `● Re-verifying syntax after auto-imports injection...`,
-                      );
-                      await execPromise(`npx eslint --quiet "${targetPath}"`, {
-                        cwd: this.cwd,
-                      });
-                      this.interaction.showText(
-                        `✔ Syntax verification passed after auto-imports injection.`,
-                      );
-                      checkPassedAfterAutofix = true;
-                    } catch (reErr: any) {
-                      this.interaction.showText(
-                        picocolors.yellow(
-                          `⚠ Syntax/Lint validation still failed after auto-imports:`,
-                        ),
-                      );
-                      this.interaction.showText(
-                        picocolors.red(
-                          reErr.stdout || reErr.stderr || reErr.message,
-                        ),
-                      );
-                    }
-                  }
-
-                  if (!checkPassedAfterAutofix) {
-                    const autoFix = await Prompt.askApproval(
-                      `Lint/Syntax verification failed. Let Agent auto-repair the file?`,
+                let checkPassedAfterAutofix = false;
+                if (autoImported) {
+                  try {
+                    this.interaction.showText(
+                      `● Re-verifying syntax after auto-imports injection...`,
                     );
-                    if (autoFix) {
-                      finalResult = {
-                        ok: false,
-                        error: `Syntax or Lint verification failed on file edit: ${lintError.stdout || lintError.stderr || lintError.message}. Please fix the syntax/import errors.`,
-                      };
-                    }
+                    await executeLocalPackageBinary(
+                      this.cwd,
+                      "eslint",
+                      "eslint",
+                      ["--quiet", absoluteTargetPath],
+                    );
+                    this.interaction.showText(
+                      `✔ Syntax verification passed after auto-imports injection.`,
+                    );
+                    checkPassedAfterAutofix = true;
+                  } catch (reErr: any) {
+                    this.interaction.showText(
+                      picocolors.yellow(
+                        `⚠ Syntax/Lint validation still failed after auto-imports:`,
+                      ),
+                    );
+                    this.interaction.showText(
+                      picocolors.red(
+                        reErr.stdout || reErr.stderr || reErr.message,
+                      ),
+                    );
+                  }
+                }
+
+                if (!checkPassedAfterAutofix) {
+                  const autoFix = await Prompt.askApproval(
+                    `Lint/Syntax verification failed. Let Agent auto-repair the file?`,
+                  );
+                  if (autoFix) {
+                    finalResult = {
+                      ok: false,
+                      error: `Syntax or Lint verification failed on file edit: ${lintError.stdout || lintError.stderr || lintError.message}. Please fix the syntax/import errors.`,
+                    };
                   }
                 }
               }
             }
+          }
 
-            // Phase 5: Interactive Diff Acceptance Check
-            if (
-              finalResult.ok &&
-              targetPath &&
-              (tc.name === "write_file" ||
-                tc.name === "edit_file" ||
-                tc.name === "replace_file_content" ||
-                tc.name === "multi_replace_file_content")
-            ) {
-              let afterContent = "";
+          // Phase 5: Interactive Diff Acceptance Check
+          if (
+            finalResult.ok &&
+            targetPath &&
+            absoluteTargetPath &&
+            (tc.name === "write_file" ||
+              tc.name === "edit_file" ||
+              tc.name === "replace_file_content" ||
+              tc.name === "multi_replace_file_content")
+          ) {
+            let afterContent = "";
+            try {
+              afterContent = fs.readFileSync(absoluteTargetPath, "utf8");
+            } catch {
               try {
-                afterContent = fs.readFileSync(
-                  path.resolve(this.cwd, targetPath),
-                  "utf8",
-                );
-              } catch {
-                try {
-                  const afterArgs = JSON.parse(tc.arguments);
-                  afterContent = afterArgs.content || afterArgs.newText || "";
-                } catch {}
-              }
-              try {
-                await this.interaction.showDiff(
-                  targetPath,
-                  beforeContent,
-                  afterContent,
-                );
-              } catch {
-                // Ignored
-              }
-
-              let accepted = false;
-              const choice = await Prompt.askSelect(
-                `Accept changes to ${targetPath}?`,
-                [
-                  { value: "yes", label: "Accept all changes" },
-                  { value: "hunks", label: "Review and accept by hunk/block" },
-                  { value: "no", label: "Reject and rollback all changes" },
-                ],
+                const afterArgs = JSON.parse(tc.arguments);
+                afterContent = afterArgs.content || afterArgs.newText || "";
+              } catch {}
+            }
+            try {
+              await this.interaction.showDiff(
+                targetPath,
+                beforeContent,
+                afterContent,
               );
+            } catch {
+              // Ignored
+            }
 
-              if (choice === "yes") {
-                accepted = true;
-              } else if (choice === "hunks") {
-                try {
-                  const linesBefore = beforeContent
-                    ? beforeContent.split("\n")
-                    : [];
-                  const linesAfter = afterContent.split("\n");
+            let accepted = false;
+            const choice = await Prompt.askSelect(
+              `Accept changes to ${targetPath}?`,
+              [
+                { value: "yes", label: "Accept all changes" },
+                { value: "hunks", label: "Review and accept by hunk/block" },
+                { value: "no", label: "Reject and rollback all changes" },
+              ],
+            );
 
-                  interface Hunk {
-                    startB: number;
-                    endB: number;
-                    startA: number;
-                    endA: number;
-                    linesB: string[];
-                    linesA: string[];
+            if (choice === "yes") {
+              accepted = true;
+            } else if (choice === "hunks") {
+              try {
+                const linesBefore = beforeContent
+                  ? beforeContent.split("\n")
+                  : [];
+                const linesAfter = afterContent.split("\n");
+
+                interface Hunk {
+                  startB: number;
+                  endB: number;
+                  startA: number;
+                  endA: number;
+                  linesB: string[];
+                  linesA: string[];
+                }
+                const hunks: Hunk[] = [];
+                let iB = 0;
+                let iA = 0;
+
+                while (iB < linesBefore.length || iA < linesAfter.length) {
+                  if (
+                    iB < linesBefore.length &&
+                    iA < linesAfter.length &&
+                    linesBefore[iB] === linesAfter[iA]
+                  ) {
+                    iB++;
+                    iA++;
+                    continue;
                   }
-                  const hunks: Hunk[] = [];
-                  let iB = 0;
-                  let iA = 0;
 
-                  while (iB < linesBefore.length || iA < linesAfter.length) {
-                    if (
-                      iB < linesBefore.length &&
-                      iA < linesAfter.length &&
-                      linesBefore[iB] === linesAfter[iA]
-                    ) {
-                      iB++;
-                      iA++;
-                      continue;
-                    }
+                  const startB = iB;
+                  const startA = iA;
 
-                    const startB = iB;
-                    const startA = iA;
+                  let bestDB = -1;
+                  let bestDA = -1;
+                  let minSum = Infinity;
 
-                    let bestDB = -1;
-                    let bestDA = -1;
-                    let minSum = Infinity;
+                  const maxLookahead = 20;
+                  for (let dB = 0; dB <= maxLookahead; dB++) {
+                    for (let dA = 0; dA <= maxLookahead; dA++) {
+                      if (dB === 0 && dA === 0) continue;
+                      const posB = iB + dB;
+                      const posA = iA + dA;
 
-                    const maxLookahead = 20;
-                    for (let dB = 0; dB <= maxLookahead; dB++) {
-                      for (let dA = 0; dA <= maxLookahead; dA++) {
-                        if (dB === 0 && dA === 0) continue;
-                        const posB = iB + dB;
-                        const posA = iA + dA;
+                      if (posB > linesBefore.length || posA > linesAfter.length)
+                        continue;
 
-                        if (
-                          posB > linesBefore.length ||
-                          posA > linesAfter.length
-                        )
-                          continue;
+                      const isEndB = posB === linesBefore.length;
+                      const isEndA = posA === linesAfter.length;
 
-                        const isEndB = posB === linesBefore.length;
-                        const isEndA = posA === linesAfter.length;
+                      let isMatch = false;
+                      if (isEndB && isEndA) {
+                        isMatch = true;
+                      } else if (!isEndB && !isEndA) {
+                        isMatch = linesBefore[posB] === linesAfter[posA];
+                      }
 
-                        let isMatch = false;
-                        if (isEndB && isEndA) {
-                          isMatch = true;
-                        } else if (!isEndB && !isEndA) {
-                          isMatch = linesBefore[posB] === linesAfter[posA];
-                        }
-
-                        if (isMatch) {
-                          const sum = dB + dA;
-                          if (sum < minSum) {
-                            minSum = sum;
-                            bestDB = dB;
-                            bestDA = dA;
-                          }
+                      if (isMatch) {
+                        const sum = dB + dA;
+                        if (sum < minSum) {
+                          minSum = sum;
+                          bestDB = dB;
+                          bestDA = dA;
                         }
                       }
                     }
-
-                    if (bestDB !== -1 && bestDA !== -1) {
-                      const linesB = linesBefore.slice(startB, startB + bestDB);
-                      const linesA = linesAfter.slice(startA, startA + bestDA);
-                      iB += bestDB;
-                      iA += bestDA;
-
-                      hunks.push({
-                        startB,
-                        endB: iB,
-                        startA,
-                        endA: iA,
-                        linesB,
-                        linesA,
-                      });
-                    } else {
-                      const linesB = linesBefore.slice(startB);
-                      const linesA = linesAfter.slice(startA);
-                      iB = linesBefore.length;
-                      iA = linesAfter.length;
-
-                      hunks.push({
-                        startB,
-                        endB: iB,
-                        startA,
-                        endA: iA,
-                        linesB,
-                        linesA,
-                      });
-                    }
                   }
 
-                  if (hunks.length === 0) {
-                    accepted = true;
+                  if (bestDB !== -1 && bestDA !== -1) {
+                    const linesB = linesBefore.slice(startB, startB + bestDB);
+                    const linesA = linesAfter.slice(startA, startA + bestDA);
+                    iB += bestDB;
+                    iA += bestDA;
+
+                    hunks.push({
+                      startB,
+                      endB: iB,
+                      startA,
+                      endA: iA,
+                      linesB,
+                      linesA,
+                    });
                   } else {
-                    const previewLines = [
-                      `\n● Reviewing ${hunks.length} hunks in ${targetPath}:`,
-                    ];
+                    const linesB = linesBefore.slice(startB);
+                    const linesA = linesAfter.slice(startA);
+                    iB = linesBefore.length;
+                    iA = linesAfter.length;
+
+                    hunks.push({
+                      startB,
+                      endB: iB,
+                      startA,
+                      endA: iA,
+                      linesB,
+                      linesA,
+                    });
+                  }
+                }
+
+                if (hunks.length === 0) {
+                  accepted = true;
+                } else {
+                  const previewLines = [
+                    `\n● Reviewing ${hunks.length} hunks in ${targetPath}:`,
+                  ];
+                  for (let hIdx = 0; hIdx < hunks.length; hIdx++) {
+                    const hunk = hunks[hIdx];
+                    previewLines.push(
+                      picocolors.cyan(
+                        `\n--- Hunk #${hIdx + 1}/${hunks.length} ---`,
+                      ),
+                    );
+                    for (const line of hunk.linesB) {
+                      previewLines.push(`  ${picocolors.red(`- ${line}`)}`);
+                    }
+                    for (const line of hunk.linesA) {
+                      previewLines.push(`  ${picocolors.green(`+ ${line}`)}`);
+                    }
+                    previewLines.push(
+                      picocolors.cyan(
+                        "----------------------------------------",
+                      ),
+                    );
+                  }
+                  this.interaction.showText(previewLines.join("\n"));
+
+                  const selectedHunkIndices = await Prompt.askMultiSelect(
+                    `Select the hunks to apply to ${targetPath}:`,
+                    hunks.map((h, idx) => ({
+                      value: idx.toString(),
+                      label: `Apply Hunk #${idx + 1}`,
+                      hint: `-${h.linesB.length} lines, +${h.linesA.length} lines`,
+                    })),
+                  );
+
+                  if (selectedHunkIndices === null) {
+                    accepted = false;
+                  } else {
+                    const mergedLines: string[] = [];
+                    let lastB = 0;
                     for (let hIdx = 0; hIdx < hunks.length; hIdx++) {
                       const hunk = hunks[hIdx];
-                      previewLines.push(
-                        picocolors.cyan(
-                          `\n--- Hunk #${hIdx + 1}/${hunks.length} ---`,
-                        ),
+                      mergedLines.push(
+                        ...linesBefore.slice(lastB, hunk.startB),
                       );
-                      for (const line of hunk.linesB) {
-                        previewLines.push(`  ${picocolors.red(`- ${line}`)}`);
+                      if (selectedHunkIndices.includes(hIdx.toString())) {
+                        mergedLines.push(...hunk.linesA);
+                      } else {
+                        mergedLines.push(...hunk.linesB);
                       }
-                      for (const line of hunk.linesA) {
-                        previewLines.push(`  ${picocolors.green(`+ ${line}`)}`);
-                      }
-                      previewLines.push(
-                        picocolors.cyan(
-                          "----------------------------------------",
-                        ),
-                      );
+                      lastB = hunk.endB;
                     }
-                    this.interaction.showText(previewLines.join("\n"));
+                    mergedLines.push(...linesBefore.slice(lastB));
 
-                    const selectedHunkIndices = await Prompt.askMultiSelect(
-                      `Select the hunks to apply to ${targetPath}:`,
-                      hunks.map((h, idx) => ({
-                        value: idx.toString(),
-                        label: `Apply Hunk #${idx + 1}`,
-                        hint: `-${h.linesB.length} lines, +${h.linesA.length} lines`,
-                      })),
+                    fs.writeFileSync(
+                      absoluteTargetPath,
+                      mergedLines.join("\n"),
+                      "utf8",
                     );
-
-                    if (selectedHunkIndices === null) {
-                      accepted = false;
-                    } else {
-                      const mergedLines: string[] = [];
-                      let lastB = 0;
-                      for (let hIdx = 0; hIdx < hunks.length; hIdx++) {
-                        const hunk = hunks[hIdx];
-                        mergedLines.push(
-                          ...linesBefore.slice(lastB, hunk.startB),
-                        );
-                        if (selectedHunkIndices.includes(hIdx.toString())) {
-                          mergedLines.push(...hunk.linesA);
-                        } else {
-                          mergedLines.push(...hunk.linesB);
-                        }
-                        lastB = hunk.endB;
-                      }
-                      mergedLines.push(...linesBefore.slice(lastB));
-
-                      fs.writeFileSync(
-                        targetPath,
-                        mergedLines.join("\n"),
-                        "utf8",
-                      );
-                      this.interaction.showText(
-                        picocolors.green(
-                          `✔ Selected hunks merged and saved to ${targetPath}.`,
-                        ),
-                      );
-                      accepted = true;
-                    }
+                    this.interaction.showText(
+                      picocolors.green(
+                        `✔ Selected hunks merged and saved to ${targetPath}.`,
+                      ),
+                    );
+                    accepted = true;
                   }
-                } catch (hunkErr: any) {
-                  this.interaction.showText(
-                    picocolors.red(
-                      `✖ Hunk merge failed: ${hunkErr.message}. Accepting all instead.`,
-                    ),
-                  );
-                  accepted = true;
                 }
-              }
-
-              if (!accepted) {
+              } catch (hunkErr: any) {
                 this.interaction.showText(
-                  picocolors.yellow(
-                    `● Rejected changes. Reverting ${targetPath}...`,
+                  picocolors.red(
+                    `✖ Hunk merge failed: ${hunkErr.message}. Accepting all instead.`,
                   ),
                 );
-                await this.rollbackLastCheckpoint();
-                finalResult = {
-                  ok: false,
-                  error: `Edits to ${targetPath} rejected and rolled back by user.`,
-                };
+                accepted = true;
               }
             }
 
-            const status = finalResult.ok
-              ? ("success" as const)
-              : ("failed" as const);
-            this.sessionManager.recordToolExecution(
-              tc.name,
-              tc,
-              finalResult,
-              decision.risk || "read",
-              decision.action,
-              status,
-            );
-
-            if (finalResult.ok) {
-              await this.commitLastGitCheckpointSoft();
+            if (!accepted) {
               this.interaction.showText(
-                `  ${picocolors.green("✔")} Success: ${picocolors.gray(finalResult.display || "Done")}`,
+                picocolors.yellow(
+                  `● Rejected changes. Reverting ${targetPath}...`,
+                ),
               );
-
-              if (targetPath) {
-                this.addRelevantFile(targetPath, `Modified by ${tc.name}`);
-              }
-              if (tc.name === "write_file" || tc.name === "edit_file") {
-                new SymbolIndexer(this.cwd).index().catch(() => {});
-              }
-            } else {
-              await this.rollbackLastGitCheckpoint();
-              this.interaction.showText(
-                `  ${picocolors.red("✖")} Failed: ${picocolors.red(finalResult.error || "Unknown error")}`,
-              );
+              await this.rollbackLastCheckpoint();
+              finalResult = {
+                ok: false,
+                error: `Edits to ${targetPath} rejected and rolled back by user.`,
+              };
             }
-
-            eventBus.emitEvent("tool_result", {
-              toolCallId: tc.id,
-              toolName: tc.name,
-              result: finalResult.ok ? finalResult.data : undefined,
-              error: finalResult.ok
-                ? undefined
-                : finalResult.error || "Unknown error",
-            });
-
-            toolResultBlocks.push({
-              type: "tool_result",
-              toolResult: {
-                toolCallId: tc.id,
-                name: tc.name,
-                content: this.buildToolResultContent(tc.name, finalResult),
-                isError: !finalResult.ok,
-              },
-            });
           }
 
-          const toolMsg: OrbitMessage = {
-            id: `msg_tool_${Date.now()}`,
-            role: "tool",
-            createdAt: new Date().toISOString(),
-            content: toolResultBlocks,
-          };
-          this.state.history.push(toolMsg);
-          this.abortController = null;
-          this.sessionManager.saveHistory(this.state.history);
+          const status = finalResult.ok
+            ? ("success" as const)
+            : ("failed" as const);
+          this.sessionManager.recordToolExecution(
+            tc.name,
+            tc,
+            finalResult,
+            decision.risk || "read",
+            decision.action,
+            status,
+          );
+
+          if (finalResult.ok) {
+            this.interaction.showText(
+              `  ${picocolors.green("✔")} Success: ${picocolors.gray(finalResult.display || "Done")}`,
+            );
+
+            if (targetPath) {
+              this.addRelevantFile(targetPath, `Modified by ${tc.name}`);
+            }
+            if (tc.name === "write_file" || tc.name === "edit_file") {
+              new SymbolIndexer(this.cwd).index().catch(() => {});
+            }
+          } else {
+            this.interaction.showText(
+              `  ${picocolors.red("✖")} Failed: ${picocolors.red(finalResult.error || "Unknown error")}`,
+            );
+          }
+
+          eventBus.emitEvent("tool_result", {
+            toolCallId: tc.id,
+            toolName: tc.name,
+            result: finalResult.ok ? finalResult.data : undefined,
+            error: finalResult.ok
+              ? undefined
+              : finalResult.error || "Unknown error",
+          });
+
+          toolResultBlocks.push({
+            type: "tool_result",
+            toolResult: {
+              toolCallId: tc.id,
+              name: tc.name,
+              content: this.buildToolResultContent(tc.name, finalResult),
+              isError: !finalResult.ok,
+            },
+          });
         }
 
-        if (
-          this.state.attemptCount >= this.state.maxAttempts &&
-          !this.state.done
-        ) {
+        const toolMsg: OrbitMessage = {
+          id: `msg_tool_${Date.now()}`,
+          role: "tool",
+          createdAt: new Date().toISOString(),
+          content: toolResultBlocks,
+        };
+        this.state.history.push(toolMsg);
+        this.abortController = null;
+        this.sessionManager.saveHistory(this.state.history);
+      }
+
+      if (
+        this.state.attemptCount >= this.state.maxAttempts &&
+        !this.state.done
+      ) {
+        this.interaction.showText(
+          `\n● Limit reached: Maximum consecutive loop iterations (${this.state.maxAttempts}) completed. Pausing loop.`,
+        );
+      }
+
+      const sessions = this.sessionManager
+        .getSessionStore()
+        .getEvents(this.state.sessionId);
+      const modifiedFiles = sessions
+        .filter((e) => e.type === "file_modified")
+        .flatMap((e) =>
+          typeof e.payload === "object" &&
+          e.payload !== null &&
+          "path" in e.payload &&
+          typeof e.payload.path === "string"
+            ? [e.payload.path]
+            : [],
+        );
+
+      this.interaction.showText(`\n● Summary:`);
+      this.interaction.showText(
+        `  Modified files: ${modifiedFiles.length > 0 ? Array.from(new Set(modifiedFiles)).join(", ") : "None"}`,
+      );
+      this.interaction.showText(`  Verification: test run executed.`);
+      this.interaction.showText(
+        `  Session Cost: $${this.sessionCost.toFixed(4)}`,
+      );
+
+      if (this.config.autoCommit && modifiedFiles.length > 0) {
+        this.interaction.showText(`\n● Auto-committing changes...`);
+        try {
+          const uniqueFiles = Array.from(new Set(modifiedFiles));
+          const { execFileSync } = await import("child_process");
+
+          for (const file of uniqueFiles) {
+            execFileSync("git", ["add", file], { cwd: this.cwd });
+          }
+
+          const diff = execFileSync("git", ["diff", "--cached"], {
+            cwd: this.cwd,
+          })
+            .toString()
+            .trim();
+          if (diff) {
+            this.interaction.showText("● Generating commit message via LLM...");
+            const fastModel =
+              this.config.models.fast || this.config.models.default;
+            const stream = this.provider.chat({
+              model: fastModel,
+              messages: [
+                {
+                  id: `msg_auto_commit_${Date.now()}`,
+                  role: "user",
+                  createdAt: new Date().toISOString(),
+                  content: [
+                    {
+                      type: "text",
+                      text: `Generate a concise, high-quality conventional git commit message (e.g. feat(cli): add autocomplete) for the following git diff. Output ONLY the commit message, no formatting, no markdown, no quotes, just the text:\n\n${diff.substring(0, 20000)}`,
+                    },
+                  ],
+                },
+              ],
+              tools: [],
+            });
+
+            let generatedMessage = "";
+            for await (const event of stream) {
+              if (event.type === "text_delta") {
+                generatedMessage += event.text;
+              }
+            }
+            const finalMsg =
+              generatedMessage.trim().replace(/^["']|["']$/g, "") ||
+              "chore: auto-commit";
+
+            this.interaction.showText(
+              `● Committing: "${picocolors.green(finalMsg)}"`,
+            );
+            execFileSync("git", ["commit", "-m", finalMsg], {
+              cwd: this.cwd,
+            });
+            this.interaction.showText(
+              `${picocolors.green("✔")} Auto-commit created successfully.`,
+            );
+          } else {
+            this.interaction.showText(
+              "● No changes staged or modified. Skipping auto-commit.",
+            );
+          }
+        } catch (commitErr: any) {
           this.interaction.showText(
-            `\n● Limit reached: Maximum consecutive loop iterations (${this.state.maxAttempts}) completed. Pausing loop.`,
+            picocolors.red(`✖ Auto-commit failed: ${commitErr.message}`),
           );
         }
-
-        const sessions = this.sessionManager
-          .getSessionStore()
-          .getEvents(this.state.sessionId);
-        const modifiedFiles = sessions
-          .filter((e) => e.type === "file_modified")
-          .map((e) => e.payload.path);
-
-        this.interaction.showText(`\n● Summary:`);
-        this.interaction.showText(
-          `  Modified files: ${modifiedFiles.length > 0 ? Array.from(new Set(modifiedFiles)).join(", ") : "None"}`,
-        );
-        this.interaction.showText(`  Verification: test run executed.`);
-        this.interaction.showText(
-          `  Session Cost: $${this.sessionCost.toFixed(4)}`,
-        );
-
-        if (this.config.autoCommit && modifiedFiles.length > 0) {
-          this.interaction.showText(`\n● Auto-committing changes...`);
-          try {
-            const uniqueFiles = Array.from(new Set(modifiedFiles));
-            const { execFileSync, execSync } = await import("child_process");
-
-            for (const file of uniqueFiles) {
-              execFileSync("git", ["add", file], { cwd: this.cwd });
-            }
-
-            const diff = execSync("git diff --cached", { cwd: this.cwd })
-              .toString()
-              .trim();
-            if (diff) {
-              this.interaction.showText(
-                "● Generating commit message via LLM...",
-              );
-              const fastModel =
-                this.config.models.fast || this.config.models.default;
-              const stream = this.provider.chat({
-                model: fastModel,
-                messages: [
-                  {
-                    id: `msg_auto_commit_${Date.now()}`,
-                    role: "user",
-                    createdAt: new Date().toISOString(),
-                    content: [
-                      {
-                        type: "text",
-                        text: `Generate a concise, high-quality conventional git commit message (e.g. feat(cli): add autocomplete) for the following git diff. Output ONLY the commit message, no formatting, no markdown, no quotes, just the text:\n\n${diff.substring(0, 20000)}`,
-                      },
-                    ],
-                  },
-                ],
-                tools: [],
-              });
-
-              let generatedMessage = "";
-              for await (const event of stream) {
-                if (event.type === "text_delta") {
-                  generatedMessage += event.text;
-                }
-              }
-              const finalMsg =
-                generatedMessage.trim().replace(/^["']|["']$/g, "") ||
-                "chore: auto-commit";
-
-              this.interaction.showText(
-                `● Committing: "${picocolors.green(finalMsg)}"`,
-              );
-              const commitCmd = `git commit -m ${JSON.stringify(finalMsg)}`;
-              execSync(commitCmd, { cwd: this.cwd });
-              this.interaction.showText(
-                `${picocolors.green("✔")} Auto-commit created successfully.`,
-              );
-            } else {
-              this.interaction.showText(
-                "● No changes staged or modified. Skipping auto-commit.",
-              );
-            }
-          } catch (commitErr: any) {
-            this.interaction.showText(
-              picocolors.red(`✖ Auto-commit failed: ${commitErr.message}`),
-            );
-          }
-        }
-        this.sessionManager.saveHistory(this.state.history);
-      } finally {
-        process.removeListener("SIGINT", sigintListener);
-        process.removeListener("exit", exitListener);
-        if (this.mcpClients.length > 0) {
-          this.interaction.showText(`\n● Stopping MCP servers...`);
-          for (const client of this.mcpClients) {
-            await client.stop();
-          }
+      }
+      this.sessionManager.saveHistory(this.state.history);
+    } finally {
+      process.removeListener("SIGINT", sigintListener);
+      process.removeListener("exit", exitListener);
+      if (this.mcpClients.length > 0) {
+        this.interaction.showText(`\n● Stopping MCP servers...`);
+        for (const client of this.mcpClients) {
+          await client.stop();
         }
       }
-    } finally {
-      this.stopKeepaliveTimer();
     }
+
+    return {
+      status: "completed",
+      sessionId: this.state.sessionId,
+      attempts: this.state.attemptCount,
+    };
+  }
+
+  private createAbortedOutcome(
+    reason: AgentLoopAbortReason,
+    message: string,
+  ): AgentLoopRunOutcome {
+    return {
+      status: "aborted",
+      sessionId: this.state.sessionId,
+      attempts: this.state.attemptCount,
+      reason,
+      message,
+    };
+  }
+
+  private isImmediateAbortRequested(): boolean {
+    return this.interruptMode === "abort";
+  }
+
+  private persistAbortedAssistantMessage(
+    model: string,
+    responseText: string,
+    thinkingText: string,
+    thinkingSignature: string,
+  ): void {
+    if (!responseText && !thinkingText) return;
+
+    const content: OrbitContentBlock[] = [];
+    if (thinkingText) {
+      content.push({
+        type: "thinking",
+        text: thinkingText,
+        ...(thinkingSignature ? { signature: thinkingSignature } : {}),
+      });
+    }
+    if (responseText) {
+      content.push({ type: "text", text: responseText });
+    }
+
+    this.state.history.push({
+      id: `msg_asst_aborted_${Date.now()}`,
+      role: "assistant",
+      createdAt: new Date().toISOString(),
+      content,
+      metadata: {
+        model,
+        aborted: true,
+        incomplete: true,
+      },
+    });
+    this.sessionManager.saveHistory(this.state.history);
   }
 
   private addRelevantFile(path: string, reason: string) {
@@ -2370,13 +2652,20 @@ ${errLog}`;
       ? filePath
       : path.resolve(this.cwd, filePath);
     const relativePath = path.relative(this.cwd, absolutePath);
-    const cmd = hookCommand.replace(
-      /{file}/g,
-      `"${relativePath.replace(/"/g, '\\"')}"`,
-    );
+    if (hookCommand.includes("{file}")) {
+      return {
+        ok: false,
+        output:
+          'Unsafe hook placeholder "{file}" is no longer supported. Read the ORBIT_FILE environment variable instead.',
+      };
+    }
 
     try {
-      const { stdout, stderr } = await execPromise(cmd, { cwd: this.cwd });
+      const { stdout, stderr } = await execPromise(hookCommand, {
+        cwd: this.cwd,
+        env: { ...process.env, ORBIT_FILE: relativePath },
+        timeout: this.config.tools.bash.timeoutMs,
+      });
       return { ok: true, output: (stdout + stderr).trim() };
     } catch (err: any) {
       return {
@@ -2412,7 +2701,6 @@ ${errLog}`;
 
   public addRelevantFilePublic(path: string, reason: string) {
     this.addRelevantFile(path, reason);
-    this.cachedContextPack = null;
   }
 
   public addReadOnlyFilePublic(path: string, reason: string) {
@@ -2452,7 +2740,12 @@ ${errLog}`;
       this.state.history = savedHistory;
       const lastUser = [...savedHistory]
         .reverse()
-        .find((m) => m.role === "user");
+        .find(
+          (message) =>
+            message.role === "user" &&
+            message.metadata?.kind !== VOLATILE_CONTEXT_MESSAGE_KIND &&
+            message.metadata?.kind !== "history_compaction_summary",
+        );
       if (lastUser) {
         const userText = lastUser.content
           .map((c: any) => (c.type === "text" ? c.text : ""))
@@ -2532,14 +2825,7 @@ ${errLog}`;
   public async rollbackLastCheckpoint(): Promise<void> {
     const checkpoints = this.checkpointManager.getCheckpoints();
     if (checkpoints.length === 0) {
-      const rolledBackGit = await this.rollbackLastGitCheckpoint();
-      if (rolledBackGit) {
-        this.interaction.showText(
-          "Successfully rolled back last command changes via Git.",
-        );
-      } else {
-        this.interaction.showText("No checkpoints found to rollback.");
-      }
+      this.interaction.showText("No file checkpoints found to rollback.");
       return;
     }
     const last = checkpoints[checkpoints.length - 1];
@@ -2555,7 +2841,6 @@ ${errLog}`;
     } else {
       this.interaction.showText(`Rollback failed: ${res.error}`);
     }
-    await this.rollbackLastGitCheckpoint();
   }
 
   public getCheckpoints(): Array<{
@@ -2636,12 +2921,14 @@ ${errLog}`;
     return false;
   }
 
-  private accumulateCost(model: string, usage: any) {
+  private accumulateCost(model: string, usage: TokenUsage): void {
     const cleanModel = model.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
-    let pricing = this.config.pricing?.[cleanModel];
+    const pricingModel =
+      getDeepSeekV4ModelProfile(cleanModel)?.canonicalModel || cleanModel;
+    let pricing = this.config.pricing?.[pricingModel];
     if (!pricing) {
       for (const key of Object.keys(this.config.pricing || {})) {
-        if (key.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "") === cleanModel) {
+        if (key.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "") === pricingModel) {
           pricing = this.config.pricing[key];
           break;
         }
@@ -2694,22 +2981,24 @@ ${errLog}`;
   /**
    * Cache-aware two-phase history compaction.
    *
-   * Phase 1 (cache-friendly, triggers at >40 messages):
+   * Phase 1 (cache-friendly, triggers near the model input budget):
    *   Truncates bulky tool_result and tool-role text content in older messages.
    *   Preserves the message structure so the DeepSeek prompt prefix cache stays valid.
    *
-   * Phase 2 (aggressive, triggers at >80 messages):
+   * Phase 2 (aggressive, used only for very large histories):
    *   Drops the oldest messages entirely to prevent context window overflow.
    *   This breaks the prefix cache but is necessary as a safety valve.
    *   Only fires when Phase 1 alone isn't enough to keep history bounded.
    */
   private async autoCompactHistory(): Promise<void> {
     const history = this.state.history;
-    if (history.length <= 20) return;
 
     // --- Phase 1: Cache-friendly truncation ---
-    // Keep the most recent 16 messages untouched (active working set)
-    const protectedTailSize = 16;
+    // Keep a bounded recent working set untouched.
+    const protectedTailSize = Math.min(
+      16,
+      Math.max(4, Math.floor(history.length / 3)),
+    );
     const compactBoundary = Math.max(0, history.length - protectedTailSize);
     const maxToolResultLen = 300;
     let truncatedCount = 0;
@@ -2718,7 +3007,7 @@ ${errLog}`;
       const msg = history[i];
       for (const block of msg.content) {
         if (block.type === "tool_result") {
-          const tr = (block as any).toolResult;
+          const tr = block.toolResult;
           if (
             tr &&
             typeof tr.content === "string" &&
@@ -2730,7 +3019,7 @@ ${errLog}`;
           }
         }
         if (block.type === "text" && msg.role === "tool") {
-          const textBlock = block as any;
+          const textBlock = block;
           if (
             typeof textBlock.text === "string" &&
             textBlock.text.length > maxToolResultLen
@@ -2748,13 +3037,14 @@ ${errLog}`;
     const hardMaxMessages = 80;
     let droppedCount = 0;
 
-    if (history.length > hardMaxMessages) {
-      // Find a safe cut point: keep history[0] (may be system) + recent messages
+    if (history.length > hardMaxMessages || this.shouldCompactHistory()) {
+      // Find a safe cut point and retain the recent conversation. System rules
+      // are supplied separately, so no historical message needs pinning.
       const keepRecent = 30;
       let cutIdx = history.length - keepRecent;
 
       // Don't cut in the middle of a tool_call → tool_result pair
-      while (cutIdx > 1) {
+      while (cutIdx > 0) {
         const msg = history[cutIdx];
         if (msg.role === "tool") {
           cutIdx--;
@@ -2763,7 +3053,7 @@ ${errLog}`;
         const prevMsg = history[cutIdx - 1];
         if (
           prevMsg.role === "assistant" &&
-          prevMsg.content.some((c: any) => c.type === "tool_call")
+          prevMsg.content.some((content) => content.type === "tool_call")
         ) {
           cutIdx--;
           continue;
@@ -2771,10 +3061,10 @@ ${errLog}`;
         break;
       }
 
-      if (cutIdx > 1) {
-        droppedCount = cutIdx - 1;
+      if (cutIdx > 0) {
+        droppedCount = cutIdx;
         const summaryText = this.buildCompactionSummary(
-          history.slice(1, cutIdx),
+          history.slice(0, cutIdx),
         );
         const summaryMessage: OrbitMessage = {
           id: `msg_compaction_summary_${Date.now()}`,
@@ -2783,7 +3073,7 @@ ${errLog}`;
           content: [{ type: "text", text: summaryText }],
           metadata: { kind: "history_compaction_summary" },
         };
-        const kept = [history[0], summaryMessage, ...history.slice(cutIdx)];
+        const kept = [summaryMessage, ...history.slice(cutIdx)];
         this.state.history.length = 0;
         this.state.history.push(...kept);
       }
@@ -2804,6 +3094,35 @@ ${errLog}`;
     }
   }
 
+  private shouldCompactHistory(): boolean {
+    const model =
+      this.activeModelForRun ||
+      this.options?.modelOverride ||
+      this.config.models.default;
+    const capabilities = this.provider.getModelCapabilities?.(model);
+    const maxContextTokens = capabilities?.maxContextTokens || 128_000;
+    const reservedOutputTokens =
+      capabilities?.maxOutputTokens &&
+      capabilities.maxOutputTokens < maxContextTokens
+        ? Math.min(
+            this.config.agent?.maxOutputTokens || 16_384,
+            capabilities.maxOutputTokens,
+          )
+        : this.config.agent?.maxOutputTokens || 16_384;
+    const configuredThreshold = this.config.context.compactThreshold;
+    const threshold = Math.max(0.5, Math.min(0.9, configuredThreshold));
+    const safeInputLimit = Math.max(
+      16_384,
+      Math.min(
+        maxContextTokens - reservedOutputTokens,
+        Math.floor(maxContextTokens * threshold),
+      ),
+    );
+    return (
+      estimateTokenCount(JSON.stringify(this.state.history)) >= safeInputLimit
+    );
+  }
+
   private buildCompactionSummary(messages: OrbitMessage[]): string {
     const lines = [
       "[Conversation Summary]",
@@ -2813,7 +3132,7 @@ ${errLog}`;
     const snippets: string[] = [];
     for (const msg of messages.slice(-24)) {
       const text = msg.content
-        .map((block: any) => {
+        .map((block) => {
           if (block.type === "text") return block.text;
           if (block.type === "tool_call") {
             return `tool_call:${block.toolCall.name}`;
@@ -2933,6 +3252,10 @@ ${errLog}`;
     "continue" | "abort" | "rollback_exit"
   > {
     this.statusBar.stop();
+    if (this.interruptMode === "abort") {
+      this.interruptMode = "prompt";
+      return "abort";
+    }
     this.interaction.showText(
       picocolors.yellow("\n● Execution interrupted by user."),
     );
@@ -2955,230 +3278,6 @@ ${errLog}`;
     }
   }
 
-  private isDeepSeekCacheProvider(model?: string): boolean {
-    const providerId = this.provider.id?.toLowerCase?.() || "";
-    const configuredProvider =
-      this.config.provider?.default?.toLowerCase?.() || "";
-    const providerConfig = this.config.providers?.[configuredProvider];
-    const providerType = providerConfig?.type || this.provider.type || "";
-    const modelName = model?.toLowerCase?.() || "";
-    const isCompatibleProvider =
-      providerType === "openai-compatible" ||
-      providerType === "anthropic-compatible" ||
-      (providerId !== "openai" && providerId !== "anthropic");
-    return (
-      providerId.includes("deepseek") ||
-      configuredProvider.includes("deepseek") ||
-      (isCompatibleProvider && modelName.includes("deepseek"))
-    );
-  }
-
-  private async primeDeepSeekCache(
-    model: string,
-    slab: PromptCacheSlab,
-  ): Promise<{ primed: boolean }> {
-    if (!this.isDeepSeekCacheProvider(model)) {
-      return { primed: false };
-    }
-    if (this.primedCacheSlabs.has(slab.hash)) {
-      return { primed: false };
-    }
-
-    const lastPrimedAt = slab.lastPrimedAt ? Date.parse(slab.lastPrimedAt) : 0;
-    if (
-      lastPrimedAt &&
-      Date.now() - lastPrimedAt < DEEPSEEK_CACHE_PRIMER_TTL_MS
-    ) {
-      this.primedCacheSlabs.add(slab.hash);
-      return { primed: false };
-    }
-    if (this.pendingCacheSlabs.has(slab.hash)) {
-      return { primed: false };
-    }
-
-    const rounds = DEEPSEEK_CACHE_PRIMER_ROUNDS;
-    const latencyBudgetMs = this.getDeepSeekCachePrimerLatencyBudgetMs(
-      model,
-      slab,
-    );
-    if (latencyBudgetMs <= 0) {
-      return { primed: false };
-    }
-
-    if (this.shouldShowDeepSeekCacheStatus()) {
-      this.interaction.showText(
-        `● Priming DeepSeek cache slab ${slab.hash.slice(0, 8)} (${slab.tokenEstimate} tokens, ${rounds} rounds)...`,
-      );
-    }
-
-    this.pendingCacheSlabs.add(slab.hash);
-    const primerAbortController = new AbortController();
-    const primer = this.runDeepSeekCachePrimers(
-      model,
-      slab,
-      rounds,
-      primerAbortController.signal,
-    );
-    const result = await this.waitForDeepSeekCachePrimer(
-      primer,
-      latencyBudgetMs,
-    );
-
-    if (result === "timeout") {
-      if (this.options?.detachBackgroundCachePrimer) {
-        primerAbortController.abort();
-        this.pendingCacheSlabs.delete(slab.hash);
-        void primer.catch(() => {});
-        return { primed: false };
-      }
-
-      void primer
-        .then((primed) => {
-          this.completeDeepSeekCachePrimer(slab, primed);
-        })
-        .catch(() => {
-          this.pendingCacheSlabs.delete(slab.hash);
-        });
-      return { primed: false };
-    }
-
-    this.completeDeepSeekCachePrimer(slab, result);
-    return { primed: result };
-  }
-
-  private async waitForDeepSeekCachePrimer(
-    primer: Promise<boolean>,
-    budgetMs: number,
-  ): Promise<boolean | "timeout"> {
-    if (!Number.isFinite(budgetMs)) {
-      return await primer;
-    }
-
-    let timeoutId: NodeJS.Timeout | undefined;
-    try {
-      return await Promise.race<boolean | "timeout">([
-        primer,
-        new Promise<"timeout">((resolve) => {
-          timeoutId = setTimeout(() => resolve("timeout"), budgetMs);
-          timeoutId.unref?.();
-        }),
-      ]);
-    } finally {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-    }
-  }
-
-  private getDeepSeekCachePrimerLatencyBudgetMs(
-    model: string,
-    slab: PromptCacheSlab,
-  ): number {
-    if (this.options?.detachBackgroundCachePrimer) {
-      return 0;
-    }
-
-    const explicitBudget = Number(
-      process.env.ORBIT_DEEPSEEK_CACHE_PRIMER_BUDGET_MS,
-    );
-    if (Number.isFinite(explicitBudget) && explicitBudget >= 0) {
-      return explicitBudget;
-    }
-
-    const modelName = model.toLowerCase();
-    if (modelName.includes("flash")) {
-      return DEEPSEEK_FLASH_CACHE_PRIMER_LATENCY_BUDGET_MS;
-    }
-
-    if (
-      modelName.includes("pro") ||
-      modelName.includes("reasoner") ||
-      modelName.includes("r1")
-    ) {
-      return DEEPSEEK_REASONING_CACHE_PRIMER_LATENCY_BUDGET_MS;
-    }
-
-    if (slab.tokenEstimate < 512) {
-      return DEEPSEEK_FLASH_CACHE_PRIMER_LATENCY_BUDGET_MS;
-    }
-
-    return DEEPSEEK_REASONING_CACHE_PRIMER_LATENCY_BUDGET_MS;
-  }
-
-  private completeDeepSeekCachePrimer(
-    slab: PromptCacheSlab,
-    primed: boolean,
-  ): void {
-    this.pendingCacheSlabs.delete(slab.hash);
-    if (!primed || this.primedCacheSlabs.has(slab.hash)) {
-      return;
-    }
-
-    PromptCacheSlabBuilder.markPrimed(slab);
-    this.primedCacheSlabs.add(slab.hash);
-    eventBus.emitEvent("cache_update", {
-      slabHash: slab.hash,
-      slabTokenEstimate: slab.tokenEstimate,
-      primed: true,
-      hitTokens: 0,
-      missTokens: 0,
-      inputTokens: 0,
-      hitRate: 0,
-      degraded: false,
-    });
-  }
-
-  private async runDeepSeekCachePrimers(
-    model: string,
-    slab: PromptCacheSlab,
-    rounds: number,
-    abortSignal?: AbortSignal,
-  ): Promise<boolean> {
-    try {
-      for (let round = 0; round < rounds; round++) {
-        if (abortSignal?.aborted) {
-          return false;
-        }
-        const primerText = round % 2 === 0 ? "0" : "1";
-        const primerStream = this.provider.chat({
-          model,
-          system: slab.text,
-          messages: [
-            {
-              id: `msg_cache_primer_${Date.now()}_${round}`,
-              role: "user",
-              createdAt: new Date().toISOString(),
-              content: [
-                {
-                  type: "text",
-                  text: primerText,
-                },
-              ],
-            },
-          ],
-          tools: [],
-          stream: false,
-          maxTokens: 1,
-          abortSignal,
-        });
-
-        for await (const event of primerStream) {
-          if (event.type === "usage") {
-            this.accumulateCost(model, event.usage);
-          }
-        }
-      }
-      return true;
-    } catch (err: any) {
-      this.interaction.showText(
-        picocolors.yellow(
-          `⚠ DeepSeek cache primer skipped: ${err.message || String(err)}`,
-        ),
-      );
-      return false;
-    }
-  }
-
   private shouldShowDeepSeekCacheStatus(inputTokens = 0, hitRate = 1): boolean {
     const verbose = process.env[DEEPSEEK_VERBOSE_CACHE_ENV];
     if (verbose === "1" || verbose?.toLowerCase() === "true") {
@@ -3191,14 +3290,12 @@ ${errLog}`;
   }
 
   private emitCacheTelemetry(
-    model: string,
     slab: PromptCacheSlab,
     usage: {
       inputTokens?: number;
       cacheReadTokens?: number;
       cacheMissTokens?: number;
     },
-    primed: boolean,
   ): void {
     const inputTokens = usage.inputTokens || 0;
     const hitTokens = usage.cacheReadTokens || 0;
@@ -3209,13 +3306,13 @@ ${errLog}`;
         : Math.max(0, inputTokens - hitTokens);
     const hitRate = inputTokens > 0 ? hitTokens / inputTokens : 0;
     const degraded =
+      PromptCacheSlabBuilder.hasTelemetry(slab) &&
       inputTokens >= Math.min(1024, Math.max(256, slab.tokenEstimate / 2)) &&
-      hitRate < DEEPSEEK_CACHE_REPAIR_HIT_RATE;
+      hitRate < DEEPSEEK_CACHE_DEGRADED_HIT_RATE;
 
     eventBus.emitEvent("cache_update", {
       slabHash: slab.hash,
       slabTokenEstimate: slab.tokenEstimate,
-      primed,
       hitTokens,
       missTokens,
       inputTokens,
@@ -3235,198 +3332,13 @@ ${errLog}`;
       if (this.shouldShowDeepSeekCacheStatus(inputTokens, hitRate)) {
         this.interaction.showText(
           picocolors.yellow(
-            `⚠ DeepSeek cache hit degraded for slab ${slab.hash.slice(0, 8)}: ${(hitRate * 100).toFixed(0)}% hit (${hitTokens}/${inputTokens} tokens).`,
+            `⚠ Prompt cache hit degraded for slab ${slab.hash.slice(0, 8)}: ${(hitRate * 100).toFixed(0)}% hit (${hitTokens}/${inputTokens} tokens).`,
           ),
         );
       }
-      if (!primed && !this.pendingCacheSlabs.has(slab.hash)) {
-        void this.repairDeepSeekCache(model, slab);
-      }
-    }
-  }
-
-  private async repairDeepSeekCache(
-    model: string,
-    slab: PromptCacheSlab,
-  ): Promise<void> {
-    if (!this.isDeepSeekCacheProvider(model)) return;
-    if (
-      this.primedCacheSlabs.has(slab.hash) ||
-      this.pendingCacheSlabs.has(slab.hash)
-    ) {
-      return;
-    }
-    this.pendingCacheSlabs.add(slab.hash);
-    try {
-      const primed = await this.runDeepSeekCachePrimers(
-        model,
-        slab,
-        DEEPSEEK_CACHE_PRIMER_ROUNDS,
-      );
-      this.completeDeepSeekCachePrimer(slab, primed);
-    } catch {
-      // Background cache repair must never affect the visible answer.
-      this.pendingCacheSlabs.delete(slab.hash);
-    }
-  }
-
-  private async createGitCheckpoint(toolCallId: string): Promise<boolean> {
-    try {
-      const isGit = await this.isGitRepo();
-      if (!isGit) return false;
-
-      const statusRes = await execPromise("git status --porcelain", {
-        cwd: this.cwd,
-      });
-      const hasUnstaged = !!statusRes.stdout.trim();
-
-      if (hasUnstaged) {
-        await execPromise("git add -A", { cwd: this.cwd });
-        const msg = `orbit-temp-checkpoint-${toolCallId}`;
-        await execPromise(`git commit -m ${JSON.stringify(msg)} --no-verify`, {
-          cwd: this.cwd,
-        });
-
-        const hashRes = await execPromise("git rev-parse HEAD", {
-          cwd: this.cwd,
-        });
-        const hash = hashRes.stdout.trim();
-        if (hash) {
-          this.gitCheckpoints.push({ hash, isTemporary: true });
-          return true;
-        }
-      } else {
-        let hash = "unborn";
-        try {
-          const hashRes = await execPromise("git rev-parse HEAD", {
-            cwd: this.cwd,
-          });
-          hash = hashRes.stdout.trim();
-        } catch {
-          // Unborn repository (no commits yet)
-        }
-        this.gitCheckpoints.push({ hash, isTemporary: false });
-        return true;
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
-  private async rollbackLastGitCheckpoint(): Promise<boolean> {
-    if (this.gitCheckpoints.length === 0) return false;
-    const checkpoint = this.gitCheckpoints.pop();
-    if (!checkpoint) return false;
-
-    try {
-      if (checkpoint.isTemporary) {
-        // 1. Reset to the checkpoint commit state to recover tracked changes
-        await execPromise(`git reset --hard ${checkpoint.hash}`, {
-          cwd: this.cwd,
-        });
-        // 2. Clean new untracked files created by the tool execution
-        await execPromise("git clean -fd", { cwd: this.cwd });
-        // 3. Reset HEAD to parent commit if it exists, restoring pre-existing files to unstaged/untracked state
-        try {
-          await execPromise("git rev-parse HEAD~1", { cwd: this.cwd });
-          await execPromise("git reset HEAD~1", { cwd: this.cwd });
-        } catch {
-          // If parent commit doesn't exist (root commit), reset HEAD and index to unborn state
-          await execPromise("git update-ref -d HEAD", { cwd: this.cwd });
-          await execPromise("git rm -r --cached .", { cwd: this.cwd });
-        }
-      } else {
-        if (checkpoint.hash === "unborn") {
-          await execPromise("git rm -rf . --ignore-unmatch", { cwd: this.cwd });
-          await execPromise("git clean -fd", { cwd: this.cwd });
-        } else {
-          await execPromise(`git reset --hard ${checkpoint.hash}`, {
-            cwd: this.cwd,
-          });
-          await execPromise("git clean -fd", { cwd: this.cwd });
-        }
-      }
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private async commitLastGitCheckpointSoft(): Promise<boolean> {
-    if (this.gitCheckpoints.length === 0) return false;
-    const checkpoint = this.gitCheckpoints.pop();
-    if (!checkpoint) return false;
-
-    if (!checkpoint.isTemporary) {
-      return true;
-    }
-
-    try {
-      const currentHashRes = await execPromise("git rev-parse HEAD", {
-        cwd: this.cwd,
-      });
-      if (currentHashRes.stdout.trim() === checkpoint.hash) {
-        try {
-          await execPromise("git rev-parse HEAD~1", { cwd: this.cwd });
-          await execPromise("git reset --soft HEAD~1", { cwd: this.cwd });
-        } catch {
-          // If parent commit doesn't exist (root commit), reset HEAD to unborn state
-          await execPromise("git update-ref -d HEAD", { cwd: this.cwd });
-        }
-        return true;
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
-  private startKeepaliveTimer(): void {
-    this.stopKeepaliveTimer();
-
-    // Refresh only the stable DeepSeek slab prefix. Replaying full turn history
-    // here is slower, more expensive, and can keep volatile context alive.
-    this.keepaliveTimer = setInterval(async () => {
-      if (!this.lastChatParams || this.cacheKeepaliveInFlight) return;
-      this.cacheKeepaliveInFlight = true;
-      try {
-        const pingStream = this.provider.chat({
-          model: this.lastChatParams.model,
-          system: this.lastChatParams.system,
-          messages: [
-            {
-              id: `msg_cache_keepalive_${Date.now()}`,
-              role: "user",
-              createdAt: new Date().toISOString(),
-              content: [
-                {
-                  type: "text",
-                  text: DEEPSEEK_CACHE_KEEPALIVE_PROMPT,
-                },
-              ],
-            },
-          ],
-          tools: [],
-          stream: false,
-          maxTokens: 1,
-        });
-
-        for await (const event of pingStream) {
-          void event;
-        }
-      } catch {
-        // Background cache refresh must never disturb the active TUI.
-      } finally {
-        this.cacheKeepaliveInFlight = false;
-      }
-    }, DEEPSEEK_CACHE_KEEPALIVE_INTERVAL_MS);
-  }
-
-  private stopKeepaliveTimer(): void {
-    if (this.keepaliveTimer) {
-      clearInterval(this.keepaliveTimer);
-      this.keepaliveTimer = null;
+      // V4 persists natural request boundaries automatically. Avoid synthetic
+      // repair calls here: they consume concurrency and compete with the next
+      // visible agent turn, which is normally the best cache warmer itself.
     }
   }
 }
@@ -3461,6 +3373,22 @@ function generateXMLToolsPrompt(tools: any[]): string {
     prompt += `\n`;
   }
   return prompt;
+}
+
+function generateNativeToolsPrompt(
+  tools: Array<{ name: string; description: string }>,
+): string {
+  const names = tools
+    .map((tool) => tool.name)
+    .sort()
+    .join(", ");
+  return [
+    "### Native Tool Use",
+    "Use the provided native function tools when an operation requires workspace access.",
+    "Validate every argument against the supplied schema, use exact tool names, and wait for tool results before claiming success.",
+    "Do not print XML <tool_call> blocks or imitate tool calls in normal response text.",
+    `Available tools: ${names || "none"}.`,
+  ].join("\n");
 }
 
 function describeZodPromptField(schema: any): {
@@ -3668,4 +3596,73 @@ function cleanAndTruncateTestLog(log: string): string {
   }
 
   return filteredLines.join("\n");
+}
+
+async function executeLocalPackageBinary(
+  cwd: string,
+  packageName: string,
+  binaryName: string,
+  args: string[],
+): Promise<{ stdout: string; stderr: string }> {
+  const binaryPath = resolveLocalPackageBinary(cwd, packageName, binaryName);
+  const isJavaScript = /\.(?:cjs|mjs|js)$/i.test(binaryPath);
+  const executable = isJavaScript ? process.execPath : binaryPath;
+  const executableArgs = isJavaScript ? [binaryPath, ...args] : args;
+  return execFilePromise(executable, executableArgs, {
+    cwd,
+    encoding: "utf8",
+    timeout: 120000,
+  });
+}
+
+function resolveLocalPackageBinary(
+  cwd: string,
+  packageName: string,
+  binaryName: string,
+): string {
+  const workspaceRequire = createRequire(path.join(cwd, "package.json"));
+  const entryPath = workspaceRequire.resolve(packageName);
+  let currentDirectory = path.dirname(entryPath);
+
+  while (true) {
+    const manifestPath = path.join(currentDirectory, "package.json");
+    if (fs.existsSync(manifestPath)) {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
+        name?: unknown;
+        bin?: unknown;
+      };
+      if (manifest.name === packageName) {
+        const bin = manifest.bin;
+        const relativeBinary =
+          typeof bin === "string"
+            ? bin
+            : typeof bin === "object" &&
+                bin !== null &&
+                binaryName in bin &&
+                typeof (bin as Record<string, unknown>)[binaryName] === "string"
+              ? (bin as Record<string, string>)[binaryName]
+              : undefined;
+        if (!relativeBinary) {
+          throw new Error(
+            `Package "${packageName}" does not expose binary "${binaryName}".`,
+          );
+        }
+        return path.resolve(currentDirectory, relativeBinary);
+      }
+    }
+    const parent = path.dirname(currentDirectory);
+    if (parent === currentDirectory) break;
+    currentDirectory = parent;
+  }
+
+  throw new Error(
+    `Unable to locate local package binary for "${packageName}".`,
+  );
+}
+
+function isValidPackageName(packageName: string): boolean {
+  if (packageName.length === 0 || packageName.length > 214) return false;
+  return /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/.test(
+    packageName,
+  );
 }

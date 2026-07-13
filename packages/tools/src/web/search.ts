@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { OrbitTool, ToolContext, ToolResult } from "../types.js";
+import type { OrbitTool, ToolContext, ToolResult } from "../types.js";
 
 export const WebSearchInputSchema = z.object({
   query: z
@@ -151,13 +151,18 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
     ).slice(0, 8);
   }
 
-  private scoreSearchQuality(query: string, results: SearchResult[]): SearchQuality {
+  private scoreSearchQuality(
+    query: string,
+    results: SearchResult[],
+  ): SearchQuality {
     const terms = this.queryTerms(query);
-    const withSnippets = results.filter((result) => result.snippet.length > 20)
-      .length;
+    const withSnippets = results.filter(
+      (result) => result.snippet.length > 20,
+    ).length;
     const matched = new Set<string>();
     for (const result of results) {
-      const haystack = `${result.title} ${result.snippet} ${result.link}`.toLowerCase();
+      const haystack =
+        `${result.title} ${result.snippet} ${result.link}`.toLowerCase();
       for (const term of terms) {
         if (haystack.includes(term)) {
           matched.add(term);
@@ -169,7 +174,10 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
       results.length > 0 ? Math.min(1, withSnippets / results.length) : 0;
     const termScore =
       terms.length > 0 ? Math.min(1, matched.size / terms.length) : 0.5;
-    const score = Math.max(0, Math.min(1, termScore * 0.65 + snippetScore * 0.35));
+    const score = Math.max(
+      0,
+      Math.min(1, termScore * 0.65 + snippetScore * 0.35),
+    );
     const label = score >= 0.7 ? "high" : score >= 0.4 ? "medium" : "low";
     return {
       score,
@@ -877,8 +885,11 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
         return { ok: false, error: `${strategy.name} returned 0 results` };
       }
       return { ok: true, strategy, results };
-    } catch (e: any) {
-      return { ok: false, error: `${strategy.name} error: ${e.message}` };
+    } catch (error: unknown) {
+      return {
+        ok: false,
+        error: `${strategy.name} error: ${error instanceof Error ? error.message : String(error)}`,
+      };
     } finally {
       timeout.cleanup();
     }

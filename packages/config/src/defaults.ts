@@ -1,10 +1,14 @@
 import { OrbitConfig } from "./schema.js";
 
 export const DEFAULT_CONFIG: OrbitConfig = {
+  schemaVersion: 1,
   name: "orbit-project",
   editor: "notepad.exe",
   autoCommit: false,
   language: "en",
+  security: {
+    trustProjectExecutables: false,
+  },
   provider: {
     default: "deepseek-openai",
   },
@@ -22,11 +26,13 @@ export const DEFAULT_CONFIG: OrbitConfig = {
       type: "anthropic-compatible",
       baseUrl: "https://api.deepseek.com/anthropic",
       apiKeyEnv: "ANTHROPIC_AUTH_TOKEN",
+      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
     },
     "deepseek-openai": {
       type: "openai-compatible",
       baseUrl: "https://api.deepseek.com",
       apiKeyEnv: "DEEPSEEK_API_KEY",
+      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
     },
     openai: {
       type: "openai",
@@ -99,6 +105,8 @@ export const DEFAULT_CONFIG: OrbitConfig = {
   },
   agent: {
     maxIterations: 8,
+    fastMaxOutputTokens: 8192,
+    maxOutputTokens: 16384,
   },
   tools: {
     bash: {

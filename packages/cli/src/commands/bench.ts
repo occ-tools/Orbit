@@ -1,6 +1,10 @@
-import { ConfigLoader } from "@orbit-build/config";
+import { ConfigLoader, type OrbitConfig } from "@orbit-build/config";
 import picocolors from "picocolors";
+import { createHash, randomUUID } from "crypto";
+import { resolve } from "path";
+import { z } from "zod";
 import type { ModelProvider } from "@orbit-build/model-providers";
+import { redactSecrets } from "@orbit-build/shared";
 import { createProviderFromConfig } from "../runtime/ProviderFactory.js";
 import {
   benchmarkPromptHash,
@@ -10,16 +14,42 @@ import {
   type ProviderBenchmarkResult,
 } from "../runtime/ProviderBenchmarks.js";
 
+const BenchOptionsSchema = z.object({
+  prompt: z.string().optional(),
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  models: z.string().optional(),
+  repeat: z.union([z.number(), z.string()]).optional(),
+  maxTokens: z.union([z.number(), z.string()]).optional(),
+  cacheProfile: z.boolean().optional(),
+  minCacheHit: z.union([z.number(), z.string()]).optional(),
+  thinking: z.string().optional(),
+  json: z.boolean().optional(),
+});
+
+export type BenchOptions = z.infer<typeof BenchOptionsSchema>;
+
+/** Validates the local and inherited Commander options used by `orbit bench`. */
+export function parseBenchOptions(value: unknown): BenchOptions {
+  return BenchOptionsSchema.parse(value);
+}
+
 async function runSingleBench(
   provider: ModelProvider,
   model: string,
   prompt: string,
   maxTokens: number,
+  thinkingMode: "disabled" | "high" | "max",
+  userId: string,
 ): Promise<ProviderBenchmarkResult> {
   const startedAt = Date.now();
   let firstDeltaMs: number | undefined;
+  let firstThinkingMs: number | undefined;
+  let firstTextMs: number | undefined;
   let textChars = 0;
+  let reasoningChars = 0;
   let outputTokens = 0;
+  let reasoningTokens = 0;
   let inputTokens = 0;
   let cacheReadTokens = 0;
   let cacheMissTokens = 0;
@@ -39,30 +69,49 @@ async function runSingleBench(
       tools: [],
       stream: true,
       maxTokens,
+      userId,
+      thinking: {
+        enabled: thinkingMode !== "disabled",
+        budgetTokens: thinkingMode === "max" ? 8192 : 4096,
+      },
     });
 
     for await (const event of stream) {
       if (event.type === "text_delta" || event.type === "thinking_delta") {
+        // Signature-only thinking events carry no generated output and must not
+        // be mistaken for first-token latency.
+        if (event.text.length === 0) continue;
         if (firstDeltaMs === undefined) {
           firstDeltaMs = Date.now() - startedAt;
         }
-        textChars += event.text.length;
+        if (event.type === "thinking_delta") {
+          firstThinkingMs ??= Date.now() - startedAt;
+          reasoningChars += event.text.length;
+        } else {
+          firstTextMs ??= Date.now() - startedAt;
+          textChars += event.text.length;
+        }
       } else if (event.type === "usage") {
         inputTokens = event.usage.inputTokens || 0;
         outputTokens = event.usage.outputTokens || 0;
         cacheReadTokens = event.usage.cacheReadTokens || 0;
         cacheMissTokens = event.usage.cacheMissTokens || 0;
+        reasoningTokens = event.usage.reasoningTokens || 0;
       } else if (event.type === "error") {
-        error = event.error?.message || String(event.error);
+        error = redactSecrets(event.error?.message || String(event.error));
         break;
       }
     }
-  } catch (err: any) {
-    error = err?.message || String(err);
+  } catch (caught: unknown) {
+    const message = caught instanceof Error ? caught.message : String(caught);
+    error = redactSecrets(message);
   }
 
   const totalMs = Math.max(1, Date.now() - startedAt);
+  const decodeMs = Math.max(1, totalMs - (firstDeltaMs || 0));
   const throughputTokensPerSec =
+    outputTokens > 0 ? outputTokens / (decodeMs / 1000) : 0;
+  const endToEndTokensPerSec =
     outputTokens > 0 ? outputTokens / (totalMs / 1000) : 0;
   const cacheInputTokens = cacheReadTokens + cacheMissTokens || inputTokens;
   const cacheHitRate =
@@ -76,10 +125,16 @@ async function runSingleBench(
     promptChars: prompt.length,
     maxTokens,
     firstDeltaMs,
+    firstThinkingMs,
+    firstTextMs,
     totalMs,
     outputTokens,
+    reasoningTokens,
     textChars,
+    reasoningChars,
     throughputTokensPerSec,
+    endToEndTokensPerSec,
+    thinkingMode,
     cacheReadTokens,
     cacheInputTokens,
     cacheHitRate,
@@ -88,15 +143,34 @@ async function runSingleBench(
 }
 
 function clampRepeat(value: unknown): number {
+  if (value === undefined || value === null || value === "") return 1;
   const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return 1;
-  return Math.max(1, Math.min(20, Math.floor(parsed)));
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    throw new Error("Benchmark repeat must be an integer from 1 to 20.");
+  }
+  if (parsed < 1 || parsed > 20) {
+    throw new Error("Benchmark repeat must be between 1 and 20.");
+  }
+  return parsed;
 }
 
-function clampMaxTokens(value: unknown): number {
+function clampMaxTokens(
+  value: unknown,
+  thinkingMode: "disabled" | "high" | "max",
+): number {
+  if (value === undefined || value === null || value === "") {
+    if (thinkingMode === "max") return 8192;
+    if (thinkingMode === "high") return 4096;
+    return 256;
+  }
   const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return 96;
-  return Math.max(1, Math.min(4096, Math.floor(parsed)));
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    throw new Error("Benchmark max tokens must be an integer from 1 to 16384.");
+  }
+  if (parsed < 1 || parsed > 16384) {
+    throw new Error("Benchmark max tokens must be between 1 and 16384.");
+  }
+  return parsed;
 }
 
 function parseModels(options: { model?: string; models?: string }): string[] {
@@ -107,13 +181,35 @@ function parseModels(options: { model?: string; models?: string }): string[] {
     .filter(Boolean);
 }
 
-function buildCacheProfilePrompt(): string {
+function resolveThinkingMode(
+  value: unknown,
+  model: string,
+): "disabled" | "high" | "max" {
+  if (value === "disabled" || value === "off" || value === "false") {
+    return "disabled";
+  }
+  if (value === "max") return "max";
+  if (value === "high") return "high";
+  if (value !== undefined && value !== null && value !== "") {
+    throw new Error(
+      `Invalid thinking mode "${String(value)}". Use disabled, high, or max.`,
+    );
+  }
+  return model.toLowerCase().includes("pro") ? "high" : "disabled";
+}
+
+/** Builds a provider-cache-sized stable prefix with an optional real workload. */
+export function buildCacheProfilePrompt(
+  runId: string,
+  instruction?: string,
+): string {
   const stablePrefix = [
     "Orbit DeepSeek cache profile stable prefix.",
     "This block is intentionally repeated to test provider-side context caching.",
     "Keep this prefix byte-stable across benchmark rounds.",
   ].join(" ");
-  return `${Array.from({ length: 180 }, () => stablePrefix).join("\n")}\n\nReply with exactly: ok`;
+  const workload = instruction?.trim() || "Reply with exactly: ok";
+  return `Cache profile run: ${runId}\n${Array.from({ length: 180 }, () => stablePrefix).join("\n")}\n\n${workload}`;
 }
 
 export function evaluateCacheProfile(results: ProviderBenchmarkResult[]): {
@@ -171,12 +267,12 @@ export function formatCacheProfileSummary(
   return [
     picocolors.bold("Cache Profile"),
     `Status: ${verdict}`,
-    `Cold first delta: ${coldFirst}ms · cache=${Math.round(cold.cacheHitRate * 100)}% (${cold.cacheReadTokens}/${cold.cacheInputTokens})`,
-    `Best warm first delta: ${bestWarmFirst}ms · warm avg cache=${Math.round(
+    `Baseline first model delta: ${coldFirst}ms · cache=${Math.round(cold.cacheHitRate * 100)}% (${cold.cacheReadTokens}/${cold.cacheInputTokens})`,
+    `Best repeated first model delta: ${bestWarmFirst}ms · repeated avg cache=${Math.round(
       warmAvgHit * 100,
     )}% · speedup=${profile.speedup}`,
     `Prompt hash: ${cold.promptHash} · prompt chars=${cold.promptChars}`,
-    "Interpretation: DeepSeek cache is expected to be cold on round 1; warm rounds should show high cacheReadTokens for the same stable prefix.",
+    "Interpretation: the default profile uses a unique prefix per command and repeats it byte-for-byte within the run. Trust returned cacheReadTokens, since provider caching is best-effort.",
   ].join("\n");
 }
 
@@ -188,17 +284,20 @@ function printBenchResult(
   console.log(picocolors.bold(`Orbit Bench${suffix}`));
   console.log(`Provider: ${picocolors.cyan(result.providerId)}`);
   console.log(`Model: ${picocolors.cyan(result.model)}`);
-  console.log(`First delta: ${result.firstDeltaMs ?? "n/a"}ms`);
+  console.log(`First model delta: ${result.firstDeltaMs ?? "n/a"}ms`);
+  console.log(
+    `First thinking: ${result.firstThinkingMs ?? "n/a"}ms · first answer: ${result.firstTextMs ?? "n/a"}ms · mode=${result.thinkingMode || "unknown"}`,
+  );
   console.log(`Total: ${result.totalMs}ms`);
   console.log(
-    `Output: ${result.outputTokens || "n/a"} tokens, ${result.textChars} chars`,
+    `Output: ${result.outputTokens || "n/a"} tokens (${result.reasoningTokens || 0} reasoning), ${result.textChars} answer chars, ${result.reasoningChars || 0} reasoning chars`,
   );
   console.log(
-    `Throughput: ${
+    `Decode throughput: ${
       result.throughputTokensPerSec
         ? result.throughputTokensPerSec.toFixed(1)
         : "n/a"
-    } tokens/sec`,
+    } tokens/sec · end-to-end=${result.endToEndTokensPerSec?.toFixed(1) || "n/a"} tokens/sec`,
   );
   console.log(
     `Cache: ${Math.round(result.cacheHitRate * 100)}% (${result.cacheReadTokens}/${result.cacheInputTokens})`,
@@ -211,48 +310,71 @@ function printBenchResult(
 function clampCacheHitThreshold(value: unknown): number | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return undefined;
-  return Math.max(0, Math.min(1, parsed > 1 ? parsed / 100 : parsed));
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+    throw new Error(
+      "Minimum cache hit must be a ratio from 0 to 1 or a percentage from 0 to 100.",
+    );
+  }
+  return parsed > 1 ? parsed / 100 : parsed;
 }
 
 export async function runBench(
   cwd: string,
-  options: {
-    prompt?: string;
-    provider?: string;
-    model?: string;
-    models?: string;
-    repeat?: number;
-    maxTokens?: number;
-    cacheProfile?: boolean;
-    minCacheHit?: number | string;
-    json?: boolean;
-  } = {},
+  options: BenchOptions = {},
 ): Promise<void> {
-  const overrides = options.provider
-    ? ({ provider: { default: options.provider } } as any)
+  if (
+    options.minCacheHit !== undefined &&
+    options.minCacheHit !== "" &&
+    !options.cacheProfile
+  ) {
+    throw new Error("--min-cache-hit requires --cache-profile.");
+  }
+  const overrides: Partial<OrbitConfig> | undefined = options.provider
+    ? { provider: { default: options.provider } }
     : undefined;
   const config = ConfigLoader.loadSync(cwd, overrides);
   const provider = createProviderFromConfig(config);
+  // Keep DNS/TLS setup outside measured model latency, matching the agent's
+  // background provider initialization and avoiding false cache speedups.
+  await provider.initialize?.();
   const models = parseModels(options);
   if (models.length === 0) {
     models.push(config.models.fast || config.models.default);
   }
   const prompt = options.cacheProfile
-    ? options.prompt || buildCacheProfilePrompt()
+    ? buildCacheProfilePrompt(randomUUID(), options.prompt)
     : options.prompt ||
       "Reply with one concise sentence explaining what Orbit is.";
   const repeat = options.cacheProfile
     ? Math.max(3, clampRepeat(options.repeat))
     : clampRepeat(options.repeat);
-  const maxTokens = clampMaxTokens(options.maxTokens);
   const minCacheHit = clampCacheHitThreshold(options.minCacheHit);
   const results: ProviderBenchmarkResult[] = [];
   const cacheProfileGroups = new Map<string, ProviderBenchmarkResult[]>();
+  const workspaceIdentity = resolve(cwd).replace(/\\/g, "/");
+  const userId = createHash("sha256")
+    .update(
+      process.platform === "win32"
+        ? workspaceIdentity.toLowerCase()
+        : workspaceIdentity,
+    )
+    .digest("hex");
 
   for (const model of models) {
+    const thinkingMode =
+      options.cacheProfile && !options.thinking
+        ? "disabled"
+        : resolveThinkingMode(options.thinking, model);
+    const maxTokens = clampMaxTokens(options.maxTokens, thinkingMode);
     for (let i = 0; i < repeat; i++) {
-      const result = await runSingleBench(provider, model, prompt, maxTokens);
+      const result = await runSingleBench(
+        provider,
+        model,
+        prompt,
+        maxTokens,
+        thinkingMode,
+        userId,
+      );
       recordProviderBenchmark(cwd, result);
       results.push(result);
       if (options.cacheProfile) {

@@ -1,7 +1,4 @@
-import {
-  ToolRisk,
-  normalizePath,
-} from "@orbit-build/shared";
+import { ToolRisk, normalizePath } from "@orbit-build/shared";
 
 const DANGEROUS_COMMAND_REGEXES = [
   /\brm\s+-rf\b/i,

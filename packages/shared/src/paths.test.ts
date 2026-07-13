@@ -1,4 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import {
   checkWorkspaceBoundary,
   resolveSafePath,
@@ -7,6 +10,13 @@ import {
 } from "./paths.js";
 
 describe("paths boundary and safety checks", () => {
+  const temporaryDirectories: string[] = [];
+
+  afterEach(() => {
+    for (const directory of temporaryDirectories.splice(0)) {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it("should normalize paths with forward slashes", () => {
     expect(normalizePath("foo\\bar\\baz")).toBe("foo/bar/baz");
   });
@@ -25,10 +35,11 @@ describe("paths boundary and safety checks", () => {
   });
 
   it("should throw on resolveSafePath if outside boundary", () => {
-    const root = "C:/workspace";
+    const root = mkdtempSync(join(tmpdir(), "orbit-path-boundary-"));
+    temporaryDirectories.push(root);
     expect(() => resolveSafePath(root, "../other/file.txt")).toThrow();
     expect(resolveSafePath(root, "src/main.ts")).toBe(
-      "C:/workspace/src/main.ts",
+      normalizePath(join(root, "src", "main.ts")),
     );
   });
 
@@ -36,5 +47,37 @@ describe("paths boundary and safety checks", () => {
     const branch = getGitBranch(".");
     expect(branch).toBeDefined();
     expect(typeof branch).toBe("string");
+  });
+
+  it("rejects a symbolic link that escapes the workspace", () => {
+    const root = mkdtempSync(join(tmpdir(), "orbit-path-root-"));
+    const outside = mkdtempSync(join(tmpdir(), "orbit-path-outside-"));
+    temporaryDirectories.push(root, outside);
+    writeFileSync(join(outside, "secret.txt"), "secret", "utf8");
+    const link = join(root, "outside-link");
+
+    try {
+      symlinkSync(
+        outside,
+        link,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    } catch {
+      return;
+    }
+
+    expect(() => resolveSafePath(root, "outside-link/secret.txt")).toThrow(
+      /symbolic link|outside workspace/i,
+    );
+  });
+
+  it("allows a new file beneath an existing in-workspace directory", () => {
+    const root = mkdtempSync(join(tmpdir(), "orbit-path-new-file-"));
+    temporaryDirectories.push(root);
+    mkdirSync(join(root, "src"));
+
+    expect(resolveSafePath(root, "src/new.ts")).toBe(
+      normalizePath(join(root, "src", "new.ts")),
+    );
   });
 });

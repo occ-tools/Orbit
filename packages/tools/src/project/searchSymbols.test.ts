@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { writeFileSync, rmSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { SearchSymbolsTool } from "./searchSymbols.js";
+import {
+  SearchSymbolsInputSchema,
+  SearchSymbolsTool,
+} from "./searchSymbols.js";
 
 describe("SearchSymbolsTool tests", () => {
   let tempDir: string;
@@ -78,5 +81,93 @@ describe("SearchSymbolsTool tests", () => {
     expect(result.ok).toBe(true);
     expect(result.data!.length).toBe(0);
     expect(result.display).toContain("Symbol index is not yet built");
+  });
+
+  it("validates index entries and skips paths outside the workspace", async () => {
+    const orbitDir = join(tempDir, ".orbit");
+    mkdirSync(orbitDir, { recursive: true });
+    writeFileSync(
+      join(orbitDir, "symbols.json"),
+      JSON.stringify({
+        files: {
+          "../outside.ts": {
+            mtime: 1,
+            symbols: [{ name: "EvilSymbol", type: "function", line: 1 }],
+          },
+          "src/safe.ts": {
+            mtime: 2,
+            symbols: [{ name: "SafeSymbol", type: "function", line: 2 }],
+          },
+        },
+        indexedAt: "2026-07-13T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const result = await new SearchSymbolsTool().execute(
+      { query: "Symbol" },
+      { cwd: tempDir, sessionId: "test" },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toEqual([
+      {
+        name: "SafeSymbol",
+        type: "function",
+        filePath: "src/safe.ts",
+        line: 2,
+      },
+    ]);
+  });
+
+  it("rejects malformed symbol index payloads", async () => {
+    const orbitDir = join(tempDir, ".orbit");
+    mkdirSync(orbitDir, { recursive: true });
+    writeFileSync(
+      join(orbitDir, "symbols.json"),
+      JSON.stringify({
+        files: {
+          "src/invalid.ts": {
+            mtime: 1,
+            symbols: [{ name: "Invalid", type: "namespace", line: "one" }],
+          },
+        },
+        indexedAt: "2026-07-13T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const result = await new SearchSymbolsTool().execute(
+      { query: "Invalid" },
+      { cwd: tempDir, sessionId: "test" },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toEqual([]);
+    expect(result.display).toContain("format is invalid");
+  });
+
+  it("degrades gracefully when the symbol index is not valid JSON", async () => {
+    const orbitDir = join(tempDir, ".orbit");
+    mkdirSync(orbitDir, { recursive: true });
+    writeFileSync(join(orbitDir, "symbols.json"), "{not-json", "utf8");
+
+    const result = await new SearchSymbolsTool().execute(
+      { query: "Anything" },
+      { cwd: tempDir, sessionId: "test" },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toEqual([]);
+    expect(result.display).toContain("format is invalid");
+  });
+
+  it("rejects empty or unreasonably large search queries", () => {
+    expect(SearchSymbolsInputSchema.safeParse({ query: "   " }).success).toBe(
+      false,
+    );
+    expect(
+      SearchSymbolsInputSchema.safeParse({ query: "x".repeat(513) }).success,
+    ).toBe(false);
   });
 });

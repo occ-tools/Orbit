@@ -1,15 +1,21 @@
 import { describe, it, expect } from "vitest";
 import { AgentLoop } from "./AgentLoop.js";
-import { OrbitConfig } from "@orbit-build/config";
+import { DEFAULT_CONFIG, type OrbitConfig } from "@orbit-build/config";
 import { ModelProvider } from "@orbit-build/model-providers";
 
 describe("AgentLoop Hooks System", () => {
   const dummyConfig: OrbitConfig = {
+    ...DEFAULT_CONFIG,
     name: "test",
     provider: { default: "openai" },
-    models: { default: "gpt-4" },
+    models: {
+      ...DEFAULT_CONFIG.models,
+      default: "gpt-4",
+      fast: "gpt-4",
+    },
     providers: { openai: { type: "openai", apiKey: "test" } },
     permissions: {
+      ...DEFAULT_CONFIG.permissions,
       mode: "auto",
       allowRead: true,
       requireApprovalForWrite: false,
@@ -19,6 +25,7 @@ describe("AgentLoop Hooks System", () => {
       protectedPaths: [],
     },
     context: {
+      ...DEFAULT_CONFIG.context,
       maxFilesToIndex: 10,
       maxFileSizeKb: 10,
       ignore: [],
@@ -26,9 +33,14 @@ describe("AgentLoop Hooks System", () => {
       compactThreshold: 0.75,
     },
     tools: {
-      bash: { enabled: false, timeoutMs: 1000 },
-      webSearch: { enabled: false },
-      mcp: { enabled: false },
+      ...DEFAULT_CONFIG.tools,
+      bash: {
+        ...DEFAULT_CONFIG.tools.bash,
+        enabled: false,
+        timeoutMs: 1000,
+      },
+      webSearch: { ...DEFAULT_CONFIG.tools.webSearch, enabled: false },
+      mcp: { ...DEFAULT_CONFIG.tools.mcp, enabled: false },
     },
     mcpServers: {},
     hooks: {
@@ -80,7 +92,7 @@ describe("AgentLoop Hooks System", () => {
     delete process.env.FAIL;
   });
 
-  it("should substitute {file} placeholder in hooks", async () => {
+  it("should expose the target path through ORBIT_FILE", async () => {
     const loop = new AgentLoop(
       process.cwd(),
       dummyConfig,
@@ -88,7 +100,7 @@ describe("AgentLoop Hooks System", () => {
       "test task",
       dummyInteraction,
     );
-    const hookWithFile = 'node -e "console.log(process.argv[1])" {file}';
+    const hookWithFile = 'node -e "console.log(process.env.ORBIT_FILE)"';
     const res = await (loop as any).runHook(
       hookWithFile,
       "dummy-test-file.txt",

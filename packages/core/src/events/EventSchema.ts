@@ -15,12 +15,14 @@ export const ModelResponseEventSchema = z.object({
     model: z.string(),
     text: z.string().optional(),
     reasoning_content: z.string().optional(),
-    usage: z.object({
-      inputTokens: z.number(),
-      outputTokens: z.number(),
-      cacheReadTokens: z.number().optional(),
-      cacheWriteTokens: z.number().optional(),
-    }).optional(),
+    usage: z
+      .object({
+        inputTokens: z.number(),
+        outputTokens: z.number(),
+        cacheReadTokens: z.number().optional(),
+        cacheWriteTokens: z.number().optional(),
+      })
+      .optional(),
     toolCalls: z.array(z.any()).optional(),
   }),
 });
@@ -102,7 +104,6 @@ export const CacheUpdateEventSchema = z.object({
   payload: z.object({
     slabHash: z.string(),
     slabTokenEstimate: z.number(),
-    primed: z.boolean(),
     hitTokens: z.number(),
     missTokens: z.number(),
     inputTokens: z.number(),

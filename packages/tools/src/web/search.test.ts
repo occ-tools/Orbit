@@ -276,7 +276,9 @@ describe("WebSearchTool", () => {
 
   it("includes current Open-Meteo conditions for today's weather queries", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-06-30T02:00:00+08:00"));
+    // The location is already on June 30 while the host can still be on June
+    // 29. This catches accidental use of the CI runner's local time zone.
+    vi.setSystemTime(new Date("2026-06-29T12:00:00Z"));
 
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("geocoding-api.open-meteo.com")) {
@@ -291,7 +293,7 @@ describe("WebSearchTool", () => {
                   country: "中国",
                   latitude: 30.29365,
                   longitude: 120.16142,
-                  timezone: "Asia/Shanghai",
+                  timezone: "Pacific/Kiritimati",
                 },
               ],
             }),
@@ -303,7 +305,7 @@ describe("WebSearchTool", () => {
         statusText: "OK",
         text: async () =>
           JSON.stringify({
-            timezone: "Asia/Shanghai",
+            timezone: "Pacific/Kiritimati",
             current_units: {
               temperature_2m: "°C",
               apparent_temperature: "°C",

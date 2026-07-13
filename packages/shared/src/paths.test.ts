@@ -80,4 +80,13 @@ describe("paths boundary and safety checks", () => {
       normalizePath(join(root, "src", "new.ts")),
     );
   });
+
+  it("allows a nested path whose parent directories do not exist yet", () => {
+    const root = mkdtempSync(join(tmpdir(), "orbit-path-nested-"));
+    temporaryDirectories.push(root);
+
+    expect(resolveSafePath(root, ".orbit/branches/main/cache.json")).toBe(
+      normalizePath(join(root, ".orbit", "branches", "main", "cache.json")),
+    );
+  });
 });

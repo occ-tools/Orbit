@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { AgentLoop } from "./AgentLoop.js";
+import { AgentLoop, extractFilePathFromLine } from "./AgentLoop.js";
 import { DEFAULT_CONFIG, type OrbitConfig } from "@orbit-build/config";
 import { ModelProvider } from "@orbit-build/model-providers";
 import { Prompt } from "@orbit-build/tui";
@@ -86,6 +86,12 @@ describe("AgentLoop Hunk Acceptance Flow", () => {
     showText: () => {},
     showDiff: () => {},
   };
+
+  it("preserves absolute Unix paths from SEARCH/REPLACE file headers", () => {
+    expect(extractFilePathFromLine("File: /tmp/orbit/test.txt")).toBe(
+      "/tmp/orbit/test.txt",
+    );
+  });
 
   beforeEach(() => {
     if (!fs.existsSync(testDir)) {

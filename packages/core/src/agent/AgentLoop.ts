@@ -3492,10 +3492,15 @@ function parseXMLToolCalls(text: string): OrbitToolCall[] {
   return toolCalls;
 }
 
-function extractFilePathFromLine(line: string): string {
+export function extractFilePathFromLine(line: string): string {
   const winAbsMatch = line.match(/([a-zA-Z]:[\\/][^`*:"#\s]+)/);
   if (winAbsMatch) {
     return winAbsMatch[1];
+  }
+
+  const unixAbsMatch = line.match(/(?:^|\s)(\/[^`*:"#\s]+)/);
+  if (unixAbsMatch) {
+    return unixAbsMatch[1];
   }
 
   const pathMatch = line.match(/([.\w\-+]+[\\/][^`*:"#\s]+)/);

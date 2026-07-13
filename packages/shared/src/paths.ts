@@ -1,6 +1,6 @@
 import { dirname, isAbsolute, normalize, relative, resolve } from "path";
 import { execSync } from "child_process";
-import { existsSync, lstatSync, realpathSync } from "fs";
+import { existsSync, realpathSync } from "fs";
 
 export function normalizePath(p: string): string {
   return normalize(p).replace(/\\/g, "/");
@@ -30,21 +30,11 @@ export function resolveSafePath(
 
   const resolvedRoot = resolve(workspaceRoot);
   const canonicalRoot = canonicalizeExistingPath(resolvedRoot);
-  const existingAncestor = findNearestExistingAncestor(resolvedPath);
-  const canonicalAncestor = canonicalizeExistingPath(existingAncestor);
+  const canonicalAncestor = canonicalizeNearestExistingPath(resolvedPath);
   if (!isSameOrDescendant(canonicalRoot, canonicalAncestor)) {
     throw new Error(
       `Path validation failed: "${relativeOrAbsolutePath}" resolves through a symbolic link or junction outside workspace boundary "${workspaceRoot}"`,
     );
-  }
-
-  if (pathExistsIncludingSymlink(resolvedPath)) {
-    const canonicalTarget = canonicalizeExistingPath(resolvedPath);
-    if (!isSameOrDescendant(canonicalRoot, canonicalTarget)) {
-      throw new Error(
-        `Path validation failed: "${relativeOrAbsolutePath}" resolves outside workspace boundary "${workspaceRoot}"`,
-      );
-    }
   }
 
   return normalizePath(resolvedPath);
@@ -59,24 +49,26 @@ function canonicalizeExistingPath(filePath: string): string {
   }
 }
 
-function findNearestExistingAncestor(filePath: string): string {
+function canonicalizeNearestExistingPath(filePath: string): string {
   let current = filePath;
-  while (!pathExistsIncludingSymlink(current)) {
+  while (true) {
+    try {
+      return realpathSync.native(current);
+    } catch (error: unknown) {
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? String(error.code)
+          : "";
+      if (code && code !== "ENOENT" && code !== "ENOTDIR") {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Unable to resolve safe path "${current}": ${message}`);
+      }
+    }
     const parent = dirname(current);
     if (parent === current) {
       throw new Error(`Unable to find an existing ancestor for "${filePath}".`);
     }
     current = parent;
-  }
-  return current;
-}
-
-function pathExistsIncludingSymlink(filePath: string): boolean {
-  try {
-    lstatSync(filePath);
-    return true;
-  } catch {
-    return false;
   }
 }
 

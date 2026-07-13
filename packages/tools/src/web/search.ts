@@ -219,7 +219,24 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
     return tokens.slice(0, 3).join(" ") || query.trim();
   }
 
-  private formatDate(date: Date): string {
+  private formatDate(date: Date, timeZone?: string): string {
+    if (timeZone) {
+      try {
+        const parts = new Intl.DateTimeFormat("en-US", {
+          timeZone,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).formatToParts(date);
+        const values = new Map(parts.map((part) => [part.type, part.value]));
+        const year = values.get("year");
+        const month = values.get("month");
+        const day = values.get("day");
+        if (year && month && day) return `${year}-${month}-${day}`;
+      } catch {
+        // Invalid or unavailable time zones safely fall back to local time.
+      }
+    }
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, "0");
     const day = String(date.getDate()).padStart(2, "0");
@@ -232,7 +249,10 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
     return next;
   }
 
-  private extractRequestedDate(query: string): string | null {
+  private extractRequestedDate(
+    query: string,
+    timeZone?: string,
+  ): string | null {
     const normalized = query
       .replace(/[年月]/g, "-")
       .replace(/[日号]/g, "")
@@ -247,16 +267,16 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
 
     const now = new Date();
     if (/(?:今天|今日|\btoday\b|\bnow\b|\bcurrent\b)/i.test(query)) {
-      return this.formatDate(now);
+      return this.formatDate(now, timeZone);
     }
     if (/(?:明天|\btomorrow\b)/i.test(query)) {
-      return this.formatDate(this.addDays(now, 1));
+      return this.formatDate(this.addDays(now, 1), timeZone);
     }
     if (/(?:后天)/i.test(query)) {
-      return this.formatDate(this.addDays(now, 2));
+      return this.formatDate(this.addDays(now, 2), timeZone);
     }
     if (/(?:昨天|\byesterday\b)/i.test(query)) {
-      return this.formatDate(this.addDays(now, -1));
+      return this.formatDate(this.addDays(now, -1), timeZone);
     }
     return null;
   }
@@ -440,8 +460,11 @@ export class WebSearchTool implements OrbitTool<WebSearchInput, string> {
         return null;
       }
 
-      const requestedDate = this.extractRequestedDate(input.query);
-      const today = this.formatDate(new Date());
+      const requestedDate = this.extractRequestedDate(
+        input.query,
+        location.timezone,
+      );
+      const today = this.formatDate(new Date(), location.timezone);
       const requestedOffset = requestedDate
         ? this.daysBetween(today, requestedDate)
         : 0;

@@ -85,4 +85,10 @@ orbit lsp         Start the local autocomplete language server
 orbit exec        Run a non-interactive task with optional JSONL events
 ```
 
+For automation, use `orbit exec "task" --jsonl`. It never opens terminal
+approval menus: policy-approved changes continue, while actions that still
+require approval are denied safely. The final `agent_completed` event contains
+the structured outcome. Exit codes are stable: `0` completed, `2` task or
+verification failure, `4` provider startup failure, and `130` aborted.
+
 Run `orbit --help` or `orbit <command> --help` for all options.

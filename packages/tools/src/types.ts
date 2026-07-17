@@ -6,8 +6,15 @@ export interface ToolContext {
   cwd: string;
   sessionId: string;
   config?: OrbitConfig;
-  logger?: any;
+  logger?: ToolLogger;
   abortSignal?: AbortSignal;
+}
+
+export interface ToolLogger {
+  debug?(message: string, metadata?: Record<string, unknown>): void;
+  info?(message: string, metadata?: Record<string, unknown>): void;
+  warn?(message: string, metadata?: Record<string, unknown>): void;
+  error?(message: string, metadata?: Record<string, unknown>): void;
 }
 
 export interface ToolResult<O = unknown> {

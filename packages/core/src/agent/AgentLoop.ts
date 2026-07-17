@@ -43,6 +43,13 @@ import {
   resolveSafePath,
 } from "@orbit-build/shared";
 import { VerificationContractManager } from "../verification/VerificationContractManager.js";
+import {
+  compactHistoryMessages,
+  isContextWindowError,
+  resolveContextWindowStatus,
+  type ContextWindowStatus,
+  type HistoryCompactionStats,
+} from "./ContextWindowManager.js";
 
 const DEEPSEEK_CACHE_DEGRADED_HIT_RATE = 0.85;
 const DEEPSEEK_VERBOSE_CACHE_ENV = "ORBIT_DEEPSEEK_VERBOSE_CACHE";
@@ -51,7 +58,12 @@ const NETWORK_TOOL_RESULT_SUMMARY_CHARS = 280;
 const NETWORK_TOOL_RESULT_MAX_CHARS = 6000;
 const AGENT_LOOP_ERROR_MESSAGE_MAX_CHARS = 2000;
 
-export type AgentLoopFailureCode = "provider_error" | "execution_error";
+export type AgentLoopFailureCode =
+  | "provider_error"
+  | "execution_error"
+  | "verification_failed"
+  | "iteration_limit"
+  | "budget_exceeded";
 export type AgentLoopAbortReason = "immediate" | "interrupted" | "rollback";
 
 export type AgentLoopRunOutcome =
@@ -76,6 +88,9 @@ export type AgentLoopRunOutcome =
       reason: AgentLoopAbortReason;
       message: string;
     };
+
+export interface HistoryCompactionResult
+  extends ContextWindowStatus, HistoryCompactionStats {}
 
 class AgentLoopExecutionError extends Error {
   public readonly name = "AgentLoopExecutionError";
@@ -105,6 +120,17 @@ function safeAgentLoopErrorMessage(error: unknown): string {
 
 export interface UserInteraction {
   askApproval(reason: string, preview?: string): Promise<boolean>;
+  askToolApproval?(request: {
+    toolCallId: string;
+    toolName: string;
+    reason: string;
+    preview?: string;
+  }): Promise<boolean>;
+  reviewFileChange?(request: {
+    filePath: string;
+    before: string | null;
+    after: string;
+  }): Promise<boolean>;
   showText(text: string): void;
   showDiff(
     filePath: string,
@@ -136,7 +162,13 @@ export class AgentLoop {
   private cachedRepoMapTextForRun: string | null = null;
   private activeModelForRun: string | null = null;
   private fallbackModelForRun: string | null = null;
+  private contextOverflowRetriesForRun = 0;
   private approvedToolScopes = new Set<string>();
+  private terminalFailure: {
+    code: AgentLoopFailureCode;
+    message: string;
+  } | null = null;
+  private verificationStatus: "not_run" | "passed" | "failed" = "not_run";
   private userId: string;
 
   constructor(
@@ -151,10 +183,16 @@ export class AgentLoop {
       allowedTools?: string[];
       disableStatusBar?: boolean;
       sessionId?: string;
+      nonInteractive?: boolean;
     },
   ) {
     this.statusBar = new StatusBar(!!this.options?.disableStatusBar);
-    this.sessionManager = new SessionManager(cwd);
+    this.sessionManager = new SessionManager(
+      cwd,
+      config.session.store === "jsonl"
+        ? config.session.path
+        : ".orbit/sessions",
+    );
     const workspaceIdentity = path.resolve(cwd).replace(/\\/g, "/");
     this.userId = createHash("sha256")
       .update(
@@ -226,6 +264,11 @@ export class AgentLoop {
     if (this.abortController) {
       this.abortController.abort();
     }
+  }
+
+  /** Replace the active interaction surface while the shared loop is idle. */
+  public setUserInteraction(interaction: UserInteraction): void {
+    this.interaction = interaction;
   }
 
   private getMaxLoopAttempts(): number {
@@ -361,42 +404,41 @@ export class AgentLoop {
   }
 
   public async run(): Promise<AgentLoopRunOutcome> {
+    let outcome: AgentLoopRunOutcome;
     if (this.isImmediateAbortRequested()) {
       this.interruptMode = "prompt";
-      return this.createAbortedOutcome(
+      outcome = this.createAbortedOutcome(
         "immediate",
         "Execution was aborted before it started.",
       );
-    }
-
-    try {
-      return await this.executeRun();
-    } catch (error: unknown) {
-      if (
-        (error instanceof Error && error.name === "AbortError") ||
-        this.isImmediateAbortRequested()
-      ) {
-        this.interruptMode = "prompt";
-        return this.createAbortedOutcome(
-          "interrupted",
-          "Execution was interrupted.",
-        );
+    } else {
+      try {
+        outcome = await this.executeRun();
+      } catch (error: unknown) {
+        if (
+          (error instanceof Error && error.name === "AbortError") ||
+          this.isImmediateAbortRequested()
+        ) {
+          this.interruptMode = "prompt";
+          outcome = this.createAbortedOutcome(
+            "interrupted",
+            "Execution was interrupted.",
+          );
+        } else {
+          const code =
+            error instanceof AgentLoopExecutionError
+              ? error.code
+              : "execution_error";
+          outcome = this.createFailedOutcome(
+            code,
+            safeAgentLoopErrorMessage(error),
+          );
+        }
       }
-
-      const code =
-        error instanceof AgentLoopExecutionError
-          ? error.code
-          : "execution_error";
-      return {
-        status: "failed",
-        sessionId: this.state.sessionId,
-        attempts: this.state.attemptCount,
-        error: {
-          code,
-          message: safeAgentLoopErrorMessage(error),
-        },
-      };
     }
+
+    this.finalizeOutcome(outcome);
+    return outcome;
   }
 
   private async executeRun(): Promise<AgentLoopRunOutcome> {
@@ -409,7 +451,11 @@ export class AgentLoop {
     this.cachedRepoMapTextForRun = null;
     this.activeModelForRun = null;
     this.fallbackModelForRun = null;
+    this.contextOverflowRetriesForRun = 0;
     this.approvedToolScopes.clear();
+    this.terminalFailure = null;
+    this.verificationStatus = "not_run";
+    this.sessionManager.setStatus("active");
     this.verificationManager.initialize();
     this.sessionManager.saveHistory(this.state.history);
     void this.provider.initialize?.().catch(() => {});
@@ -505,7 +551,8 @@ export class AgentLoop {
           this.interaction.showText(
             "● Dialogue history is too long. Auto-compacting older history to save tokens...",
           );
-          await this.autoCompactHistory();
+          const result = await this.compactHistory("automatic");
+          this.showAutomaticCompactionResult(result);
         }
 
         if (this.sessionCost > this.config.budgetLimit) {
@@ -520,6 +567,10 @@ export class AgentLoop {
           if (confirm) {
             this.config.budgetLimit += 10.0;
           } else {
+            this.terminalFailure = {
+              code: "budget_exceeded",
+              message: `Session cost exceeded the configured budget limit of $${this.config.budgetLimit.toFixed(2)}.`,
+            };
             this.state.done = true;
             break;
           }
@@ -543,8 +594,10 @@ export class AgentLoop {
             this.interaction.showText(
               "● Terminated by user to prevent runaway iterations.",
             );
-            this.state.done = true;
-            break;
+            return this.createAbortedOutcome(
+              "interrupted",
+              "Execution was stopped by the user at the runaway-iteration guard.",
+            );
           }
         }
 
@@ -779,6 +832,18 @@ export class AgentLoop {
           this.cachedContextPack = await this.contextBuilder.build(
             this.state.relevantFiles,
             latestUserQuery,
+            {
+              maxTokens: Math.min(
+                128_000,
+                Math.max(
+                  512,
+                  Math.floor(
+                    this.getContextWindowStatus(activeModel).compactAtTokens *
+                      0.4,
+                  ),
+                ),
+              ),
+            },
           );
         }
         let toolDefs = toolRegistry.getDefinitions();
@@ -832,7 +897,7 @@ export class AgentLoop {
           repoMapText,
           contextPack,
         });
-        const builtMessages = MessageBuilder.build(
+        let builtMessages = MessageBuilder.build(
           cacheSlab.text,
           this.state,
           contextPack,
@@ -842,6 +907,24 @@ export class AgentLoop {
         if (builtMessages.contextMessageAdded) {
           this.state.history = builtMessages.messages;
           this.sessionManager.saveHistory(this.state.history);
+        }
+        if (this.config.context.autoCompact) {
+          const requestCompaction = await this.compactOversizedRequest(
+            activeModel,
+            builtMessages.system,
+            builtMessages.messages,
+          );
+          if (requestCompaction?.changed) {
+            this.showAutomaticCompactionResult(requestCompaction);
+            builtMessages = MessageBuilder.build(
+              cacheSlab.text,
+              this.state,
+              contextPack,
+              { now: runStartedAt, repoMapText },
+            );
+            this.state.history = builtMessages.messages;
+            this.sessionManager.saveHistory(this.state.history);
+          }
         }
         // Keep the provider request array immutable while history grows with the
         // assistant response and tool results.
@@ -891,9 +974,7 @@ export class AgentLoop {
           tools: toolDefs,
           stream: true,
           maxTokens:
-            activeModel === this.config.models.fast
-              ? (this.config.agent?.fastMaxOutputTokens ?? 8192)
-              : (this.config.agent?.maxOutputTokens ?? 16384),
+            this.getContextWindowStatus(activeModel).reservedOutputTokens,
           userId: this.userId,
           abortSignal: this.abortController.signal,
           thinking: supportsThinking
@@ -956,6 +1037,27 @@ export class AgentLoop {
           } else if (this.abortController?.signal.aborted) {
             // User-initiated abort, handled below.
           } else {
+            const contextWindowRejected =
+              this.config.context.autoCompact &&
+              this.contextOverflowRetriesForRun < 2 &&
+              isContextWindowError(chatError);
+            if (contextWindowRejected) {
+              this.contextOverflowRetriesForRun++;
+              const retryStatus = this.getContextWindowStatus(activeModel);
+              const compacted = await this.compactHistory(
+                "automatic",
+                Math.max(256, Math.floor(retryStatus.compactAtTokens * 0.5)),
+              );
+              if (compacted.changed) {
+                this.interaction.showText(
+                  picocolors.yellow(
+                    `⚠ ${activeModel} rejected the context length; Orbit compacted it and is retrying (${this.contextOverflowRetriesForRun}/2).`,
+                  ),
+                );
+                this.showAutomaticCompactionResult(compacted);
+                continue;
+              }
+            }
             const canFallbackToFlash =
               !this.fallbackModelForRun &&
               activeModel !== this.config.models.fast &&
@@ -1111,6 +1213,9 @@ export class AgentLoop {
               );
               const verifyResult =
                 await this.verificationManager.runVerification();
+              this.verificationStatus = verifyResult.success
+                ? "passed"
+                : "failed";
               if (!verifyResult.success) {
                 const repairAttempts = this.state.history.filter(
                   (m) =>
@@ -1129,6 +1234,13 @@ export class AgentLoop {
                     ),
                   );
                   await this.rollbackLastCheckpoint();
+                  this.terminalFailure = {
+                    code: "verification_failed",
+                    message: safeAgentLoopErrorMessage(
+                      verifyResult.error ||
+                        "The workspace failed its verification contract.",
+                    ),
+                  };
                   this.state.done = true;
                   break;
                 }
@@ -1172,6 +1284,7 @@ export class AgentLoop {
                     abortSignal: this.abortController?.signal,
                   },
                 );
+                this.verificationStatus = result.ok ? "passed" : "failed";
 
                 if (!result.ok) {
                   const repairAttempts = this.state.history.filter(
@@ -1191,6 +1304,14 @@ export class AgentLoop {
                       ),
                     );
                     await this.rollbackLastCheckpoint();
+                    this.terminalFailure = {
+                      code: "verification_failed",
+                      message: safeAgentLoopErrorMessage(
+                        result.error ||
+                          result.display ||
+                          "Project tests failed after automatic repair attempts.",
+                      ),
+                    };
                     this.state.done = true;
                     break;
                   }
@@ -1413,9 +1534,25 @@ ${errLog}`;
           if (decision.action === "ask") {
             let approved = false;
             let currentArgs = tc.arguments;
-            if (reusableApprovalScope) {
-              approved = await Prompt.askApproval(
-                `Allow "${tc.name}" for this task? ${argSummary ? `Query: ${argSummary}` : decision.reason}`,
+            if (this.interaction.askToolApproval) {
+              approved = await this.interaction.askToolApproval({
+                toolCallId: tc.id,
+                toolName: tc.name,
+                reason: decision.reason,
+                preview: argSummary || tc.arguments,
+              });
+              if (approved && reusableApprovalScope) {
+                this.approvedToolScopes.add(reusableApprovalScope);
+              }
+            } else if (this.options?.nonInteractive) {
+              approved = await this.interaction.askApproval(
+                `Tool "${tc.name}" requires approval: ${decision.reason}`,
+                argSummary || tc.arguments,
+              );
+            } else if (reusableApprovalScope) {
+              approved = await this.interaction.askApproval(
+                `Allow "${tc.name}" for this task?`,
+                argSummary || decision.reason,
               );
               if (approved) {
                 this.approvedToolScopes.add(reusableApprovalScope);
@@ -1598,17 +1735,23 @@ ${errLog}`;
                   ),
                 );
 
-                const choice = await Prompt.askSelect(
-                  `Pre-commit verification tests failed. How would you like to proceed?`,
-                  [
-                    { value: "yes", label: "Proceed with the commit anyway" },
-                    {
-                      value: "diagnose",
-                      label: "Let Agent auto-repair the failures (diagnose)",
-                    },
-                    { value: "no", label: "Abort the commit entirely" },
-                  ],
-                );
+                const choice = this.options?.nonInteractive
+                  ? "no"
+                  : await Prompt.askSelect(
+                      `Pre-commit verification tests failed. How would you like to proceed?`,
+                      [
+                        {
+                          value: "yes",
+                          label: "Proceed with the commit anyway",
+                        },
+                        {
+                          value: "diagnose",
+                          label:
+                            "Let Agent auto-repair the failures (diagnose)",
+                        },
+                        { value: "no", label: "Abort the commit entirely" },
+                      ],
+                    );
 
                 if (choice === "diagnose") {
                   eventBus.emitEvent("tool_result", {
@@ -1972,7 +2115,7 @@ ${errLog}`;
                     const uniqueModules = Array.from(new Set(missingModules));
                     let dependenciesInstalled = false;
                     for (const pkg of uniqueModules) {
-                      const installPkg = await Prompt.askApproval(
+                      const installPkg = await this.interaction.askApproval(
                         `Missing dependency "${pkg}" detected. Install it automatically?`,
                       );
                       if (installPkg) {
@@ -2163,7 +2306,7 @@ ${errLog}`;
                 }
 
                 if (!checkPassedAfterAutofix) {
-                  const autoFix = await Prompt.askApproval(
+                  const autoFix = await this.interaction.askApproval(
                     `Lint/Syntax verification failed. Let Agent auto-repair the file?`,
                   );
                   if (autoFix) {
@@ -2207,14 +2350,24 @@ ${errLog}`;
             }
 
             let accepted = false;
-            const choice = await Prompt.askSelect(
-              `Accept changes to ${targetPath}?`,
-              [
-                { value: "yes", label: "Accept all changes" },
-                { value: "hunks", label: "Review and accept by hunk/block" },
-                { value: "no", label: "Reject and rollback all changes" },
-              ],
-            );
+            const choice = this.options?.nonInteractive
+              ? "yes"
+              : this.interaction.reviewFileChange
+                ? (await this.interaction.reviewFileChange({
+                    filePath: targetPath,
+                    before: beforeContent,
+                    after: afterContent,
+                  }))
+                  ? "yes"
+                  : "no"
+                : await Prompt.askSelect(`Accept changes to ${targetPath}?`, [
+                    { value: "yes", label: "Accept all changes" },
+                    {
+                      value: "hunks",
+                      label: "Review and accept by hunk/block",
+                    },
+                    { value: "no", label: "Reject and rollback all changes" },
+                  ]);
 
             if (choice === "yes") {
               accepted = true;
@@ -2473,6 +2626,10 @@ ${errLog}`;
         this.state.attemptCount >= this.state.maxAttempts &&
         !this.state.done
       ) {
+        this.terminalFailure = {
+          code: "iteration_limit",
+          message: `Maximum loop iterations (${this.state.maxAttempts}) reached before the task completed.`,
+        };
         this.interaction.showText(
           `\n● Limit reached: Maximum consecutive loop iterations (${this.state.maxAttempts}) completed. Pausing loop.`,
         );
@@ -2496,12 +2653,22 @@ ${errLog}`;
       this.interaction.showText(
         `  Modified files: ${modifiedFiles.length > 0 ? Array.from(new Set(modifiedFiles)).join(", ") : "None"}`,
       );
-      this.interaction.showText(`  Verification: test run executed.`);
+      const verificationSummary =
+        this.verificationStatus === "passed"
+          ? "passed"
+          : this.verificationStatus === "failed"
+            ? "failed"
+            : "not run";
+      this.interaction.showText(`  Verification: ${verificationSummary}.`);
       this.interaction.showText(
         `  Session Cost: $${this.sessionCost.toFixed(4)}`,
       );
 
-      if (this.config.autoCommit && modifiedFiles.length > 0) {
+      if (
+        !this.terminalFailure &&
+        this.config.autoCommit &&
+        modifiedFiles.length > 0
+      ) {
         this.interaction.showText(`\n● Auto-committing changes...`);
         try {
           const uniqueFiles = Array.from(new Set(modifiedFiles));
@@ -2580,11 +2747,60 @@ ${errLog}`;
       }
     }
 
+    if (this.terminalFailure) {
+      return this.createFailedOutcome(
+        this.terminalFailure.code,
+        this.terminalFailure.message,
+      );
+    }
+
     return {
       status: "completed",
       sessionId: this.state.sessionId,
       attempts: this.state.attemptCount,
     };
+  }
+
+  private createFailedOutcome(
+    code: AgentLoopFailureCode,
+    message: string,
+  ): AgentLoopRunOutcome {
+    return {
+      status: "failed",
+      sessionId: this.state.sessionId,
+      attempts: this.state.attemptCount,
+      error: { code, message: safeAgentLoopErrorMessage(message) },
+    };
+  }
+
+  private finalizeOutcome(outcome: AgentLoopRunOutcome): void {
+    try {
+      this.sessionManager.setStatus(
+        outcome.status === "completed"
+          ? "completed"
+          : outcome.status === "aborted"
+            ? "aborted"
+            : "failed",
+      );
+    } catch (error: unknown) {
+      this.interaction.showText(
+        picocolors.yellow(
+          `⚠️ Unable to persist final session status: ${safeAgentLoopErrorMessage(error)}`,
+        ),
+      );
+    }
+
+    eventBus.emitEvent("agent_completed", {
+      taskId: this.state.sessionId,
+      success: outcome.status === "completed",
+      result: outcome,
+      error:
+        outcome.status === "failed"
+          ? outcome.error.message
+          : outcome.status === "aborted"
+            ? outcome.message
+            : undefined,
+    });
   }
 
   private createAbortedOutcome(
@@ -2985,184 +3201,86 @@ ${errLog}`;
    *   Truncates bulky tool_result and tool-role text content in older messages.
    *   Preserves the message structure so the DeepSeek prompt prefix cache stays valid.
    *
-   * Phase 2 (aggressive, used only for very large histories):
+   * Phase 2 (aggressive, used near the context limit or by `/compact`):
    *   Drops the oldest messages entirely to prevent context window overflow.
    *   This breaks the prefix cache but is necessary as a safety valve.
    *   Only fires when Phase 1 alone isn't enough to keep history bounded.
    */
-  private async autoCompactHistory(): Promise<void> {
-    const history = this.state.history;
-
-    // --- Phase 1: Cache-friendly truncation ---
-    // Keep a bounded recent working set untouched.
-    const protectedTailSize = Math.min(
-      16,
-      Math.max(4, Math.floor(history.length / 3)),
-    );
-    const compactBoundary = Math.max(0, history.length - protectedTailSize);
-    const maxToolResultLen = 300;
-    let truncatedCount = 0;
-
-    for (let i = 0; i < compactBoundary; i++) {
-      const msg = history[i];
-      for (const block of msg.content) {
-        if (block.type === "tool_result") {
-          const tr = block.toolResult;
-          if (
-            tr &&
-            typeof tr.content === "string" &&
-            tr.content.length > maxToolResultLen
-          ) {
-            tr.content =
-              tr.content.substring(0, maxToolResultLen) + "\n... [truncated]";
-            truncatedCount++;
-          }
-        }
-        if (block.type === "text" && msg.role === "tool") {
-          const textBlock = block;
-          if (
-            typeof textBlock.text === "string" &&
-            textBlock.text.length > maxToolResultLen
-          ) {
-            textBlock.text =
-              textBlock.text.substring(0, maxToolResultLen) +
-              "\n... [truncated]";
-            truncatedCount++;
-          }
-        }
-      }
-    }
-
-    // --- Phase 2: Aggressive drop (safety valve for context window) ---
-    const hardMaxMessages = 80;
-    let droppedCount = 0;
-
-    if (history.length > hardMaxMessages || this.shouldCompactHistory()) {
-      // Find a safe cut point and retain the recent conversation. System rules
-      // are supplied separately, so no historical message needs pinning.
-      const keepRecent = 30;
-      let cutIdx = history.length - keepRecent;
-
-      // Don't cut in the middle of a tool_call → tool_result pair
-      while (cutIdx > 0) {
-        const msg = history[cutIdx];
-        if (msg.role === "tool") {
-          cutIdx--;
-          continue;
-        }
-        const prevMsg = history[cutIdx - 1];
-        if (
-          prevMsg.role === "assistant" &&
-          prevMsg.content.some((content) => content.type === "tool_call")
-        ) {
-          cutIdx--;
-          continue;
-        }
-        break;
-      }
-
-      if (cutIdx > 0) {
-        droppedCount = cutIdx;
-        const summaryText = this.buildCompactionSummary(
-          history.slice(0, cutIdx),
-        );
-        const summaryMessage: OrbitMessage = {
-          id: `msg_compaction_summary_${Date.now()}`,
-          role: "user",
-          createdAt: new Date().toISOString(),
-          content: [{ type: "text", text: summaryText }],
-          metadata: { kind: "history_compaction_summary" },
-        };
-        const kept = [summaryMessage, ...history.slice(cutIdx)];
-        this.state.history.length = 0;
-        this.state.history.push(...kept);
-      }
-    }
-
-    if (truncatedCount > 0 || droppedCount > 0) {
+  private async compactHistory(
+    mode: "manual" | "automatic",
+    targetHistoryTokens?: number,
+  ): Promise<HistoryCompactionResult> {
+    const status = this.getContextWindowStatus();
+    const { history, ...result } = compactHistoryMessages(this.state.history, {
+      mode,
+      compactAtTokens: status.compactAtTokens,
+      targetHistoryTokens,
+    });
+    if (result.changed) {
+      this.state.history = history;
       this.sessionManager.saveHistory(this.state.history);
     }
-
-    if (droppedCount > 0) {
-      this.interaction.showText(
-        `✔ History compaction: truncated ${truncatedCount} tool outputs, dropped ${droppedCount} oldest messages (${this.state.history.length} remaining).`,
-      );
-    } else if (truncatedCount > 0) {
-      this.interaction.showText(
-        `✔ Cache-aware compaction: truncated ${truncatedCount} bulky tool outputs (preserved ${history.length} messages for prefix cache stability).`,
-      );
-    }
+    return {
+      ...this.getContextWindowStatus(),
+      ...result,
+    };
   }
 
-  private shouldCompactHistory(): boolean {
+  /** Compacts older dialogue on demand while preserving the active turn. */
+  public async compactHistoryPublic(): Promise<HistoryCompactionResult> {
+    return this.compactHistory("manual");
+  }
+
+  /** Reports the model-aware context budget used by automatic compaction. */
+  public getContextWindowStatus(modelOverride?: string): ContextWindowStatus {
     const model =
+      modelOverride ||
       this.activeModelForRun ||
       this.options?.modelOverride ||
       this.config.models.default;
-    const capabilities = this.provider.getModelCapabilities?.(model);
-    const maxContextTokens = capabilities?.maxContextTokens || 128_000;
-    const reservedOutputTokens =
-      capabilities?.maxOutputTokens &&
-      capabilities.maxOutputTokens < maxContextTokens
-        ? Math.min(
-            this.config.agent?.maxOutputTokens || 16_384,
-            capabilities.maxOutputTokens,
-          )
-        : this.config.agent?.maxOutputTokens || 16_384;
-    const configuredThreshold = this.config.context.compactThreshold;
-    const threshold = Math.max(0.5, Math.min(0.9, configuredThreshold));
-    const safeInputLimit = Math.max(
-      16_384,
-      Math.min(
-        maxContextTokens - reservedOutputTokens,
-        Math.floor(maxContextTokens * threshold),
-      ),
-    );
-    return (
-      estimateTokenCount(JSON.stringify(this.state.history)) >= safeInputLimit
-    );
+    return resolveContextWindowStatus({
+      model,
+      config: this.config,
+      provider: this.provider,
+      history: this.state.history,
+    });
   }
 
-  private buildCompactionSummary(messages: OrbitMessage[]): string {
-    const lines = [
-      "[Conversation Summary]",
-      "Older conversation turns were compacted to preserve context budget. Use this stable summary as background; rely on recent turns for exact current instructions.",
-    ];
+  private shouldCompactHistory(): boolean {
+    const status = this.getContextWindowStatus();
+    return status.estimatedHistoryTokens >= status.compactAtTokens;
+  }
 
-    const snippets: string[] = [];
-    for (const msg of messages.slice(-24)) {
-      const text = msg.content
-        .map((block) => {
-          if (block.type === "text") return block.text;
-          if (block.type === "tool_call") {
-            return `tool_call:${block.toolCall.name}`;
-          }
-          if (block.type === "tool_result") {
-            return `tool_result:${block.toolResult.name}:${block.toolResult.isError ? "error" : "ok"}`;
-          }
-          return "";
-        })
-        .filter(Boolean)
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (!text) continue;
-      snippets.push(`- ${msg.role}: ${text.slice(0, 240)}`);
-    }
+  private async compactOversizedRequest(
+    model: string,
+    system: string,
+    messages: OrbitMessage[],
+  ): Promise<HistoryCompactionResult | null> {
+    const status = this.getContextWindowStatus(model);
+    const systemTokens = estimateTokenCount(system);
+    const requestTokens =
+      systemTokens + estimateTokenCount(JSON.stringify(messages));
+    if (requestTokens < status.compactAtTokens) return null;
 
-    if (snippets.length === 0) {
-      lines.push("- No compactable text content was found.");
-    } else {
-      lines.push(...snippets.slice(-12));
-    }
+    this.interaction.showText(
+      `● Context usage reached ${requestTokens.toLocaleString()}/${status.maxContextTokens.toLocaleString()} estimated tokens for ${model}. Auto-compacting...`,
+    );
+    const historyTarget = Math.max(256, status.compactAtTokens - systemTokens);
+    return this.compactHistory("automatic", historyTarget);
+  }
 
-    return lines.join("\n");
+  private showAutomaticCompactionResult(result: HistoryCompactionResult): void {
+    if (!result.changed) return;
+    this.interaction.showText(
+      `✔ Context compacted for ${result.model}: ${result.beforeTokens.toLocaleString()} → ${result.afterTokens.toLocaleString()} estimated tokens; truncated ${result.truncatedToolResults} tool outputs and ${result.truncatedContextMessages} context blocks, summarized ${result.droppedMessages} older messages.`,
+    );
   }
 
   private async promptSchemaGuided(
     registeredTool: any,
     currentArgsStr: string,
   ): Promise<string | null> {
+    if (this.options?.nonInteractive) return null;
     try {
       const schema = registeredTool.inputSchema;
       if (!(schema instanceof z.ZodObject)) {
@@ -3256,6 +3374,7 @@ ${errLog}`;
       this.interruptMode = "prompt";
       return "abort";
     }
+    if (this.options?.nonInteractive) return "abort";
     this.interaction.showText(
       picocolors.yellow("\n● Execution interrupted by user."),
     );

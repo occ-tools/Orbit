@@ -1,0 +1,16 @@
+import { describe, expect, it } from "vitest";
+import { WEB_UI_FAVICON_SVG, renderOrbitMark } from "./WebUiBrand.js";
+
+describe("WebUiBrand", () => {
+  it("renders the same recognizable cat geometry for UI marks and favicon", () => {
+    const mark = renderOrbitMark("brand-mark");
+
+    expect(mark).toContain('class="orbit-mark brand-mark"');
+    expect(mark).toContain('class="orbit-cat-head"');
+    expect(mark).toContain('class="orbit-cat-eye"');
+    expect(mark).toContain('class="orbit-cat-satellite"');
+    expect(WEB_UI_FAVICON_SVG).toContain('xmlns="http://www.w3.org/2000/svg"');
+    expect(WEB_UI_FAVICON_SVG).toContain('fill="#d97972"');
+    expect(WEB_UI_FAVICON_SVG).not.toContain("<script");
+  });
+});

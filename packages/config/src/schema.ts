@@ -266,8 +266,8 @@ export const ConfigSchema = z.object({
   budgetLimit: z.number().finite().nonnegative().default(10.0),
   session: z
     .object({
-      store: z.enum(["sqlite", "jsonl"]).default("sqlite"),
-      path: z.string().default(".orbit/sessions.sqlite"),
+      store: z.enum(["sqlite", "jsonl"]).default("jsonl"),
+      path: z.string().min(1).max(4096).default(".orbit/sessions"),
     })
     .default({}),
 });

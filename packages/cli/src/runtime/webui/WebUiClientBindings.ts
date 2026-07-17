@@ -4,11 +4,13 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
     if (state.busy) stopTurn();
     else submitTurn(elements.prompt.value);
   });
+  elements.denyApprovalButton.addEventListener('click', () => void respondToApproval(false));
+  elements.approveApprovalButton.addEventListener('click', () => void respondToApproval(true));
 
   elements.prompt.addEventListener('input', () => {
     autoSizePrompt();
-    if (elements.prompt.value) localStorage.setItem('orbit.webui.draft', elements.prompt.value);
-    else localStorage.removeItem('orbit.webui.draft');
+    writeLocalStorage('orbit.webui.draft', elements.prompt.value);
+    updateSendButtonState();
   });
 
   elements.prompt.addEventListener('keydown', (event) => {
@@ -29,9 +31,9 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
   });
 
   elements.menuButton.addEventListener('click', () => {
-    if (elements.appShell.classList.contains('sidebar-open')) closeSidebar();
-    else openSidebar();
+    toggleNavigation();
   });
+  elements.sidebarCollapseButton.addEventListener('click', () => setDesktopSidebarCollapsed(true));
   elements.sidebarBackdrop.addEventListener('click', closeSidebar);
   document.querySelectorAll('[data-close-sidebar]').forEach((button) => button.addEventListener('click', closeSidebar));
   if (typeof mobileSidebarQuery.addEventListener === 'function') {
@@ -39,33 +41,78 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
   } else {
     mobileSidebarQuery.addListener(syncSidebarInteractivity);
   }
+  const syncSystemTheme = () => {
+    if (readLocalStorage('orbit.webui.theme', 'system') === 'system') applyTheme('system');
+  };
+  if (typeof systemThemeQuery.addEventListener === 'function') {
+    systemThemeQuery.addEventListener('change', syncSystemTheme);
+  } else {
+    systemThemeQuery.addListener(syncSystemTheme);
+  }
   syncSidebarInteractivity();
 
   elements.inspectorButton.addEventListener('click', () => {
     setInspector(!elements.inspector.classList.contains('is-open'));
   });
+  elements.contextMeter.addEventListener('click', () => setInspector(true, 'activity'));
   elements.inspectorClose.addEventListener('click', () => setInspector(false));
+  elements.inspectorBackdrop.addEventListener('click', () => setInspector(false));
+  elements.inspector.addEventListener('keydown', trapInspectorFocus);
+  elements.connectionState.addEventListener('click', () => {
+    if (!state.ready) void initialize();
+  });
+  byId('retryConnection').addEventListener('click', () => void initialize());
   elements.activityTab.addEventListener('click', () => selectInspectorTab('activity'));
   elements.settingsTab.addEventListener('click', () => selectInspectorTab('settings'));
+  elements.activityTab.addEventListener('keydown', handleInspectorTabKeydown);
+  elements.settingsTab.addEventListener('keydown', handleInspectorTabKeydown);
   byId('clearActivity').addEventListener('click', clearActivity);
 
   document.querySelectorAll('[data-suggestion]').forEach((button) => {
     button.addEventListener('click', () => {
       const prompt = suggestionPrompts[Number(button.dataset.suggestion)] || '';
-      elements.prompt.value = prompt;
-      autoSizePrompt();
-      elements.prompt.focus();
+      setComposerValue(prompt);
     });
   });
 
   document.querySelectorAll('[data-fill]').forEach((button) => {
     button.addEventListener('click', () => {
       if (state.busy) return;
-      elements.prompt.value = button.dataset.fill || '';
-      autoSizePrompt();
-      elements.prompt.focus();
+      setComposerValue(button.dataset.fill || '');
       closeSidebar();
     });
+  });
+
+  document.querySelectorAll('[data-open-context]').forEach((button) => {
+    button.addEventListener('click', () => {
+      openContextPicker();
+      closeSidebar();
+    });
+  });
+
+  elements.contextPickerClose.addEventListener('click', () => closeContextPicker());
+  elements.clearContextButton.addEventListener('click', clearContextFiles);
+  elements.contextSearch.addEventListener('input', queueContextPickerRefresh);
+  elements.contextSearch.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      moveContextPickerSelection(1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveContextPickerSelection(-1);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setContextPickerBoundary(false);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setContextPickerBoundary(true);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      addContextFile(contextPickerSelection);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      closeContextPicker();
+    }
   });
 
   document.querySelectorAll('[data-command]').forEach((button) => {
@@ -77,6 +124,46 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
       closeSidebar();
       submitTurn(command);
     });
+  });
+
+  elements.newTaskButton.addEventListener('click', () => {
+    closeContextPicker({ skipRestore: true });
+    void updateSession({ action: 'new' });
+  });
+  elements.recentSessions.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-session-id]');
+    if (!button || state.busy) return;
+    void updateSession({ action: 'resume', sessionId: button.dataset.sessionId });
+  });
+  elements.commandsButton.addEventListener('click', openCommandPalette);
+  elements.commandTrigger.addEventListener('click', openCommandPalette);
+  elements.commandPaletteBackdrop.addEventListener('click', closeCommandPalette);
+  elements.commandSearch.addEventListener('input', () => {
+    paletteSelection = 0;
+    renderCommandPalette();
+  });
+  elements.commandSearch.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      movePaletteSelection(1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      movePaletteSelection(-1);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      paletteSelection = 0;
+      syncPaletteSelection();
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      paletteSelection = Math.max(0, paletteActions.length - 1);
+      syncPaletteSelection();
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      executePaletteAction(paletteSelection);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      closeCommandPalette();
+    }
   });
 
   elements.modelSelect.addEventListener('change', () => {
@@ -117,41 +204,78 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
+      if (!elements.contextPicker.hidden) {
+        closeContextPicker();
+        return;
+      }
+      if (!elements.commandPalette.hidden) {
+        closeCommandPalette();
+        return;
+      }
       setInspector(false);
       closeSidebar();
     }
+    if ((event.ctrlKey || event.metaKey) && ['k', 'p'].includes(event.key.toLowerCase())) {
+      event.preventDefault();
+      if (elements.commandPalette.hidden) openCommandPalette();
+      else closeCommandPalette();
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') {
       event.preventDefault();
-      if (!state.busy) submitTurn('/chat new');
+      if (!state.busy) void updateSession({ action: 'new' });
     }
     if ((event.ctrlKey || event.metaKey) && event.key === ',') {
       event.preventDefault();
       setInspector(true, 'settings');
     }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b') {
+      event.preventDefault();
+      toggleNavigation();
+    }
   });
 
-  window.addEventListener('beforeunload', () => state.eventSource && state.eventSource.close());
+  window.addEventListener('beforeunload', () => {
+    state.shuttingDown = true;
+    if (state.eventRetryTimer) window.clearTimeout(state.eventRetryTimer);
+    if (state.connectionNoticeTimer) window.clearTimeout(state.connectionNoticeTimer);
+    if (state.eventSource) state.eventSource.close();
+  });
 
   async function initialize() {
-    applyTheme(localStorage.getItem('orbit.webui.theme') || 'system');
-    const draft = localStorage.getItem('orbit.webui.draft') || '';
+    if (state.initializing) return;
+    state.initializing = true;
+    state.ready = false;
+    state.useBearerTransport = false;
+    setConnection('connecting', copy.reconnecting);
+    elements.sendButton.disabled = true;
+    applyTheme(readLocalStorage('orbit.webui.theme', 'system'));
+    elements.appShell.classList.toggle(
+      'sidebar-collapsed',
+      readLocalStorage('orbit.webui.sidebar', 'expanded') === 'collapsed',
+    );
+    syncSidebarInteractivity();
+    const draft = readLocalStorage('orbit.webui.draft', '');
     if (draft) {
       elements.prompt.value = draft;
       autoSizePrompt();
+      updateSendButtonState();
     }
     try {
       await bootstrapSession();
       await Promise.all([renderMessages(), loadStatus()]);
       connectEvents();
-      state.ready = true;
-      setConnection('connected', copy.connected);
       if (draft) showToast(copy.draftRestored);
       elements.prompt.focus();
     } catch (error) {
+      if (state.eventSource) {
+        state.eventSource.close();
+        state.eventSource = null;
+      }
       setConnection('disconnected', copy.disconnected);
-      showToast(error.message || copy.accessExpired, 'error');
-      elements.prompt.disabled = true;
-      elements.sendButton.disabled = true;
+      showToast(error.status === 401 ? copy.accessExpired : error.message || copy.accessExpired, 'error');
+      updateSendButtonState();
+    } finally {
+      state.initializing = false;
     }
   }
 

@@ -1,19 +1,27 @@
 import readline from "readline";
 
 /** Displays long text one terminal page at a time. */
-export async function pageText(text: string): Promise<void> {
+export async function pageText(
+  text: string,
+): Promise<"completed" | "quit" | "interrupted"> {
   const lines = text.split("\n");
   const rows = process.stdout.rows || 24;
   const pageSize = Math.max(1, rows - 2);
 
   if (lines.length <= pageSize) {
     console.log(text);
-    return;
+    return "completed";
+  }
+
+  if (process.stdin.isTTY !== true || !process.stdin.setRawMode) {
+    console.log(text);
+    return "completed";
   }
 
   let cursor = 0;
   const wasRaw = Boolean(process.stdin.isRaw);
-  if (process.stdin.setRawMode) process.stdin.setRawMode(true);
+  const wasPaused = process.stdin.isPaused();
+  process.stdin.setRawMode(true);
   process.stdin.resume();
   readline.emitKeypressEvents(process.stdin);
 
@@ -21,10 +29,7 @@ export async function pageText(text: string): Promise<void> {
     new Promise((resolve) => {
       const onKeypress = (str: string, key: readline.Key) => {
         process.stdin.removeListener("keypress", onKeypress);
-        if (key?.ctrl && key.name === "c") {
-          if (process.stdin.setRawMode) process.stdin.setRawMode(wasRaw);
-          process.exit(0);
-        }
+        if (key?.ctrl && key.name === "c") return resolve("interrupt");
         resolve(key?.name || str);
       };
       process.stdin.on("keypress", onKeypress);
@@ -41,13 +46,15 @@ export async function pageText(text: string): Promise<void> {
       );
       const key = await waitForKeypress();
       process.stdout.write("\r\x1b[K");
-      if (key === "q") break;
+      if (key.toLowerCase() === "q") return "quit";
+      if (key === "interrupt") return "interrupted";
       if (key === "return" || key === "enter") {
         cursor = cursor - pageSize + 1;
       }
     }
+    return "completed";
   } finally {
-    if (process.stdin.setRawMode) process.stdin.setRawMode(wasRaw);
-    process.stdin.pause();
+    process.stdin.setRawMode(wasRaw);
+    if (wasPaused) process.stdin.pause();
   }
 }

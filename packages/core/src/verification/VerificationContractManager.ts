@@ -1,13 +1,31 @@
 import { z } from "zod";
 import fs from "fs";
 import path from "path";
-import { exec } from "child_process";
+import { exec, execFile } from "child_process";
 import { promisify } from "util";
 import { eventBus } from "../events/EventBus.js";
 import { CheckpointManager } from "@orbit-build/sandbox";
-import { resolveSafePath } from "@orbit-build/shared";
+import {
+  LogTruncator,
+  redactSecrets,
+  resolveSafePath,
+} from "@orbit-build/shared";
 
 const execPromise = promisify(exec);
+const execFilePromise = promisify(execFile);
+
+function safeFailureOutput(error: unknown): string {
+  const record =
+    typeof error === "object" && error !== null
+      ? (error as Record<string, unknown>)
+      : {};
+  const output = [record.stdout, record.stderr]
+    .filter((value): value is string => typeof value === "string" && !!value)
+    .join("\n")
+    .trim();
+  const message = error instanceof Error ? error.message : String(error);
+  return LogTruncator.truncate(redactSecrets(output || message), 80, 8000);
+}
 
 export const VerificationContractSchema = z.object({
   suites: z.record(z.string()).default({}),
@@ -43,15 +61,14 @@ export class VerificationContractManager {
         if (validated.success) {
           this.contract = validated.data;
         } else {
-          console.error(
-            `[VerificationContract] Validation failed:`,
-            validated.error,
-          );
+          eventBus.emitEvent("warning", {
+            message: `Verification contract validation failed: ${validated.error.issues.map((issue) => issue.message).join("; ")}`,
+          });
         }
-      } catch (e: any) {
-        console.error(
-          `[VerificationContract] Failed to load/parse: ${e.message}`,
-        );
+      } catch (error: unknown) {
+        eventBus.emitEvent("warning", {
+          message: `Verification contract could not be loaded: ${safeFailureOutput(error)}`,
+        });
       }
     }
   }
@@ -84,8 +101,8 @@ export class VerificationContractManager {
               timeout: this.commandTimeoutMs,
               maxBuffer: 1024 * 1024,
             });
-          } catch (err: any) {
-            const output = err.stdout || err.stderr || err.message;
+          } catch (error: unknown) {
+            const output = safeFailureOutput(error);
             eventBus.emitEvent("verification_ended", {
               success: false,
               results: { suite: name, error: output },
@@ -106,33 +123,35 @@ export class VerificationContractManager {
         eventBus.emitEvent("info", {
           message: "Checking modified files bounds...",
         });
-        let modifiedFiles: string[] = [];
+        const modifiedFiles: string[] = [];
         try {
-          const { stdout } = await execPromise("git status --porcelain", {
-            cwd: this.cwd,
+          const { stdout } = await execFilePromise(
+            "git",
+            ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            {
+              cwd: this.cwd,
+              timeout: this.commandTimeoutMs,
+              maxBuffer: 1024 * 1024,
+            },
+          );
+          const records = stdout.split("\0").filter(Boolean);
+          for (let index = 0; index < records.length; index++) {
+            const record = records[index];
+            if (record.length < 4) continue;
+            const status = record.slice(0, 2);
+            const file = record.slice(3).replace(/\\/g, "/");
+            if (file && !file.startsWith(".orbit/") && file !== ".orbit") {
+              modifiedFiles.push(file);
+            }
+            if (/[RC]/.test(status)) index++;
+          }
+        } catch (error: unknown) {
+          const message = `Unable to verify modified-file bounds because Git status failed: ${safeFailureOutput(error)}`;
+          eventBus.emitEvent("verification_ended", {
+            success: false,
+            results: { error: message },
           });
-          modifiedFiles = stdout
-            .split("\n")
-            .filter((line) => line.length > 3)
-            .map((line) => {
-              let filePart = line.slice(3).trim();
-              if (filePart.startsWith('"') && filePart.endsWith('"')) {
-                filePart = filePart.slice(1, -1);
-              }
-              if (filePart.includes(" -> ")) {
-                const parts = filePart.split(" -> ");
-                filePart = parts[parts.length - 1].trim();
-              }
-              return filePart;
-            })
-            .filter(
-              (file) =>
-                file.length > 0 &&
-                !file.startsWith(".orbit/") &&
-                file !== ".orbit",
-            );
-        } catch {
-          // Fallback if git is not initialized
+          return { success: false, error: message };
         }
 
         const patterns = this.contract.allowedModifiedFiles;
@@ -185,12 +204,13 @@ export class VerificationContractManager {
 
       eventBus.emitEvent("verification_ended", { success: true });
       return { success: true };
-    } catch (e: any) {
+    } catch (error: unknown) {
+      const message = safeFailureOutput(error);
       eventBus.emitEvent("verification_ended", {
         success: false,
-        results: { error: e.message },
+        results: { error: message },
       });
-      return { success: false, error: e.message };
+      return { success: false, error: message };
     }
   }
 }

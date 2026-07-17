@@ -155,8 +155,8 @@ export const DEFAULT_CONFIG: OrbitConfig = {
   },
   budgetLimit: 10.0,
   session: {
-    store: "sqlite",
-    path: ".orbit/sessions.sqlite",
+    store: "jsonl",
+    path: ".orbit/sessions",
   },
   autocomplete: {
     enabled: true,

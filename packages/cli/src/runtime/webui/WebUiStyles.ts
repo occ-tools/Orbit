@@ -1,8 +1,11 @@
 import { WEB_UI_COMPOSER_STYLES } from "./styles/WebUiComposerStyles.js";
+import { WEB_UI_APPROVAL_STYLES } from "./styles/WebUiApprovalStyles.js";
+import { WEB_UI_CONTEXT_STYLES } from "./styles/WebUiContextStyles.js";
 import { WEB_UI_CONVERSATION_STYLES } from "./styles/WebUiConversationStyles.js";
 import { WEB_UI_FEEDBACK_STYLES } from "./styles/WebUiFeedbackStyles.js";
 import { WEB_UI_FOUNDATION_STYLES } from "./styles/WebUiFoundationStyles.js";
 import { WEB_UI_INSPECTOR_STYLES } from "./styles/WebUiInspectorStyles.js";
+import { WEB_UI_PALETTE_STYLES } from "./styles/WebUiPaletteStyles.js";
 import { WEB_UI_RESPONSIVE_STYLES } from "./styles/WebUiResponsiveStyles.js";
 import { WEB_UI_SHELL_STYLES } from "./styles/WebUiShellStyles.js";
 
@@ -11,7 +14,10 @@ const WEB_UI_STYLE_SECTIONS = [
   WEB_UI_SHELL_STYLES,
   WEB_UI_CONVERSATION_STYLES,
   WEB_UI_COMPOSER_STYLES,
+  WEB_UI_APPROVAL_STYLES,
+  WEB_UI_CONTEXT_STYLES,
   WEB_UI_INSPECTOR_STYLES,
+  WEB_UI_PALETTE_STYLES,
   WEB_UI_FEEDBACK_STYLES,
   WEB_UI_RESPONSIVE_STYLES,
 ] as const;

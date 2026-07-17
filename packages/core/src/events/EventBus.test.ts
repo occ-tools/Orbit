@@ -36,4 +36,23 @@ describe("EventBus", () => {
       payload: { message: "failed" },
     });
   });
+
+  it("publishes outer UI turns independently of internal agent events", () => {
+    const bus = new EventBus();
+    const listener = vi.fn();
+    bus.on("ui_turn_started", listener);
+
+    expect(
+      bus.emitEvent("ui_turn_started", {
+        turnId: "terminal-1",
+        source: "terminal",
+        prompt: "inspect the project",
+      }),
+    ).toBe(true);
+    expect(listener).toHaveBeenCalledWith({
+      turnId: "terminal-1",
+      source: "terminal",
+      prompt: "inspect the project",
+    });
+  });
 });

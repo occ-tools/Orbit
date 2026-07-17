@@ -56,4 +56,16 @@ describe("getAutocompleteCandidates", () => {
     expect(candidates.commands).toContain("/help");
     expect(candidates.symbols).toEqual([]);
   });
+
+  it("loads sessions from the configured workspace-safe directory", async () => {
+    const customSession = join(cwd, ".orbit", "custom-sessions", "session-2");
+    mkdirSync(customSession, { recursive: true });
+    writeFileSync(join(customSession, "session.json"), "{}");
+
+    const candidates = await getAutocompleteCandidates(cwd, {
+      session: { path: ".orbit/custom-sessions" },
+    });
+
+    expect(candidates.sessions).toEqual(["session-2"]);
+  });
 });

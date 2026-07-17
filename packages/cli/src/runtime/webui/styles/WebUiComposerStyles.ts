@@ -2,10 +2,37 @@
 export const WEB_UI_COMPOSER_STYLES = String.raw`
 .composer-dock {
   position: relative;
-  width: min(calc(var(--content-width) + 32px), calc(100% - 32px));
+  width: min(var(--composer-width), calc(100% - 32px));
   margin: 0 auto;
   padding: 0 16px calc(12px + env(safe-area-inset-bottom));
   z-index: 10;
+}
+
+.composer-anchor {
+  display: contents;
+}
+
+.empty-composer-slot {
+  width: 100%;
+  margin-top: 30px;
+}
+
+.empty-composer-slot .composer-dock {
+  width: 100%;
+  padding: 0;
+}
+
+.empty-composer-slot .composer {
+  border-radius: 16px;
+  box-shadow: 0 22px 58px rgba(27, 48, 44, 0.1), 0 2px 7px rgba(27, 48, 44, 0.045);
+}
+
+.empty-composer-slot .composer-dock::before {
+  display: none;
+}
+
+.empty-composer-slot .turn-status {
+  justify-content: flex-start;
 }
 
 .composer-dock::before {
@@ -15,8 +42,8 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
   left: -10vw;
   right: -10vw;
   bottom: 0;
-  height: 124px;
-  background: linear-gradient(to bottom, transparent, var(--canvas) 34%);
+  height: 148px;
+  background: linear-gradient(to bottom, transparent, var(--canvas) 38%);
   pointer-events: none;
 }
 
@@ -25,7 +52,7 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 0 13px;
+  padding: 0 16px;
   color: var(--muted);
   font-size: 11px;
 }
@@ -42,33 +69,39 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
 
 .composer {
   position: relative;
-  padding: 12px 12px 9px;
-  background: var(--surface-raised);
+  padding: 13px 13px 10px;
+  background: color-mix(in srgb, var(--surface-raised) 96%, transparent);
   border: 1px solid var(--border-strong);
   border-radius: 18px;
   box-shadow: var(--shadow-md);
+  backdrop-filter: blur(20px) saturate(125%);
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
 .composer:focus-within {
   border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
-  box-shadow: 0 16px 42px rgba(34, 30, 22, 0.12), 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent);
+  box-shadow: 0 20px 56px rgba(24, 46, 42, 0.13), 0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent);
 }
 
 #prompt {
   display: block;
   width: 100%;
-  min-height: 28px;
+  min-height: 34px;
   max-height: 210px;
   resize: none;
   overflow-y: auto;
-  padding: 2px 3px 8px;
+  padding: 3px 4px 10px;
   color: var(--ink-strong);
   background: transparent;
   border: 0;
   outline: 0;
-  font-size: 14px;
+  font-size: 14.5px;
   line-height: 1.55;
+}
+
+.empty-composer-slot #prompt {
+  min-height: clamp(54px, 7vh, 74px);
+  font-size: 15px;
 }
 
 #prompt::placeholder {
@@ -79,7 +112,8 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
+  padding-top: 2px;
 }
 
 .composer-tools {
@@ -97,12 +131,12 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
 
 .composer-chip,
 .composer-select {
-  height: 30px;
+  height: 29px;
   flex: 0 0 auto;
   color: var(--muted);
-  background: transparent;
+  background: color-mix(in srgb, var(--surface-subtle) 38%, transparent);
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 9px;
   font-size: 11px;
 }
 
@@ -110,7 +144,24 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 0 8px;
+  padding: 0 9px;
+}
+
+.composer-chip .ui-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.web-status-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--faint);
+  border-radius: 50%;
+}
+
+.composer-chip[aria-pressed="true"] .web-status-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-soft);
 }
 
 .composer-chip:hover,
@@ -133,24 +184,32 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
 }
 
 .send-button {
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
   padding: 0;
   color: var(--surface);
-  background: var(--ink-strong);
+  background: var(--accent-strong);
   border: 0;
-  border-radius: 10px;
+  border-radius: 11px;
   font-size: 17px;
   box-shadow: var(--shadow-sm);
   transition: background 140ms ease, transform 140ms ease;
 }
 
 .send-button:hover {
-  background: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-strong) 82%, var(--ink-strong));
   transform: translateY(-1px);
+}
+
+.send-button:disabled {
+  color: var(--faint);
+  background: var(--surface-subtle);
+  box-shadow: none;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .send-button.is-stop {
@@ -161,10 +220,19 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
 }
 
 .composer-hint {
-  margin: 7px 0 0;
+  margin: 7px 4px 0 0;
   color: var(--faint);
   font-size: 9px;
-  text-align: center;
+  text-align: right;
+}
+
+.empty-composer-slot .composer-hint {
+  text-align: right;
+}
+
+.app-shell.is-disconnected .composer {
+  border-color: color-mix(in srgb, var(--danger) 22%, var(--border));
+  box-shadow: var(--shadow-sm);
 }
 
 .jump-bottom {
@@ -192,6 +260,11 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
   opacity: 1;
   pointer-events: auto;
   transform: translate(-50%, 0);
+}
+
+.jump-bottom .ui-icon {
+  width: 15px;
+  height: 15px;
 }
 
 `;

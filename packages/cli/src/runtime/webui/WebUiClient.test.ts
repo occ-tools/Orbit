@@ -2,16 +2,22 @@ import { describe, expect, it } from "vitest";
 
 import { WEB_UI_CLIENT_SCRIPT } from "./WebUiClient.js";
 import { WEB_UI_CLIENT_BINDINGS_SCRIPT } from "./WebUiClientBindings.js";
+import { WEB_UI_CLIENT_APPROVAL_SCRIPT } from "./WebUiClientApproval.js";
+import { WEB_UI_CLIENT_CONTEXT_SCRIPT } from "./WebUiClientContext.js";
 import { WEB_UI_CLIENT_FOUNDATION_SCRIPT } from "./WebUiClientFoundation.js";
 import { WEB_UI_CLIENT_MESSAGES_SCRIPT } from "./WebUiClientMessages.js";
+import { WEB_UI_CLIENT_PALETTE_SCRIPT } from "./WebUiClientPalette.js";
 import { WEB_UI_CLIENT_SESSION_SCRIPT } from "./WebUiClientSession.js";
 
 describe("WEB_UI_CLIENT_SCRIPT", () => {
   it("assembles every responsibility fragment in dependency order", () => {
     const fragments = [
       WEB_UI_CLIENT_FOUNDATION_SCRIPT,
+      WEB_UI_CLIENT_APPROVAL_SCRIPT,
+      WEB_UI_CLIENT_CONTEXT_SCRIPT,
       WEB_UI_CLIENT_MESSAGES_SCRIPT,
       WEB_UI_CLIENT_SESSION_SCRIPT,
+      WEB_UI_CLIENT_PALETTE_SCRIPT,
       WEB_UI_CLIENT_BINDINGS_SCRIPT,
     ];
 
@@ -28,7 +34,109 @@ describe("WEB_UI_CLIENT_SCRIPT", () => {
     expect(WEB_UI_CLIENT_SCRIPT).toContain("fetch('/api/bootstrap'");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("api('/api/messages')");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("api('/api/chat'");
-    expect(WEB_UI_CLIENT_SCRIPT).toContain("new EventSource('/api/events'");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("api('/api/approval'");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "renderPendingApproval(data.approval)",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("api('/api/completions?query='");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("new EventSource(eventUrl");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function updateSendButtonState() ");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("!state.ready || !hasPrompt");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("if (!state.ready)");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("event.type === 'ui_turn_started'");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "event.type === 'ui_turn_completed'",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("isControlCommand(value)");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("message-progress");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("code-lines");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("is-addition");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("expand-code");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("appendHighlightedCodeLine");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("'token-' + type");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("setStreamingProgress(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("createMarkdownTable(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("isMarkdownTableDivider(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("copy.copyResponse");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("upsertStreamingTool(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("updateToolCard(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("state.streamingTools.clear()");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "summary.setAttribute('aria-expanded', String(root.open))",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("contextWindow: 'Context'");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("copy.contextWindow");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "Number(value || 0).toLocaleString()",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("orbit.webui.bootstrap-token");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "async function recoverSessionCookie()",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("fetch(location.pathname || '/'");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "response.status === 401 && await recoverSessionCookie()",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("sessionStorage.getItem");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function readLocalStorage(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function writeLocalStorage(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("systemThemeQuery.matches");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("orbit.webui.sidebar");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "function setDesktopSidebarCollapsed(collapsed)",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function toggleNavigation()");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("'Toggle navigation'");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("const desktopCollapsed = !mobile");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "copy.recentSession + ': ' + (session.title || copy.untitledTask)",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("formatPermissionMode(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("item.dataset.message === text");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("response.status === 401");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("useBearerTransport");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("access_token=");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "byId('retryConnection').addEventListener('click', () => void initialize())",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("webSessionToken = ''");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("state.ready = true");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "elements.appShell.classList.add('is-reconnecting')",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("await recoverSessionCookie()");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "retryAttempt < 2 ? 'connecting' : 'disconnected'",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("openCommandPalette()");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("label + '. ' + copy.retry");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("retry: 'Retry now'");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("retry: '立即重试'");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("buildPaletteActions()");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("trapInspectorFocus");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "elements.workspaceView.inert = inspectorOpen || sidebarOpen",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("handleInspectorTabKeydown");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("elements.activityTab.tabIndex");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("syncSearchSettings(Boolean(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("aria-activedescendant");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("'command-result-' + index");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("event.key === 'End'");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function openContextPicker()");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function addContextFile(index)");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function renderContextShelf(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function removeContextFile(path)");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("submitTurn('/drop ' + path");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("submitTurn('/drop all'");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("copy.contextAdded");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("{ restoreDraft: draft }");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "button.setAttribute('aria-pressed', active ? 'true' : 'false')",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "elements.contextPercent.textContent",
+    );
     expect(WEB_UI_CLIENT_SCRIPT).toMatch(/initialize\(\);\s*\}\)\(\);\s*$/);
   });
 });

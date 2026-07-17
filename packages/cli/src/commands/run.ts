@@ -1,9 +1,10 @@
-import { ConfigLoader } from "@orbit-build/config";
+import { ConfigLoader, type OrbitConfig } from "@orbit-build/config";
 import {
   AgentLoop,
   UserInteraction,
   Orchestrator,
   eventBus,
+  type AgentLoopRunOutcome,
 } from "@orbit-build/core";
 import { Prompt, DiffView } from "@orbit-build/tui";
 import picocolors from "picocolors";
@@ -18,6 +19,7 @@ import {
 import { ReplController } from "../runtime/ReplController.js";
 import { createProviderFromConfig } from "../runtime/ProviderFactory.js";
 import { redactSecrets } from "@orbit-build/shared";
+import type { ModelProvider } from "@orbit-build/model-providers";
 
 export { previousCodePointIndex, nextCodePointIndex, parseMouseWheelDirection };
 
@@ -52,13 +54,22 @@ export function shouldUseStoredModel(cliOverrides: unknown): boolean {
   return typeof selected !== "string" || selected.trim().length === 0;
 }
 
+export interface RunAgentOptions {
+  nonInteractive?: boolean;
+  jsonl?: boolean;
+  webUi?: {
+    port?: number;
+    open: boolean;
+  };
+}
+
 export async function runAgent(
   cwd: string,
   task?: string,
-  cliOverrides?: any,
+  cliOverrides?: Partial<OrbitConfig>,
   multi?: boolean,
-  options?: { nonInteractive?: boolean; jsonl?: boolean },
-): Promise<void> {
+  options?: RunAgentOptions,
+): Promise<AgentLoopRunOutcome | undefined> {
   const cleanupJsonl = options?.jsonl ? configureJsonlOutput() : () => {};
   try {
     const config = ConfigLoader.loadSync(cwd, cliOverrides);
@@ -85,14 +96,29 @@ export async function runAgent(
       }
     }
 
-    let providerInstance: any;
+    let providerInstance: ModelProvider;
     try {
       providerInstance = createProviderFromConfig(config);
-    } catch (error: any) {
-      console.error(
-        picocolors.red(error?.message || "Failed to create provider instance."),
+    } catch (error: unknown) {
+      const message = redactSecrets(
+        error instanceof Error
+          ? error.message
+          : "Failed to create provider instance.",
       );
-      return;
+      console.error(picocolors.red(message));
+      const outcome: AgentLoopRunOutcome = {
+        status: "failed",
+        sessionId: "",
+        attempts: 0,
+        error: { code: "provider_error", message },
+      };
+      eventBus.emitEvent("agent_completed", {
+        taskId: "startup",
+        success: false,
+        result: outcome,
+        error: message,
+      });
+      return outcome;
     }
 
     const interaction: UserInteraction = options?.nonInteractive
@@ -155,6 +181,7 @@ export async function runAgent(
         interaction,
         multi,
         !!cliOverrides?.direct,
+        options?.webUi,
       );
       await controller.start();
       return;
@@ -168,7 +195,7 @@ export async function runAgent(
         activeTask,
         interaction,
       );
-      await orchestrator.run();
+      return await orchestrator.run();
     } else {
       const loop = new AgentLoop(
         cwd,
@@ -178,13 +205,24 @@ export async function runAgent(
         interaction,
         {
           disableStatusBar: !!options?.nonInteractive || !!options?.jsonl,
+          nonInteractive: !!options?.nonInteractive,
         },
       );
-      await loop.run();
+      return await loop.run();
     }
   } finally {
     cleanupJsonl();
   }
+}
+
+/** Maps structured agent outcomes to stable process exit codes. */
+export function exitCodeForOutcome(
+  outcome: AgentLoopRunOutcome | undefined,
+): number {
+  if (!outcome || outcome.status === "completed") return 0;
+  if (outcome.status === "aborted") return 130;
+  if (outcome.error.code === "provider_error") return 4;
+  return 2;
 }
 
 function configureJsonlOutput(): () => void {

@@ -471,6 +471,17 @@ export class FullscreenTui {
     this.render();
   }
 
+  /** Mirror a prompt submitted by another local UI into this conversation. */
+  public addUserMessage(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    this.history.push({
+      role: "user",
+      text: trimmed,
+    });
+    this.render();
+  }
+
   private onResize = () => {
     if (this.isActive) {
       this.render(true);
@@ -1731,7 +1742,9 @@ export class FullscreenTui {
           clearInterval(this.thoughtTimer);
           this.thoughtTimer = null;
         }
-        lastAsst.thoughtTime = Date.now() - this.attemptStartTime;
+        if (this.attemptStartTime > 0) {
+          lastAsst.thoughtTime = Date.now() - this.attemptStartTime;
+        }
       }
       lastAsst.text += text;
       this.throttleRender();
@@ -1795,10 +1808,13 @@ export class FullscreenTui {
         clearInterval(this.thoughtTimer);
         this.thoughtTimer = null;
       }
-      lastAsst.totalTime = Date.now() - this.attemptStartTime;
-      if (lastAsst.thoughtTime === undefined) {
-        lastAsst.thoughtTime = lastAsst.totalTime;
+      if (this.attemptStartTime > 0) {
+        lastAsst.totalTime = Date.now() - this.attemptStartTime;
+        if (lastAsst.thoughtTime === undefined) {
+          lastAsst.thoughtTime = lastAsst.totalTime;
+        }
       }
+      this.attemptStartTime = 0;
       this.render();
     }
   }
@@ -1809,6 +1825,7 @@ export class FullscreenTui {
 
     // Use the shared MORANDI constant (class-level) instead of recreating per frame
     const morandi = MORANDI;
+    const languageIsZh = this.config?.language === "zh";
 
     const promptState = this.promptSession.state;
     if (promptState) {
@@ -1828,7 +1845,11 @@ export class FullscreenTui {
     const isInputActive =
       isWaitingInput || this.thinkingKeypressListener !== null;
     const hasInput = isInputActive && this.inputBuffer.length > 0;
-    const placeholder = isWaitingInput ? "Ask anything..." : "";
+    const placeholder = isWaitingInput
+      ? languageIsZh
+        ? "输入任务或命令…"
+        : "Ask Orbit anything…"
+      : "";
 
     // A.1 构建底部的圆角输入框与状态行以及指令匹配浮窗
     const boxWidth = columns - 4;
@@ -1878,6 +1899,7 @@ export class FullscreenTui {
               "/doctor": "全面检查运行环境、模型、联网、skills 与安全配置",
               "/config": "查看与修改本地/全局的运行配置参数",
               "/model": "动态切换正在使用的 AI 语言大模型",
+              "/compact": "立即压缩旧对话并释放当前模型的上下文空间",
               "/chat": "会话管理器 (支持子命令: list, new, delete, switch)",
               "/chat list": "展示所有已保存的历史对话会话",
               "/chat ls": "展示所有已保存的历史对话会话",
@@ -1905,6 +1927,7 @@ export class FullscreenTui {
                 "Inspect runtime, models, web, skills, and safety config",
               "/config": "View and edit local or global configuration",
               "/model": "Switch the active language model dynamically",
+              "/compact": "Compact older dialogue to free active model context",
               "/chat":
                 "Manage chat sessions (subcommands: list, new, delete, switch)",
               "/chat list": "List all saved agent chat sessions",
@@ -2089,7 +2112,6 @@ export class FullscreenTui {
     bottomLines.push(...boxContentLines);
 
     // A.4 构建底部状态行
-    const languageIsZh = this.config?.language === "zh";
     const mode = this.permissionsMode.toUpperCase();
 
     let statusText = "";
@@ -2132,7 +2154,9 @@ export class FullscreenTui {
         morandi.gray("  ·  ") +
         morandi.accent(costStr) +
         morandi.gray("  ·  ") +
-        morandi.dim(`attempt: ${this.currentAttempt || 1}`);
+        morandi.dim(
+          `${languageIsZh ? "尝试" : "attempt"}: ${this.currentAttempt || 1}`,
+        );
     }
 
     let keybindings =
@@ -2198,10 +2222,10 @@ export class FullscreenTui {
     const gitSummary = this.getGitSummary();
     const gitBranch = gitSummary.branch;
 
-    // 2. 渲染左上角像素行星 Logo 及其右侧信息
+    // 2. 渲染左上角像素小猫 Logo 及其右侧信息
     const heartColor = this.getNpmNeedsUpdate()
-      ? `\x1b[5m\x1b[38;2;230;190;80m` // Blinking Soft Morandi yellow
-      : `\x1b[38;2;230;110;110m`; // Soft Morandi red
+      ? `\x1b[5m\x1b[38;2;230;190;80m`
+      : `\x1b[38;2;230;110;110m`;
 
     const logoLines = [
       `\x1b[38;2;158;184;196m  /\\___/\\  \x1b[0m`,
@@ -2216,11 +2240,15 @@ export class FullscreenTui {
       const w1 = this.getStringWidth(logoLines[1]);
       const w2 = this.getStringWidth(logoLines[2]);
       const w3 = this.getStringWidth(logoLines[3]);
-      const maxW = Math.max(w0, w1, w2, w3);
-      this._cachedLogoWidths = { w0, w1, w2, w3, maxW };
+      this._cachedLogoWidths = {
+        w0,
+        w1,
+        w2,
+        w3,
+        maxW: Math.max(w0, w1, w2, w3),
+      };
     }
     const { w0, w1, w2, w3, maxW: maxLogoW } = this._cachedLogoWidths;
-
     const pad0 = " ".repeat(maxLogoW - w0);
     const pad1 = " ".repeat(maxLogoW - w1);
     const pad2 = " ".repeat(maxLogoW - w2);
@@ -2544,7 +2572,12 @@ export class FullscreenTui {
 
       if (startPlanIdx > 0) {
         planContent.push(
-          "    " + morandi.dim(`... ${startPlanIdx} step(s) completed`),
+          "    " +
+            morandi.dim(
+              languageIsZh
+                ? `… 已完成 ${startPlanIdx} 步`
+                : `… ${startPlanIdx} step(s) completed`,
+            ),
         );
       }
 
@@ -2584,7 +2617,12 @@ export class FullscreenTui {
       if (endPlanIdx < planItems.length - 1) {
         const remaining = planItems.length - 1 - endPlanIdx;
         planContent.push(
-          "    " + morandi.dim(`... ${remaining} step(s) pending`),
+          "    " +
+            morandi.dim(
+              languageIsZh
+                ? `… 还有 ${remaining} 步待处理`
+                : `… ${remaining} step(s) pending`,
+            ),
         );
       }
       planText = planContent.join("\n") + "\n\n";

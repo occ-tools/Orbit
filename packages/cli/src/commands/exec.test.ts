@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { runAgent } from "./run.js";
+import { exitCodeForOutcome, runAgent } from "./run.js";
 import { eventBus } from "@orbit-build/core";
 import { ConfigLoader } from "@orbit-build/config";
 import fs from "fs";
@@ -38,6 +38,11 @@ vi.mock("@orbit-build/core", async () => {
           { role: "user", content: "sk-secret-value-that-must-not-log" },
         ],
       });
+      return {
+        status: "completed" as const,
+        sessionId: "sess_test-test-001",
+        attempts: 1,
+      };
     }
   }
 
@@ -134,5 +139,41 @@ describe("non-interactive orbit exec tests", () => {
     );
     expect(modelRequest.payload).toEqual({ model: "test-model" });
     expect(eventBus.listenerCount("*")).toBe(listenerCountBefore);
+  });
+
+  it("maps structured outcomes to stable process exit codes", () => {
+    expect(exitCodeForOutcome(undefined)).toBe(0);
+    expect(
+      exitCodeForOutcome({
+        status: "completed",
+        sessionId: "sess_test-test-001",
+        attempts: 1,
+      }),
+    ).toBe(0);
+    expect(
+      exitCodeForOutcome({
+        status: "failed",
+        sessionId: "",
+        attempts: 0,
+        error: { code: "provider_error", message: "Unavailable" },
+      }),
+    ).toBe(4);
+    expect(
+      exitCodeForOutcome({
+        status: "failed",
+        sessionId: "sess_test-test-001",
+        attempts: 1,
+        error: { code: "verification_failed", message: "Tests failed" },
+      }),
+    ).toBe(2);
+    expect(
+      exitCodeForOutcome({
+        status: "aborted",
+        sessionId: "sess_test-test-001",
+        attempts: 1,
+        reason: "interrupted",
+        message: "Stopped",
+      }),
+    ).toBe(130);
   });
 });

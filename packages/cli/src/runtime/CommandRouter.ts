@@ -7,7 +7,7 @@ import {
 } from "@orbit-build/core";
 import { FullscreenTui } from "../tui/FullscreenTui.js";
 import { ConfigSchema } from "@orbit-build/config";
-import { Prompt } from "@orbit-build/tui";
+import { DiffView, Prompt } from "@orbit-build/tui";
 import picocolors from "picocolors";
 import { existsSync } from "fs";
 import { join } from "path";
@@ -24,8 +24,10 @@ import { buildDoctorReport } from "../commands/doctor.js";
 import {
   parseWebUiArgs,
   startOrbitWebUi,
+  type WebUiSessionAction,
   type WebUiSettingsPatch,
 } from "./webui/index.js";
+import { WebUiApprovalBroker } from "./webui/WebUiApprovalBroker.js";
 import { RunCoordinator } from "./RunCoordinator.js";
 import {
   BUILTIN_SLASH_COMMANDS,
@@ -37,6 +39,7 @@ import { handleWorkspaceConfigCommand } from "./commands/WorkspaceConfigCommandH
 import { handleContextCommand } from "./commands/ContextCommandHandler.js";
 import { handleRollbackCommand } from "./commands/RollbackCommandHandler.js";
 import { handleSessionCommand } from "./commands/SessionCommandHandler.js";
+import { ensureSessionTitle } from "./SessionTitles.js";
 
 export { getAutocompleteCandidates } from "./AutocompleteCandidates.js";
 export { BUILTIN_SLASH_COMMANDS } from "./SlashCommandCatalog.js";
@@ -49,6 +52,7 @@ function stripAnsi(value: string): string {
 
 export class CommandRouter {
   private readonly runCoordinator = new RunCoordinator();
+  private readonly webApprovalBroker = new WebUiApprovalBroker();
   private webUiRunnable: AgentLoop | Orchestrator | null = null;
 
   constructor(
@@ -178,6 +182,10 @@ export class CommandRouter {
             submitPrompt: (prompt) => this.submitWebPrompt(prompt),
             cancelPrompt: () => this.cancelWebPrompt(),
             updateSettings: (patch) => this.updateWebUiSettings(patch),
+            updateSession: (action) => this.updateWebUiSession(action),
+            getPendingApproval: () => this.webApprovalBroker.getPending(),
+            respondToApproval: (decision) =>
+              this.webApprovalBroker.respond(decision),
           });
           const displayUrl = new URL(handle.url);
           displayUrl.hash = "";
@@ -267,6 +275,13 @@ export class CommandRouter {
         const budgetLimit = activeConfig.budgetLimit;
         const currentCost = loop.getSessionCost();
         const mode = activeConfig.permissions.mode;
+        const contextStatus = loop.getContextWindowStatus(activeModel);
+        const contextPct = Math.min(
+          999,
+          (contextStatus.estimatedHistoryTokens /
+            contextStatus.compactAtTokens) *
+            100,
+        ).toFixed(1);
         const costPct =
           budgetLimit > 0
             ? Math.min(100, (currentCost / budgetLimit) * 100).toFixed(1)
@@ -284,10 +299,11 @@ export class CommandRouter {
           ? [
               picocolors.bold("会话概况"),
               "",
-              `  🆔  ${picocolors.gray("Session ID")}    ${picocolors.cyan(loop.getSessionId())}`,
-              `  🔌  ${picocolors.gray("Provider")}      ${picocolors.cyan(this.providerInstance.id)}`,
-              `  🤖  ${picocolors.gray("Active Model")}  ${picocolors.cyan(activeModel)}`,
-              `  🛡️  ${picocolors.gray("Security Mode")} ${picocolors.green(mode.toUpperCase())}`,
+              `  🆔  ${picocolors.gray("会话")}      ${picocolors.cyan(loop.getSessionId())}`,
+              `  🔌  ${picocolors.gray("提供商")}    ${picocolors.cyan(this.providerInstance.id)}`,
+              `  🤖  ${picocolors.gray("当前模型")}  ${picocolors.cyan(activeModel)}`,
+              `  🛡️  ${picocolors.gray("权限模式")}  ${picocolors.green(mode.toUpperCase())}`,
+              `  🧠  ${picocolors.gray("上下文")}    ${picocolors.cyan(`~${contextStatus.estimatedHistoryTokens.toLocaleString()}`)} / ${contextStatus.maxContextTokens.toLocaleString()} tokens（${contextPct}% 自动压缩线）`,
               "",
               picocolors.bold("费用与预算"),
               "",
@@ -301,6 +317,7 @@ export class CommandRouter {
               `  🔌  ${picocolors.gray("Provider")}      ${picocolors.cyan(this.providerInstance.id)}`,
               `  🤖  ${picocolors.gray("Active Model")}  ${picocolors.cyan(activeModel)}`,
               `  🛡️  ${picocolors.gray("Security Mode")} ${picocolors.green(mode.toUpperCase())}`,
+              `  🧠  ${picocolors.gray("Context")}       ${picocolors.cyan(`~${contextStatus.estimatedHistoryTokens.toLocaleString()}`)} / ${contextStatus.maxContextTokens.toLocaleString()} tokens (${contextPct}% of auto-compact threshold)`,
               "",
               picocolors.bold("Budget & Cost"),
               "",
@@ -327,6 +344,16 @@ export class CommandRouter {
       if (command === "/model") {
         const modelArg = parts.slice(1).join(" ").trim();
         const activeConfig = loop.getConfig();
+        const isZh = activeConfig.language === "zh";
+        const announceModel = (model: string): void => {
+          this.printOutput(
+            `${picocolors.green("✔")} ${
+              isZh
+                ? `当前模型已切换为：${picocolors.green(model)}`
+                : `Active model: ${picocolors.green(model)}`
+            }`,
+          );
+        };
         if (!modelArg) {
           const activeModel =
             loop.getModelOverride() || activeConfig.models.default;
@@ -341,12 +368,17 @@ export class CommandRouter {
 
           modelOptions.push({
             value: "custom",
-            label: "Custom model name...",
+            label: isZh ? "自定义模型名称…" : "Custom model name…",
           });
-          modelOptions.push({ value: "cancel", label: "Cancel" });
+          modelOptions.push({
+            value: "cancel",
+            label: isZh ? "取消" : "Cancel",
+          });
 
           const selectedModel = await Prompt.askSelect(
-            `Current model: ${activeModel}. Select a model to switch:`,
+            isZh
+              ? `当前模型：${activeModel}。请选择要切换的模型：`
+              : `Current model: ${activeModel}. Select a model to switch:`,
             modelOptions,
           );
           if (!selectedModel || selectedModel === "cancel") {
@@ -355,30 +387,24 @@ export class CommandRouter {
           let finalModel = selectedModel;
           if (selectedModel === "custom") {
             const customModel = await Prompt.askText(
-              "Enter custom model name:",
+              isZh ? "请输入自定义模型名称：" : "Enter a custom model name:",
             );
             if (!customModel) {
               return { shouldExit: false, processed: true };
             }
             finalModel = customModel;
             loop.setModelOverride(customModel);
-            this.printOutput(
-              `Switched active model to: ${picocolors.green(customModel)}`,
-            );
+            announceModel(customModel);
           } else {
             loop.setModelOverride(selectedModel);
-            this.printOutput(
-              `Switched active model to: ${picocolors.green(selectedModel)}`,
-            );
+            announceModel(selectedModel);
           }
           this.saveLocalState({ lastModel: finalModel });
           return { shouldExit: false, processed: true };
         }
 
         loop.setModelOverride(modelArg);
-        this.printOutput(
-          `Switched active model to: ${picocolors.green(modelArg)}`,
-        );
+        announceModel(modelArg);
         this.saveLocalState({ lastModel: modelArg });
         return { shouldExit: false, processed: true };
       }
@@ -680,11 +706,20 @@ export class CommandRouter {
         return { ok: true };
       }
 
+      if (this.tui.isActive) {
+        this.tui.addUserMessage(trimmed);
+      } else {
+        console.log(picocolors.cyan(`web › ${trimmed}`));
+      }
       this.loop.prepareUserTurn(trimmed);
+      ensureSessionTitle(this.loop, trimmed);
       this.saveLocalState({
         lastSessionId: this.loop.getSessionId(),
         lastModel: this.loop.getModelOverride() || this.config.models.default,
       });
+
+      const webInteraction = this.createWebUiInteraction();
+      this.loop.setUserInteraction(webInteraction);
 
       let runnable: AgentLoop | Orchestrator = this.loop;
       if (this.multi) {
@@ -693,7 +728,7 @@ export class CommandRouter {
           this.config,
           this.providerInstance,
           trimmed,
-          this.tuiInteraction,
+          webInteraction,
         );
       }
 
@@ -703,6 +738,8 @@ export class CommandRouter {
       try {
         outcome = await runnable.run();
       } finally {
+        this.webApprovalBroker.cancel();
+        this.loop.setUserInteraction(this.tuiInteraction);
         if (this.webUiRunnable === runnable) this.webUiRunnable = null;
         this.tui.setActiveRunnable(null);
         this.tui.syncFromLoop(this.loop);
@@ -724,11 +761,54 @@ export class CommandRouter {
   }
 
   private cancelWebPrompt(): { ok: boolean; message?: string } {
-    if (!this.runCoordinator.isActive("web") || !this.webUiRunnable) {
-      return { ok: false, message: "Nothing is currently running." };
+    if (this.runCoordinator.isActive("web") && this.webUiRunnable) {
+      this.webApprovalBroker.cancel();
+      this.webUiRunnable.abort("immediate");
+      return { ok: true };
     }
-    this.webUiRunnable.abort("immediate");
-    return { ok: true };
+    if (
+      this.runCoordinator.isActive("terminal") &&
+      this.tui.abortActiveRunnable("immediate")
+    ) {
+      return { ok: true };
+    }
+    return { ok: false, message: "Nothing is currently running." };
+  }
+
+  private createWebUiInteraction(): UserInteraction {
+    const isZh = this.config.language === "zh";
+    return {
+      askApproval: (reason, preview) =>
+        this.webApprovalBroker.request({
+          kind: "action",
+          title: isZh ? "需要确认操作" : "Confirm this action",
+          reason,
+          preview,
+        }),
+      askToolApproval: ({ toolCallId, toolName, reason, preview }) =>
+        this.webApprovalBroker.request({
+          kind: "tool",
+          title: isZh
+            ? `允许 Orbit 使用 ${toolName}？`
+            : `Allow Orbit to use ${toolName}?`,
+          reason,
+          preview,
+          toolCallId,
+        }),
+      reviewFileChange: ({ filePath, before, after }) =>
+        this.webApprovalBroker.request({
+          kind: "change",
+          title: isZh
+            ? `接受对 ${filePath} 的修改？`
+            : `Accept changes to ${filePath}?`,
+          reason: isZh
+            ? "请检查下面的差异，再决定保留或回滚这次修改。"
+            : "Review the diff before keeping or rolling back this change.",
+          preview: stripAnsi(DiffView.render(filePath, before, after)),
+        }),
+      showText: (text) => this.tuiInteraction.showText(text),
+      showDiff: () => undefined,
+    };
   }
 
   private async updateWebUiSettings(
@@ -772,6 +852,61 @@ export class CommandRouter {
     }
 
     return { ok: true };
+  }
+
+  private async updateWebUiSession(
+    action: WebUiSessionAction,
+  ): Promise<{ ok: boolean; message?: string }> {
+    if (this.tui.hasActiveRunnable()) {
+      return { ok: false, message: "Orbit is already processing a request." };
+    }
+    const releaseRun = this.runCoordinator.acquire("web");
+    if (!releaseRun) {
+      return {
+        ok: false,
+        message: "Orbit is already processing another request.",
+      };
+    }
+    try {
+      if (action.action === "new") {
+        const model =
+          this.loop.getModelOverride() || this.config.models.default;
+        const sessionId = this.loop.startNewSession(
+          this.providerInstance.id,
+          model,
+        );
+        this.tui.loadHistory([]);
+        this.saveLocalState({ lastSessionId: sessionId, lastModel: model });
+        this.printOutput(`✔ Started new session: ${sessionId}`);
+      } else {
+        if (!this.loop.resumeSession(action.sessionId)) {
+          return {
+            ok: false,
+            message: `Session not found: ${action.sessionId}`,
+          };
+        }
+        this.tui.loadHistory(this.loop.getHistory());
+        this.saveLocalState({
+          lastSessionId: action.sessionId,
+          lastModel: this.loop.getModelOverride() || this.config.models.default,
+        });
+        this.printOutput(`✔ Switched to session: ${action.sessionId}`);
+      }
+      this.tui.syncFromLoop(this.loop);
+      const cachedCandidates = this.getCandidates();
+      this.tui.setCandidates(
+        cachedCandidates ||
+          (await getAutocompleteCandidates(this.cwd, this.config)),
+      );
+      return { ok: true };
+    } catch (error: unknown) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      releaseRun();
+    }
   }
 
   private copyToClipboard(text: string): boolean {

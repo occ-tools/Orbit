@@ -23,6 +23,17 @@ interface ContextLoop {
   removeRelevantFilePublic(path: string): void;
   clearRelevantFilesPublic(): void;
   clearHistoryPublic(): void;
+  compactHistoryPublic(): Promise<{
+    model: string;
+    maxContextTokens: number;
+    compactAtTokens: number;
+    beforeTokens: number;
+    afterTokens: number;
+    truncatedToolResults: number;
+    truncatedContextMessages: number;
+    droppedMessages: number;
+    changed: boolean;
+  }>;
 }
 
 interface ContextTui {
@@ -479,7 +490,45 @@ async function handleDrop(
   return HANDLED_COMMAND;
 }
 
-/** Handles `/add`, `/drop`, and `/clear` context commands. */
+async function handleCompact(
+  dependencies: ContextCommandDependencies,
+): Promise<CommandHandlerResult> {
+  const { language, loop, printOutput, tui } = dependencies;
+  const isZh = language === "zh";
+  try {
+    const result = await loop.compactHistoryPublic();
+    if (!result.changed) {
+      printOutput(
+        picocolors.green(
+          isZh
+            ? `✔ 当前历史无需压缩：约 ${result.afterTokens.toLocaleString()} tokens；模型 ${result.model} 的自动压缩线为 ${result.compactAtTokens.toLocaleString()} / ${result.maxContextTokens.toLocaleString()}。`
+            : `✔ History is already compact: ~${result.afterTokens.toLocaleString()} tokens; ${result.model} auto-compacts at ${result.compactAtTokens.toLocaleString()} / ${result.maxContextTokens.toLocaleString()}.`,
+        ),
+      );
+    } else {
+      printOutput(
+        picocolors.green(
+          isZh
+            ? `✔ 上下文压缩完成：${result.beforeTokens.toLocaleString()} → ${result.afterTokens.toLocaleString()} tokens；总结 ${result.droppedMessages} 条旧消息，截断 ${result.truncatedToolResults} 条工具结果。当前模型：${result.model}（窗口 ${result.maxContextTokens.toLocaleString()}）。`
+            : `✔ Context compacted: ${result.beforeTokens.toLocaleString()} → ${result.afterTokens.toLocaleString()} tokens; summarized ${result.droppedMessages} older messages and truncated ${result.truncatedToolResults} tool results. Model: ${result.model} (${result.maxContextTokens.toLocaleString()} window).`,
+        ),
+      );
+    }
+  } catch (error: unknown) {
+    printOutput(
+      picocolors.red(
+        isZh
+          ? `✖ 上下文压缩失败：${errorMessage(error)}`
+          : `✖ Context compaction failed: ${errorMessage(error)}`,
+      ),
+    );
+  } finally {
+    tui.syncFromLoop(loop);
+  }
+  return HANDLED_COMMAND;
+}
+
+/** Handles `/add`, `/drop`, `/compact`, and `/clear` context commands. */
 export async function handleContextCommand(
   command: string,
   argument: string,
@@ -487,6 +536,7 @@ export async function handleContextCommand(
 ): Promise<CommandHandlerResult | null> {
   if (command === "/add") return handleAdd(argument, dependencies);
   if (command === "/drop") return handleDrop(argument, dependencies);
+  if (command === "/compact") return handleCompact(dependencies);
   if (command === "/clear") {
     dependencies.loop.clearHistoryPublic();
     dependencies.tui.clearHistoryView({

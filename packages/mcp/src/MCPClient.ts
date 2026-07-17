@@ -194,7 +194,7 @@ export class MCPClient {
     await this.sendRequest("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: "orbit-client", version: "0.1.3" },
+      clientInfo: { name: "orbit-client", version: "0.1.4" },
     });
     this.sendNotification("notifications/initialized");
   }

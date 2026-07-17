@@ -49,7 +49,7 @@ export const SessionSchema = z.object({
   id: SessionIdSchema,
   cwd: z.string().min(1),
   title: z.string(),
-  status: z.enum(["active", "completed", "failed"]),
+  status: z.enum(["active", "completed", "failed", "aborted"]),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   provider: z.string().min(1),

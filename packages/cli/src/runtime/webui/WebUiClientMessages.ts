@@ -28,6 +28,49 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
     if (cursor < text.length) parent.append(document.createTextNode(text.slice(cursor)));
   }
 
+  function splitMarkdownTableRow(line) {
+    const normalized = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+    return normalized.split('|').map((cell) => cell.trim());
+  }
+
+  function isMarkdownTableDivider(line, expectedColumns) {
+    const cells = splitMarkdownTableRow(line);
+    return cells.length === expectedColumns
+      && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+  }
+
+  function createMarkdownTable(headerCells, bodyRows) {
+    const viewport = document.createElement('div');
+    viewport.className = 'table-scroll';
+    viewport.tabIndex = 0;
+    viewport.setAttribute('role', 'region');
+    viewport.setAttribute('aria-label', copy.table);
+    const table = document.createElement('table');
+    table.className = 'rich-table';
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    for (const cellText of headerCells) {
+      const cell = document.createElement('th');
+      cell.scope = 'col';
+      appendInline(cell, cellText);
+      headRow.append(cell);
+    }
+    head.append(headRow);
+    const body = document.createElement('tbody');
+    for (const row of bodyRows) {
+      const rowElement = document.createElement('tr');
+      for (const cellText of row) {
+        const cell = document.createElement('td');
+        appendInline(cell, cellText);
+        rowElement.append(cell);
+      }
+      body.append(rowElement);
+    }
+    table.append(head, body);
+    viewport.append(table);
+    return viewport;
+  }
+
   function renderPlainBlocks(parent, text) {
     const lines = text.replace(/\r\n/g, '\n').split('\n');
     let paragraph = [];
@@ -51,7 +94,28 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
       listType = '';
     };
 
-    for (const line of lines) {
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const tableHeader = line.includes('|') ? splitMarkdownTableRow(line) : [];
+      if (
+        tableHeader.length > 1
+        && index + 1 < lines.length
+        && isMarkdownTableDivider(lines[index + 1], tableHeader.length)
+      ) {
+        flushParagraph();
+        flushList();
+        const rows = [];
+        index += 2;
+        while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
+          const row = splitMarkdownTableRow(lines[index]);
+          if (row.length !== tableHeader.length) break;
+          rows.push(row);
+          index += 1;
+        }
+        parent.append(createMarkdownTable(tableHeader, rows));
+        index -= 1;
+        continue;
+      }
       const heading = line.match(/^(#{1,3})\s+(.+)$/);
       const bullet = line.match(/^\s*[-*]\s+(.+)$/);
       const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
@@ -92,19 +156,49 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
   }
 
   function createCodeBlock(languageName, codeText) {
+    const info = String(languageName || '').trim().split(/\s+/).filter(Boolean);
+    const language = info.shift() || 'text';
+    const descriptor = info.join(' ');
+    const source = String(codeText || '');
+    const lines = source.split('\n');
+    const isDiff = /^(diff|patch)$/i.test(language);
+    const isCollapsible = lines.length > 18;
     const root = document.createElement('div');
-    root.className = 'code-block';
+    root.className = 'code-block' + (isDiff ? ' is-diff' : '') + (isCollapsible ? ' is-collapsed' : '');
+    root.dataset.language = language.toLowerCase();
     const header = document.createElement('div');
     header.className = 'code-header';
+    const identity = document.createElement('div');
+    identity.className = 'code-identity';
     const languageLabel = document.createElement('span');
-    languageLabel.textContent = languageName || 'text';
+    languageLabel.className = 'code-language';
+    languageLabel.textContent = language;
+    const metadata = document.createElement('span');
+    metadata.className = 'code-metadata';
+    metadata.textContent = (descriptor ? descriptor + ' · ' : '') + lines.length + ' ' + copy.codeLines;
+    identity.append(languageLabel, metadata);
+    const actions = document.createElement('div');
+    actions.className = 'code-actions';
+    if (isCollapsible) {
+      const expandButton = document.createElement('button');
+      expandButton.type = 'button';
+      expandButton.className = 'expand-code';
+      expandButton.textContent = copy.expandCode;
+      expandButton.setAttribute('aria-expanded', 'false');
+      expandButton.addEventListener('click', () => {
+        const collapsed = root.classList.toggle('is-collapsed');
+        expandButton.textContent = collapsed ? copy.expandCode : copy.collapseCode;
+        expandButton.setAttribute('aria-expanded', String(!collapsed));
+      });
+      actions.append(expandButton);
+    }
     const copyButton = document.createElement('button');
     copyButton.type = 'button';
     copyButton.className = 'copy-code';
     copyButton.textContent = copy.copy;
     copyButton.addEventListener('click', async () => {
       try {
-        await navigator.clipboard.writeText(codeText);
+        await navigator.clipboard.writeText(source);
         copyButton.textContent = copy.copiedShort;
         showToast(copy.copied, 'success');
         window.setTimeout(() => { copyButton.textContent = copy.copy; }, 1600);
@@ -112,13 +206,205 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
         showToast(String(error), 'error');
       }
     });
-    const pre = document.createElement('pre');
+    actions.append(copyButton);
+    const frame = document.createElement('div');
+    frame.className = 'code-frame';
+    const viewport = document.createElement('div');
+    viewport.className = 'code-viewport';
+    viewport.tabIndex = 0;
+    viewport.setAttribute('role', 'region');
+    viewport.setAttribute('aria-label', language + ' · ' + lines.length + ' ' + copy.codeLines);
     const code = document.createElement('code');
-    code.textContent = codeText;
-    pre.append(code);
-    header.append(languageLabel, copyButton);
-    root.append(header, pre);
+    code.className = 'code-lines';
+    const highlightState = { blockCommentEnd: '' };
+    lines.forEach((line, index) => {
+      const row = document.createElement('span');
+      row.className = 'code-line';
+      row.dataset.line = String(index + 1);
+      if (isDiff) {
+        if (/^\+\+\+|^---/.test(line)) row.classList.add('is-diff-file');
+        else if (/^\+/.test(line)) row.classList.add('is-addition');
+        else if (/^-/.test(line)) row.classList.add('is-deletion');
+        else if (/^@@/.test(line)) row.classList.add('is-hunk');
+      }
+      const lineText = document.createElement('span');
+      lineText.className = 'code-line-text';
+      if (isDiff) lineText.textContent = line || ' ';
+      else appendHighlightedCodeLine(lineText, line, language, highlightState);
+      row.append(lineText);
+      code.append(row);
+    });
+    viewport.append(code);
+    frame.append(viewport);
+    header.append(identity, actions);
+    root.append(header, frame);
     return root;
+  }
+
+  const codeKeywordGroups = {
+    javascript: new Set([
+      'as', 'async', 'await', 'break', 'case', 'catch', 'class', 'const', 'continue',
+      'debugger', 'default', 'delete', 'do', 'else', 'export', 'extends', 'finally',
+      'for', 'from', 'function', 'get', 'if', 'import', 'in', 'instanceof', 'let',
+      'new', 'of', 'return', 'set', 'static', 'switch', 'throw', 'try', 'typeof',
+      'var', 'void', 'while', 'with', 'yield',
+    ]),
+    typescript: new Set([
+      'abstract', 'any', 'as', 'asserts', 'async', 'await', 'boolean', 'break',
+      'case', 'catch', 'class', 'const', 'constructor', 'continue', 'declare',
+      'default', 'delete', 'do', 'else', 'enum', 'export', 'extends', 'finally',
+      'for', 'from', 'function', 'get', 'if', 'implements', 'import', 'in', 'infer',
+      'instanceof', 'interface', 'is', 'keyof', 'let', 'namespace', 'never', 'new',
+      'number', 'object', 'of', 'private', 'protected', 'public', 'readonly', 'return',
+      'satisfies', 'set', 'static', 'string', 'switch', 'symbol', 'throw', 'try',
+      'type', 'typeof', 'unknown', 'var', 'void', 'while', 'with', 'yield',
+    ]),
+    python: new Set([
+      'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue', 'def',
+      'del', 'elif', 'else', 'except', 'finally', 'for', 'from', 'global', 'if',
+      'import', 'in', 'is', 'lambda', 'nonlocal', 'not', 'or', 'pass', 'raise',
+      'return', 'try', 'while', 'with', 'yield',
+    ]),
+    shell: new Set([
+      'case', 'do', 'done', 'elif', 'else', 'esac', 'export', 'fi', 'for',
+      'function', 'if', 'in', 'local', 'readonly', 'select', 'then', 'until',
+      'while',
+    ]),
+    sql: new Set([
+      'alter', 'and', 'as', 'asc', 'begin', 'between', 'by', 'case', 'create',
+      'delete', 'desc', 'distinct', 'drop', 'else', 'end', 'exists', 'from',
+      'full', 'group', 'having', 'in', 'inner', 'insert', 'into', 'is', 'join',
+      'left', 'like', 'limit', 'not', 'null', 'on', 'or', 'order', 'outer',
+      'right', 'select', 'set', 'then', 'union', 'update', 'values', 'when',
+      'where', 'with',
+    ]),
+  };
+
+  const codeLiterals = new Set([
+    'false', 'None', 'null', 'NULL', 'true', 'True', 'False', 'undefined',
+  ]);
+
+  function codeLanguageFamily(language) {
+    const normalized = String(language || '').toLowerCase();
+    if (/^(ts|tsx|typescript)$/.test(normalized)) return 'typescript';
+    if (/^(js|jsx|javascript|mjs|cjs)$/.test(normalized)) return 'javascript';
+    if (/^(py|python)$/.test(normalized)) return 'python';
+    if (/^(sh|shell|bash|zsh|powershell|ps1)$/.test(normalized)) return 'shell';
+    if (/^(sql|postgres|mysql|sqlite)$/.test(normalized)) return 'sql';
+    return normalized;
+  }
+
+  function appendCodeToken(parent, text, type) {
+    if (!text) return;
+    if (!type) {
+      parent.append(document.createTextNode(text));
+      return;
+    }
+    const token = document.createElement('span');
+    token.className = 'token-' + type;
+    token.textContent = text;
+    parent.append(token);
+  }
+
+  function readQuotedCodeToken(line, start, quote) {
+    let cursor = start + 1;
+    while (cursor < line.length) {
+      if (line[cursor] === '\\') cursor += 2;
+      else if (line[cursor] === quote) return cursor + 1;
+      else cursor += 1;
+    }
+    return line.length;
+  }
+
+  function appendHighlightedCodeLine(parent, line, language, state) {
+    const family = codeLanguageFamily(language);
+    const keywords = codeKeywordGroups[family] || new Set();
+    const supportsSlashComments = ['javascript', 'typescript', 'java', 'c', 'cpp', 'csharp', 'css', 'go', 'rust', 'swift', 'kotlin'].includes(family);
+    const supportsHashComments = ['python', 'shell', 'yaml', 'yml', 'ruby', 'toml'].includes(family);
+    const supportsSqlComments = family === 'sql';
+    let cursor = 0;
+    if (!line) {
+      parent.textContent = ' ';
+      return;
+    }
+    while (cursor < line.length) {
+      if (state.blockCommentEnd) {
+        const end = line.indexOf(state.blockCommentEnd, cursor);
+        const finish = end === -1 ? line.length : end + state.blockCommentEnd.length;
+        appendCodeToken(parent, line.slice(cursor, finish), 'comment');
+        cursor = finish;
+        if (end !== -1) state.blockCommentEnd = '';
+        continue;
+      }
+      if (supportsSlashComments && line.startsWith('//', cursor)) {
+        appendCodeToken(parent, line.slice(cursor), 'comment');
+        break;
+      }
+      if (supportsHashComments && line[cursor] === '#') {
+        appendCodeToken(parent, line.slice(cursor), 'comment');
+        break;
+      }
+      if (supportsSqlComments && line.startsWith('--', cursor)) {
+        appendCodeToken(parent, line.slice(cursor), 'comment');
+        break;
+      }
+      if (supportsSlashComments && line.startsWith('/*', cursor)) {
+        const end = line.indexOf('*/', cursor + 2);
+        const finish = end === -1 ? line.length : end + 2;
+        appendCodeToken(parent, line.slice(cursor, finish), 'comment');
+        cursor = finish;
+        if (end === -1) state.blockCommentEnd = '*/';
+        continue;
+      }
+      if ((family === 'html' || family === 'xml') && line.startsWith('<!--', cursor)) {
+        const end = line.indexOf('-->', cursor + 4);
+        const finish = end === -1 ? line.length : end + 3;
+        appendCodeToken(parent, line.slice(cursor, finish), 'comment');
+        cursor = finish;
+        if (end === -1) state.blockCommentEnd = '-->';
+        continue;
+      }
+      const character = line[cursor];
+      if (character === '"' || character === "'" || character === '\x60') {
+        const finish = readQuotedCodeToken(line, cursor, character);
+        const next = line.slice(finish).trimStart();
+        const type = next.startsWith(':') ? 'property' : 'string';
+        appendCodeToken(parent, line.slice(cursor, finish), type);
+        cursor = finish;
+        continue;
+      }
+      const number = line.slice(cursor).match(/^(?:0x[\da-f]+|\d+(?:\.\d+)?(?:e[+-]?\d+)?)/i);
+      if (number) {
+        appendCodeToken(parent, number[0], 'number');
+        cursor += number[0].length;
+        continue;
+      }
+      const identifier = line.slice(cursor).match(/^[A-Za-z_$][\w$]*/);
+      if (identifier) {
+        const value = identifier[0];
+        const next = line.slice(cursor + value.length).trimStart();
+        const lower = value.toLowerCase();
+        const type = codeLiterals.has(value)
+          ? 'literal'
+          : keywords.has(value) || keywords.has(lower)
+            ? 'keyword'
+            : next.startsWith('(')
+              ? 'function'
+              : next.startsWith(':')
+                ? 'property'
+                : '';
+        appendCodeToken(parent, value, type);
+        cursor += value.length;
+        continue;
+      }
+      let finish = cursor + 1;
+      while (finish < line.length && !/[A-Za-z_$\d'"#]/.test(line[finish])) {
+        if (line.startsWith('//', finish) || line.startsWith('/*', finish) || line.startsWith('--', finish)) break;
+        finish += 1;
+      }
+      appendCodeToken(parent, line.slice(cursor, finish), '');
+      cursor = finish;
+    }
   }
 
   function renderRichText(container, value) {
@@ -150,18 +436,82 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
   }
 
   function createToolCard(block) {
-    const root = document.createElement('div');
-    const isError = Boolean(block.isError);
-    const isDone = block.status === 'success' || block.type === 'tool_result';
-    root.className = 'tool-card' + (isError ? ' is-error' : isDone ? ' is-success' : '');
+    const root = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.className = 'tool-card-summary';
+    summary.setAttribute('role', 'button');
     const status = document.createElement('span');
     status.className = 'tool-status';
     const label = document.createElement('strong');
-    label.textContent = block.name || copy.tool;
-    const detail = document.createElement('span');
-    detail.textContent = isError ? copy.error : isDone ? copy.done : copy.running;
-    root.append(status, label, detail);
+    label.className = 'tool-name';
+    const outcome = document.createElement('span');
+    outcome.className = 'tool-outcome';
+    const chevron = document.createElement('span');
+    chevron.className = 'tool-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.textContent = '›';
+    const detail = document.createElement('pre');
+    detail.className = 'tool-detail';
+    summary.append(status, label, outcome, chevron);
+    root.append(summary, detail);
+    summary.addEventListener('click', (event) => {
+      if (!root.classList.contains('has-detail')) event.preventDefault();
+    });
+    root.addEventListener('toggle', () => {
+      summary.setAttribute('aria-expanded', String(root.open));
+    });
+    updateToolCard(root, block);
     return root;
+  }
+
+  function updateToolCard(root, block) {
+    const isError = Boolean(block.isError);
+    const isDone = block.status === 'success' || block.type === 'tool_result';
+    root.className = 'tool-card' + (isError ? ' is-error' : isDone ? ' is-success' : '');
+    root.dataset.toolId = block.id || '';
+    const label = root.querySelector('.tool-name');
+    const outcome = root.querySelector('.tool-outcome');
+    const detail = root.querySelector('.tool-detail');
+    label.textContent = block.name || copy.tool;
+    outcome.textContent = isError ? copy.error : isDone ? copy.done : copy.running;
+    const detailText = String(block.detail || '').trim();
+    detail.textContent = detailText;
+    detail.hidden = !detailText;
+    root.classList.toggle('has-detail', Boolean(detailText));
+    root.open = Boolean(detailText) && (isError || !isDone);
+    const summary = root.querySelector('summary');
+    summary.setAttribute('aria-expanded', String(root.open));
+    summary.setAttribute(
+      'aria-label',
+      (block.name || copy.tool) + ' · ' + outcome.textContent,
+    );
+  }
+
+  function upsertStreamingTool(payload, status) {
+    if (!state.streaming) return;
+    const id = String(payload.toolCallId || payload.toolName || 'tool');
+    const block = {
+      type: 'tool',
+      id,
+      name: payload.toolName || copy.tool,
+      status,
+      detail: payload.error || payload.detail || payload.explanation || '',
+      isError: status === 'error',
+    };
+    let card = state.streamingTools.get(id);
+    if (card) {
+      updateToolCard(card, block);
+    } else {
+      card = createToolCard(block);
+      state.streamingTools.set(id, card);
+      const textBody = state.streaming.textBody;
+      if (textBody && textBody.parentNode === state.streaming.content) {
+        state.streaming.content.insertBefore(card, textBody);
+      } else {
+        state.streaming.content.append(card);
+      }
+    }
+    if (state.stickToBottom) scrollToBottom();
   }
 
   function createMessage(message, streaming) {
@@ -170,10 +520,14 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
     root.className = 'message ' + role;
     root.dataset.messageId = message.id || '';
     let content;
+    let progress = null;
+    let progressLabel = null;
     if (role === 'assistant') {
       const avatar = document.createElement('div');
       avatar.className = 'message-avatar';
-      avatar.textContent = 'O';
+      const avatarFace = document.createElement('span');
+      avatarFace.className = 'avatar-face';
+      avatar.append(avatarFace);
       content = document.createElement('div');
       content.className = 'message-content';
       const roleLine = document.createElement('div');
@@ -185,6 +539,18 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
       time.textContent = formatTime(message.createdAt);
       roleLine.append(name, time);
       content.append(roleLine);
+      if (streaming) {
+        progress = document.createElement('div');
+        progress.className = 'message-progress is-running';
+        progress.setAttribute('role', 'status');
+        progress.setAttribute('aria-live', 'polite');
+        const indicator = document.createElement('span');
+        indicator.className = 'message-progress-indicator';
+        progressLabel = document.createElement('span');
+        progressLabel.textContent = copy.thinking;
+        progress.append(indicator, progressLabel);
+        content.append(progress);
+      }
       root.append(avatar, content);
     } else {
       content = document.createElement('div');
@@ -213,12 +579,39 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
         content.append(createToolCard(block));
       }
     }
+    if (role === 'assistant' && !streaming) {
+      const responseText = blocks
+        .filter((block) => block.type === 'text' && block.text)
+        .map((block) => block.text)
+        .join('\n\n');
+      if (responseText) {
+        const actions = document.createElement('div');
+        actions.className = 'message-actions';
+        const copyResponse = document.createElement('button');
+        copyResponse.type = 'button';
+        copyResponse.className = 'message-action';
+        copyResponse.setAttribute('aria-label', copy.copyResponse);
+        copyResponse.title = copy.copyResponse;
+        copyResponse.innerHTML = '<span aria-hidden="true">\u2398</span><span>' + copy.copy + '</span>';
+        copyResponse.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(responseText);
+            showToast(copy.copied, 'success');
+          } catch (error) {
+            showToast(String(error), 'error');
+          }
+        });
+        actions.append(copyResponse);
+        content.append(actions);
+      }
+    }
     if (!textBody && streaming) {
       textBody = document.createElement('div');
       textBody.className = 'rich-text stream-caret';
+      textBody.hidden = true;
       content.append(textBody);
     }
-    return { root, content, textBody, thinkingBody };
+    return { root, content, textBody, thinkingBody, progress, progressLabel };
   }
 
   async function renderMessages() {
@@ -230,6 +623,7 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
     }
     state.streaming = null;
     state.streamingTurnId = null;
+    state.streamingTools.clear();
     setEmptyState();
     state.stickToBottom = true;
     scrollToBottom(true);
@@ -253,6 +647,7 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
     elements.messages.append(streaming.root);
     state.streaming = streaming;
     state.streamingTurnId = turnId;
+    state.streamingTools.clear();
     state.streamText = '';
     state.pendingDelta = '';
     state.pendingThinking = '';
@@ -267,12 +662,22 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
     createStreamingTurn('', turnId);
   }
 
+  function setStreamingProgress(label, kind) {
+    if (!state.streaming || !state.streaming.progress || !state.streaming.progressLabel) return;
+    state.streaming.progress.hidden = false;
+    state.streaming.progress.className = 'message-progress is-' + (kind || 'running');
+    state.streaming.progressLabel.textContent = label || copy.working;
+    scrollToBottom(false);
+  }
+
   function flushStream() {
     state.animationFrame = 0;
     if (!state.streaming) return;
     if (state.pendingDelta) {
       state.streamText += state.pendingDelta;
       state.pendingDelta = '';
+      state.streaming.textBody.hidden = false;
+      state.streaming.progress.hidden = true;
       state.streaming.textBody.textContent = state.streamText;
     }
     if (state.pendingThinking) {

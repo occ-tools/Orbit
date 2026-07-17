@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "path";
 import { z } from "zod";
 import { loadCustomCommands } from "../commands/customCommands.js";
 import { BUILTIN_SLASH_COMMANDS } from "./SlashCommandCatalog.js";
+import { resolveSafePath } from "@orbit-build/shared";
 
 const symbolIndexSchema = z.object({
   files: z
@@ -25,6 +26,9 @@ const symbolIndexSchema = z.object({
 export interface AutocompleteConfig {
   context?: {
     ignore?: string[];
+  };
+  session?: {
+    path?: string;
   };
 }
 
@@ -94,7 +98,10 @@ export async function getAutocompleteCandidates(
   }
 
   try {
-    const sessionDir = join(cwd, ".orbit", "sessions");
+    const sessionDir = resolveSafePath(
+      cwd,
+      config.session?.path ?? ".orbit/sessions",
+    );
     if (existsSync(sessionDir)) {
       for (const dir of readdirSync(sessionDir)) {
         if (existsSync(join(sessionDir, dir, "session.json"))) {

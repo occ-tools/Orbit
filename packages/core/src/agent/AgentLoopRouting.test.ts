@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { AgentLoop } from "./AgentLoop.js";
+import { buildCompactionSummary } from "./ContextWindowManager.js";
 import { DEFAULT_CONFIG, type OrbitConfig } from "@orbit-build/config";
 import { ModelProvider } from "@orbit-build/model-providers";
 import { toolRegistry } from "@orbit-build/tools";
@@ -251,21 +252,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
   });
 
   it("summarizes aggressively compacted history instead of replaying old turns", () => {
-    const mockProvider: ModelProvider = {
-      id: "openai",
-      chat: vi.fn(),
-    } as any;
-
-    const loop = new AgentLoop(
-      testDir,
-      dummyConfig,
-      mockProvider,
-      "continue",
-      dummyInteraction,
-      { disableStatusBar: true },
-    );
-
-    const summary = (loop as any).buildCompactionSummary([
+    const summary = buildCompactionSummary([
       {
         id: "old-user",
         role: "user",
@@ -325,7 +312,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
       risk: "network",
       execute: executeWebSearch,
     });
-    const askApproval = vi.spyOn(Prompt, "askApproval").mockResolvedValue(true);
+    const askApproval = vi.fn(async () => true);
     const askSelect = vi.spyOn(Prompt, "askSelect");
 
     let callCount = 0;
@@ -383,7 +370,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
         } as any,
         mockProvider,
         "查杭州 2026-06-29 天气",
-        dummyInteraction,
+        { ...dummyInteraction, askApproval },
         { disableStatusBar: true },
       );
 
@@ -399,7 +386,6 @@ describe("AgentLoop Fin Heuristic Routing", () => {
       if (originalWebSearch) {
         toolRegistry.register(originalWebSearch);
       }
-      askApproval.mockRestore();
       askSelect.mockRestore();
     }
   });
@@ -427,7 +413,6 @@ describe("AgentLoop Fin Heuristic Routing", () => {
       })),
     });
 
-    const askApproval = vi.spyOn(Prompt, "askApproval").mockResolvedValue(true);
     let callCount = 0;
     let replayedMessages: any[] = [];
     const chatMock = vi.fn().mockImplementation(async function* (input: any) {
@@ -484,7 +469,6 @@ describe("AgentLoop Fin Heuristic Routing", () => {
       if (originalWebSearch) {
         toolRegistry.register(originalWebSearch);
       }
-      askApproval.mockRestore();
     }
   });
 

@@ -4,6 +4,7 @@ import {
   Orchestrator,
   eventBus,
   AutocompleteEngine,
+  type AgentLoopRunOutcome,
 } from "@orbit-build/core";
 import { Prompt, Renderer, DiffView } from "@orbit-build/tui";
 import picocolors from "picocolors";
@@ -19,7 +20,7 @@ import {
 import { dirname, resolve } from "path";
 import { homedir } from "os";
 import http from "http";
-import { randomBytes, timingSafeEqual } from "crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "crypto";
 import { z } from "zod";
 import { SymbolIndexer } from "@orbit-build/context-engine";
 import { FullscreenTui, pageText } from "../tui/FullscreenTui.js";
@@ -27,6 +28,7 @@ import { CommandRouter, getAutocompleteCandidates } from "./CommandRouter.js";
 import { stopOrbitWebUi } from "./webui/index.js";
 import { resolveSafePath } from "@orbit-build/shared";
 import { readCliVersion } from "./CliVersion.js";
+import { ensureSessionTitle } from "./SessionTitles.js";
 
 const AutocompleteRequestSchema = z.object({
   prefix: z.string().max(20000),
@@ -51,6 +53,13 @@ interface LocalState {
   lastModel?: string;
 }
 
+function getRunOutcomeMessage(
+  outcome: AgentLoopRunOutcome | undefined,
+): string | undefined {
+  if (!outcome || outcome.status === "completed") return undefined;
+  return outcome.status === "failed" ? outcome.error.message : outcome.message;
+}
+
 export class ReplController {
   private currentTui: FullscreenTui | null = null;
   private watchTimeout: NodeJS.Timeout | null = null;
@@ -65,6 +74,7 @@ export class ReplController {
     private interaction: UserInteraction,
     private multi?: boolean,
     private direct?: boolean,
+    private webUiOnly?: { port?: number; open: boolean },
   ) {}
 
   private getLocalState(): LocalState {
@@ -208,7 +218,7 @@ export class ReplController {
 
     const isTTY =
       process.stdin.isTTY && typeof process.stdin.setRawMode === "function";
-    const useFullscreenTui = isTTY && !this.direct;
+    const useFullscreenTui = isTTY && !this.direct && !this.webUiOnly;
     this.autocompleteServer = this.config.autocomplete?.enabled
       ? this.startAutocompleteServer()
       : null;
@@ -273,11 +283,15 @@ export class ReplController {
     const localState = this.getLocalState();
     let resumeSessionId: string | undefined;
     if (localState.lastSessionId) {
-      const resume = await Prompt.askApproval(
-        `Found previous session (${localState.lastSessionId}). Resume last session?`,
-      );
-      if (resume) {
+      if (this.webUiOnly) {
         resumeSessionId = localState.lastSessionId;
+      } else {
+        const resume = await Prompt.askApproval(
+          `Found previous session (${localState.lastSessionId}). Resume last session?`,
+        );
+        if (resume) {
+          resumeSessionId = localState.lastSessionId;
+        }
       }
     }
 
@@ -444,6 +458,27 @@ export class ReplController {
     );
 
     try {
+      if (this.webUiOnly) {
+        const command = [
+          "/webui",
+          this.webUiOnly.port !== undefined
+            ? `--port ${this.webUiOnly.port}`
+            : "",
+          this.webUiOnly.open ? "" : "--no-open",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        const result = await commandRouter.route(command);
+        if (!result.processed) {
+          throw new Error("Orbit Web UI could not be started.");
+        }
+        await new Promise<void>((resolveStop) => {
+          process.once("SIGINT", resolveStop);
+          process.once("SIGTERM", resolveStop);
+        });
+        return;
+      }
+
       while (true) {
         let input: string | null;
         if (useFullscreenTui) {
@@ -498,58 +533,14 @@ export class ReplController {
           }
 
           loop.prepareUserTurn(trimmed);
+          const terminalTurnId = randomUUID();
+          eventBus.emitEvent("ui_turn_started", {
+            turnId: terminalTurnId,
+            source: "terminal",
+            prompt: trimmed,
+          });
 
-          // Auto-generate session title if it's the default title
-          const activeSession = loop.sessionManager.getActiveSession();
-          if (
-            activeSession &&
-            (activeSession.title === "New Orbit Session" ||
-              !activeSession.title)
-          ) {
-            const fastModel =
-              this.config.models.fast || this.config.models.default;
-            const firstPrompt = trimmed;
-            Promise.resolve().then(async () => {
-              try {
-                const stream = this.providerInstance.chat({
-                  model: fastModel,
-                  messages: [
-                    {
-                      id: `msg_title_gen_${Date.now()}`,
-                      role: "user",
-                      createdAt: new Date().toISOString(),
-                      content: [
-                        {
-                          type: "text",
-                          text: `Summarize the following user task into a very concise title (max 5 words, e.g. "Fix button layout" or "Add login unit tests"). Output ONLY the title, no markdown, no punctuation, no quotes:\n\n${firstPrompt.substring(0, 1000)}`,
-                        },
-                      ],
-                    },
-                  ],
-                  tools: [],
-                });
-                let title = "";
-                for await (const event of stream) {
-                  if (event.type === "text_delta") {
-                    title += event.text;
-                  }
-                }
-                const finalTitle = title.trim().replace(/^["']|["']$/g, "");
-                if (
-                  finalTitle &&
-                  activeSession.id ===
-                    loop.sessionManager.getActiveSession()?.id
-                ) {
-                  activeSession.title = finalTitle;
-                  loop.sessionManager
-                    .getSessionStore()
-                    .updateSession(activeSession);
-                }
-              } catch {
-                // Ignore background title generation errors
-              }
-            });
-          }
+          ensureSessionTitle(loop, trimmed);
 
           let orchestratorInstance: Orchestrator | null = null;
           if (this.multi) {
@@ -567,17 +558,33 @@ export class ReplController {
 
           tui.startThinkingInput();
 
+          let terminalOutcome: AgentLoopRunOutcome | undefined;
           try {
             if (orchestratorInstance) {
-              await orchestratorInstance.run();
+              terminalOutcome = await orchestratorInstance.run();
             } else {
-              await loop.run();
+              terminalOutcome = await loop.run();
             }
-          } catch {
+          } catch (error) {
+            terminalOutcome = {
+              status: "failed",
+              sessionId: loop.getSessionId(),
+              attempts: 0,
+              error: {
+                code: "execution_error",
+                message: error instanceof Error ? error.message : String(error),
+              },
+            };
             // Fallback
           } finally {
             tui.stopThinkingInput();
             tui.setActiveRunnable(null);
+            eventBus.emitEvent("ui_turn_completed", {
+              turnId: terminalTurnId,
+              source: "terminal",
+              status: terminalOutcome?.status || "failed",
+              message: getRunOutcomeMessage(terminalOutcome),
+            });
           }
 
           // If a guided correction was entered during execution, loop to append and rerun
@@ -593,6 +600,12 @@ export class ReplController {
             );
 
             loop.prepareUserTurn(guidedTask);
+            const guidedTurnId = randomUUID();
+            eventBus.emitEvent("ui_turn_started", {
+              turnId: guidedTurnId,
+              source: "terminal",
+              prompt: guidedTask,
+            });
 
             tui.syncFromLoop(loop);
 
@@ -612,17 +625,34 @@ export class ReplController {
 
             tui.startThinkingInput();
 
+            let guidedOutcome: AgentLoopRunOutcome | undefined;
             try {
               if (subOrchestrator) {
-                await subOrchestrator.run();
+                guidedOutcome = await subOrchestrator.run();
               } else {
-                await loop.run();
+                guidedOutcome = await loop.run();
               }
-            } catch {
+            } catch (error) {
+              guidedOutcome = {
+                status: "failed",
+                sessionId: loop.getSessionId(),
+                attempts: 0,
+                error: {
+                  code: "execution_error",
+                  message:
+                    error instanceof Error ? error.message : String(error),
+                },
+              };
               // Fallback
             } finally {
               tui.stopThinkingInput();
               tui.setActiveRunnable(null);
+              eventBus.emitEvent("ui_turn_completed", {
+                turnId: guidedTurnId,
+                source: "terminal",
+                status: guidedOutcome?.status || "failed",
+                message: getRunOutcomeMessage(guidedOutcome),
+              });
             }
           }
           tui.syncFromLoop(loop);

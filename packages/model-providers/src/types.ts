@@ -94,7 +94,7 @@ export type ModelEvent =
   | { type: "tool_call"; toolCall: OrbitToolCall }
   | { type: "usage"; usage: TokenUsage }
   | { type: "done" }
-  | { type: "error"; error: any };
+  | { type: "error"; error: unknown };
 
 export interface ModelProvider {
   id: string;

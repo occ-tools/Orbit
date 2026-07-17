@@ -35,6 +35,34 @@ describe("ContextPackBuilder tests", () => {
     expect(pack.relevantFiles[0].excerpt).toContain('console.log("hello");');
   });
 
+  it("fits large instructions and file excerpts to a model-provided budget", async () => {
+    writeFileSync(
+      join(tempDir, "AGENTS.md"),
+      `# Rules\n${"必须遵循安全边界。".repeat(1000)}`,
+      "utf8",
+    );
+    writeFileSync(
+      join(tempDir, "large.ts"),
+      Array.from(
+        { length: 500 },
+        (_, index) => `export const value${index} = ${index};`,
+      ).join("\n"),
+      "utf8",
+    );
+
+    const pack = await new ContextPackBuilder(tempDir).build(
+      [{ path: "large.ts", reason: "budget regression" }],
+      "review",
+      { maxTokens: 2000 },
+    );
+
+    expect(pack.tokenBudget.max).toBe(2000);
+    expect(pack.tokenBudget.usedEstimate).toBeLessThanOrEqual(2000);
+    expect(
+      `${pack.projectInstructions}\n${pack.relevantFiles[0].excerpt}`,
+    ).toContain("truncated to fit token budget");
+  });
+
   it("should index skills and load matching skill instructions on demand", async () => {
     const skillDir = join(tempDir, ".orbit", "skills", "api-tuning");
     mkdirSync(skillDir, { recursive: true });

@@ -52,13 +52,7 @@ export function parseWebUiArgs(rawArgs: string): {
 }
 
 export async function openBrowser(url: string): Promise<void> {
-  const command =
-    process.platform === "win32"
-      ? "cmd"
-      : process.platform === "darwin"
-        ? "open"
-        : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const { command, args } = resolveBrowserLaunch(url);
   const child = spawn(command, args, {
     detached: true,
     stdio: "ignore",
@@ -66,6 +60,20 @@ export async function openBrowser(url: string): Promise<void> {
   });
   child.on("error", () => {});
   child.unref();
+}
+
+/** Resolve a shell-free browser launch command for the current platform. */
+export function resolveBrowserLaunch(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+): { command: string; args: string[] } {
+  if (platform === "win32") {
+    return { command: "explorer.exe", args: [url] };
+  }
+  return {
+    command: platform === "darwin" ? "open" : "xdg-open",
+    args: [url],
+  };
 }
 
 /** Start or reuse the process-wide loopback Web UI runtime. */

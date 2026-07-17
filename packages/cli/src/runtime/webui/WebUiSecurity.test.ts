@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   isAuthorizedWebRequest,
+  isAuthorizedWebEventRequest,
   safeWebMessage,
   sanitizeBaseUrl,
   sanitizeWebEventPayload,
+  summarizeWebToolValue,
   webRequestErrorStatus,
 } from "./WebUiSecurity.js";
 
@@ -32,6 +34,36 @@ describe("WebUiSecurity", () => {
     expect(
       sanitizeWebEventPayload("untrusted_event", { private: true }),
     ).toBeUndefined();
+    expect(
+      sanitizeWebEventPayload("ui_turn_started", {
+        turnId: "terminal-turn",
+        source: "terminal",
+        prompt: "Use Bearer private-token",
+      }),
+    ).toEqual({
+      turnId: "terminal-turn",
+      source: "terminal",
+      prompt: "Use Bearer ***REDACTED***",
+    });
+    expect(
+      sanitizeWebEventPayload("agent_completed", {
+        taskId: "internal-agent",
+        result: { private: true },
+      }),
+    ).toBeUndefined();
+    expect(
+      sanitizeWebEventPayload("web_approval_requested", {
+        approvalId: "approval-1",
+        kind: "change",
+        title: "Bearer private-token",
+        preview: "must not cross the event stream",
+      }),
+    ).toEqual({
+      approvalId: "approval-1",
+      kind: "change",
+      title: "Bearer ***REDACTED***",
+      toolCallId: "",
+    });
   });
 
   it("removes URL credentials, queries, and fragments", () => {
@@ -40,6 +72,22 @@ describe("WebUiSecurity", () => {
         "https://user:password@example.com/v1?api_key=private#secret",
       ),
     ).toBe("https://example.com/v1");
+  });
+
+  it("summarizes only safe tool fields and redacts plain errors", () => {
+    expect(
+      summarizeWebToolValue({
+        path: "src/index.ts",
+        query: "Orbit",
+        content: "private file content",
+        apiKey: "private-token",
+      }),
+    ).toBe("path: src/index.ts\nquery: Orbit");
+    expect(
+      summarizeWebToolValue("password=hunter2 request failed", {
+        allowPlainText: true,
+      }),
+    ).toBe("password=***REDACTED*** request failed");
   });
 
   it("requires a matching token and same-origin request", () => {
@@ -61,6 +109,27 @@ describe("WebUiSecurity", () => {
           authorization: "Bearer expected-token",
         }),
         "expected-token",
+      ),
+    ).toBe(false);
+  });
+
+  it("allows a matching capability only on the SSE transport fallback", () => {
+    const request = requestWithHeaders({
+      host: "127.0.0.1:6047",
+      origin: "http://127.0.0.1:6047",
+    });
+    expect(
+      isAuthorizedWebEventRequest(
+        request,
+        "expected-token",
+        new URL("http://127.0.0.1:6047/api/events?access_token=expected-token"),
+      ),
+    ).toBe(true);
+    expect(
+      isAuthorizedWebEventRequest(
+        request,
+        "expected-token",
+        new URL("http://127.0.0.1:6047/api/events?access_token=wrong-token"),
       ),
     ).toBe(false);
   });

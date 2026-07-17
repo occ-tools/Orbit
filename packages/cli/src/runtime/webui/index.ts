@@ -5,7 +5,10 @@ export {
   stopOrbitWebUi,
 } from "./WebUiServer.js";
 export type {
+  WebUiApprovalDecision,
+  WebUiApprovalSnapshot,
   WebUiHandle,
   WebUiOptions,
+  WebUiSessionAction,
   WebUiSettingsPatch,
 } from "./WebUiContracts.js";

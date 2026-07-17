@@ -6,12 +6,20 @@ import { runInit } from "./commands/init.js";
 import { runConfig } from "./commands/config.js";
 import { runDoctor } from "./commands/doctor.js";
 import { parseBenchOptions, runBench } from "./commands/bench.js";
-import { runAgent } from "./commands/run.js";
+import { exitCodeForOutcome, runAgent } from "./commands/run.js";
 import { runLSPServer } from "./commands/LSPServer.js";
 import { runLogin } from "./commands/login.js";
 import { readCliVersion } from "./runtime/CliVersion.js";
 
 const program = new Command();
+
+function applyOutcomeExitCode(
+  outcome: Awaited<ReturnType<typeof runAgent>>,
+): void {
+  const currentExitCode =
+    typeof process.exitCode === "number" ? process.exitCode : 0;
+  process.exitCode = Math.max(currentExitCode, exitCodeForOutcome(outcome));
+}
 
 program
   .name("orbit")
@@ -38,7 +46,8 @@ program
     if (options.yes) {
       overrides.permissions = { mode: "auto" };
     }
-    await runAgent(cwd, task, overrides, !!options.multi);
+    const outcome = await runAgent(cwd, task, overrides, !!options.multi);
+    applyOutcomeExitCode(outcome);
   });
 
 program
@@ -139,13 +148,47 @@ program
   });
 
 program
+  .command("webui")
+  .description("start Orbit as a browser-first local coding workspace")
+  .option("--port <port>", "preferred loopback port (default: 6047)")
+  .option("--no-open", "start without opening the default browser")
+  .action(async (localOptions, command) => {
+    const options = command.optsWithGlobals();
+    const rawPort = localOptions.port;
+    const port = rawPort === undefined ? undefined : Number(rawPort);
+    if (
+      port !== undefined &&
+      (!Number.isInteger(port) || port < 0 || port > 65535)
+    ) {
+      throw new Error("Web UI port must be an integer from 0 to 65535.");
+    }
+    const overrides: Record<string, unknown> = { direct: true };
+    if (options.provider) {
+      overrides.provider = { default: options.provider };
+    }
+    if (options.model) {
+      overrides.models = { default: options.model };
+    }
+    if (options.yes) {
+      overrides.permissions = { mode: "auto" };
+    }
+    const outcome = await runAgent(process.cwd(), undefined, overrides, false, {
+      webUi: { port, open: localOptions.open !== false },
+    });
+    applyOutcomeExitCode(outcome);
+  });
+
+program
   .command("exec")
   .description("run a task in non-interactive mode and stream events as JSONL")
   .argument("<prompt>", "the task prompt to execute")
   .option("--provider <provider>", "specify model provider")
   .option("--model <model>", "specify model name")
   .option("--jsonl", "output event logs in JSONL format")
-  .action(async (prompt, options) => {
+  .action(async (prompt, _localOptions, command) => {
+    // Commander may store options shared with the root command on the parent
+    // even when they appear after `exec`; always consume the merged view.
+    const options = command.optsWithGlobals();
     const cwd = process.cwd();
     const overrides: Record<string, unknown> = {};
     if (options.provider) {
@@ -154,10 +197,11 @@ program
     if (options.model) {
       overrides.models = { default: options.model };
     }
-    await runAgent(cwd, prompt, overrides, false, {
+    const outcome = await runAgent(cwd, prompt, overrides, false, {
       nonInteractive: true,
       jsonl: !!options.jsonl,
     });
+    applyOutcomeExitCode(outcome);
   });
 
 try {

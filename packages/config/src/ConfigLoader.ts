@@ -172,6 +172,14 @@ function warnUnsupportedConfiguration(filePath: string): void {
   );
 }
 
+function migrateLegacySessionPath(sessionPath: string): string {
+  const normalized = sessionPath.trim();
+  if (/^\.orbit[\\/]sessions\.sqlite$/i.test(normalized)) {
+    return ".orbit/sessions";
+  }
+  return normalized.replace(/\.(?:sqlite3?|db)$/i, ".sessions");
+}
+
 export class ConfigLoader {
   private static merge<T>(target: T, source: unknown): T {
     if (!isRecord(source)) return target;
@@ -286,6 +294,15 @@ export class ConfigLoader {
 
     // 6. Dynamically resolve apiKey using apiKeyEnv if apiKey not directly set
     const finalConfig = validated.data;
+    // Orbit historically advertised SQLite without implementing it; storage
+    // has always been directory-based JSON/JSONL. Transparently migrate old
+    // configuration so existing users keep their sessions in a real format.
+    if (finalConfig.session.store === "sqlite") {
+      finalConfig.session = {
+        store: "jsonl",
+        path: migrateLegacySessionPath(finalConfig.session.path),
+      };
+    }
     const credsManager =
       options.credentialsManager ??
       new CredentialsManager({ orbitDir: join(homeDirectory, ".orbit") });

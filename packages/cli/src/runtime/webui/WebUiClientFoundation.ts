@@ -6,6 +6,7 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
         connected: '已连接',
         reconnecting: '正在重连',
         disconnected: '连接断开',
+        retry: '立即重试',
         ready: '准备就绪',
         thinking: 'Orbit 正在思考…',
         sendAction: '发送消息',
@@ -17,7 +18,12 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
         completed: '任务已完成',
         copied: '已复制代码',
         copy: '复制',
+        copyResponse: '复制回复',
         copiedShort: '已复制',
+        codeLines: '行',
+        expandCode: '展开代码',
+        collapseCode: '收起代码',
+        table: '数据表格',
         reasoning: '思考过程',
         tool: '工具',
         running: '运行中',
@@ -27,21 +33,53 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
         accessExpired: 'WebUI 访问凭据无效，请在终端重新运行 /webui。',
         settingsSaved: '设置已更新',
         nothingRunning: '当前没有正在运行的任务。',
-        terminalApproval: '此工具可能需要在终端确认权限。',
+        approvalRequired: '等待你的确认',
+        approvalApproved: '已允许操作',
+        approvalDenied: '已拒绝操作',
         models: '模型',
         mode: '权限',
         messages: '消息',
-        tokens: '输出',
+        context: '上下文',
+        activeContext: '活动上下文',
+        clearContext: '全部清空',
+        removeContext: '从上下文移除',
+        readOnlyContext: '只读',
+        contextAdded: '已添加',
+        contextMore: '个更多文件',
+        workspace: '工作区',
+        tokens: '输入 / 输出',
+        contextWindow: '上下文',
         cache: '缓存读取',
         cost: '费用',
         user: '你',
         assistant: 'Orbit',
         draftRestored: '已恢复上次未发送的内容',
+        waitForConnection: '正在重连 Orbit，内容已保留，请稍后重试。',
+        terminalTurn: '终端任务',
+        untitledTask: '未命名任务',
+        sessionSwitched: '会话已切换',
+        sessionCreated: '已新建任务',
+        focusComposer: '聚焦输入框',
+        openActivity: '打开任务活动',
+        openSettings: '打开设置',
+        compactContext: '压缩当前上下文',
+        recentSession: '最近会话',
+        switchModel: '切换模型',
+        switchMode: '切换权限模式',
+        action: '操作',
+        close: '关闭',
+        openNavigation: '打开导航',
+        collapseNavigation: '收起导航',
+        modeStrict: '严格',
+        modeNormal: '标准',
+        modeAuto: '自动',
+        modePlan: '规划',
       }
     : {
         connected: 'Connected',
         reconnecting: 'Reconnecting',
         disconnected: 'Disconnected',
+        retry: 'Retry now',
         ready: 'Ready',
         thinking: 'Orbit is thinking…',
         sendAction: 'Send message',
@@ -53,7 +91,12 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
         completed: 'Task complete',
         copied: 'Code copied',
         copy: 'Copy',
+        copyResponse: 'Copy response',
         copiedShort: 'Copied',
+        codeLines: 'lines',
+        expandCode: 'Expand code',
+        collapseCode: 'Collapse code',
+        table: 'Data table',
         reasoning: 'Reasoning',
         tool: 'Tool',
         running: 'Running',
@@ -63,16 +106,47 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
         accessExpired: 'Web UI access expired. Run /webui again in Orbit.',
         settingsSaved: 'Settings updated',
         nothingRunning: 'Nothing is currently running.',
-        terminalApproval: 'This tool may require approval in the terminal.',
+        approvalRequired: 'Waiting for your approval',
+        approvalApproved: 'Action approved',
+        approvalDenied: 'Action denied',
         models: 'Model',
         mode: 'Mode',
         messages: 'Messages',
-        tokens: 'Output',
+        context: 'Context',
+        activeContext: 'Active context',
+        clearContext: 'Clear all',
+        removeContext: 'Remove from context',
+        readOnlyContext: 'Read only',
+        contextAdded: 'Added',
+        contextMore: 'more files',
+        workspace: 'Workspace',
+        tokens: 'Input / output',
+        contextWindow: 'Context',
         cache: 'Cache read',
         cost: 'Cost',
         user: 'You',
         assistant: 'Orbit',
         draftRestored: 'Restored your unsent draft',
+        waitForConnection: 'Orbit is reconnecting. Your message is preserved; try again shortly.',
+        terminalTurn: 'Terminal task',
+        untitledTask: 'Untitled task',
+        sessionSwitched: 'Session switched',
+        sessionCreated: 'New task created',
+        focusComposer: 'Focus message composer',
+        openActivity: 'Open task activity',
+        openSettings: 'Open settings',
+        compactContext: 'Compact current context',
+        recentSession: 'Recent session',
+        switchModel: 'Switch model',
+        switchMode: 'Switch permission mode',
+        action: 'Action',
+        close: 'Close',
+        openNavigation: 'Open navigation',
+        collapseNavigation: 'Collapse navigation',
+        modeStrict: 'Strict',
+        modeNormal: 'Normal',
+        modeAuto: 'Auto',
+        modePlan: 'Plan',
       };
 
   const suggestionPrompts = language === 'zh'
@@ -92,24 +166,60 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
   const elements = {
     appShell: byId('appShell'),
     sidebar: byId('sidebar'),
+    workspaceView: document.querySelector('.workspace-view'),
     sidebarBackdrop: byId('sidebarBackdrop'),
     menuButton: byId('menuButton'),
+    sidebarCollapseButton: byId('sidebarCollapseButton'),
     inspector: byId('inspector'),
+    inspectorBackdrop: byId('inspectorBackdrop'),
     inspectorButton: byId('inspectorButton'),
     inspectorClose: byId('inspectorClose'),
     activityTab: byId('activityTab'),
     settingsTab: byId('settingsTab'),
     activityPanel: byId('activityPanel'),
     settingsPanel: byId('settingsPanel'),
+    conversation: byId('conversation'),
     messageScroll: byId('messageScroll'),
     messages: byId('messages'),
     emptyState: byId('emptyState'),
+    activeTaskTitle: byId('activeTaskTitle'),
+    recentSection: byId('recentSection'),
+    recentSessions: byId('recentSessions'),
+    newTaskButton: byId('newTaskButton'),
+    commandsButton: byId('commandsButton'),
+    commandTrigger: byId('commandTrigger'),
+    commandPalette: byId('commandPalette'),
+    commandPaletteBackdrop: byId('commandPaletteBackdrop'),
+    commandSearch: byId('commandSearch'),
+    commandResults: byId('commandResults'),
+    commandEmpty: byId('commandEmpty'),
+    contextMeter: byId('contextMeter'),
+    contextPercent: byId('contextPercent'),
+    emptyComposerSlot: byId('emptyComposerSlot'),
+    composerDock: byId('composerDock'),
+    composerAnchor: byId('composerAnchor'),
     jumpBottom: byId('jumpBottom'),
     composer: byId('composer'),
     prompt: byId('prompt'),
+    contextPickerButton: byId('contextPickerButton'),
+    contextChipCount: byId('contextChipCount'),
+    contextShelf: byId('contextShelf'),
+    contextFileList: byId('contextFileList'),
+    clearContextButton: byId('clearContextButton'),
+    contextPicker: byId('contextPicker'),
+    contextPickerClose: byId('contextPickerClose'),
+    contextSearch: byId('contextSearch'),
+    contextResults: byId('contextResults'),
+    contextEmpty: byId('contextEmpty'),
     sendButton: byId('sendButton'),
     sendGlyph: byId('sendGlyph'),
     turnStatus: byId('turnStatus'),
+    approvalPanel: byId('approvalPanel'),
+    approvalTitle: byId('approvalTitle'),
+    approvalReason: byId('approvalReason'),
+    approvalPreview: byId('approvalPreview'),
+    denyApprovalButton: byId('denyApprovalButton'),
+    approveApprovalButton: byId('approveApprovalButton'),
     connectionState: byId('connectionState'),
     connectionLabel: byId('connectionLabel'),
     modelSelect: byId('modelSelect'),
@@ -118,6 +228,7 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
     permissionSegments: byId('permissionSegments'),
     searchToggle: byId('searchToggle'),
     searchEnabled: byId('searchEnabled'),
+    searchDependencies: byId('searchDependencies'),
     searchProvider: byId('searchProvider'),
     searchMax: byId('searchMax'),
     events: byId('events'),
@@ -131,6 +242,7 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
 
   const state = {
     ready: false,
+    initializing: false,
     busy: false,
     submitting: false,
     stopping: false,
@@ -143,36 +255,90 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
     animationFrame: 0,
     stickToBottom: true,
     eventSource: null,
+    eventRetryTimer: 0,
+    eventRetryAttempt: 0,
+    connectionNoticeTimer: 0,
+    shuttingDown: false,
     status: null,
     activityRows: 0,
     currentThinkingRow: null,
     toolRows: new Map(),
+    streamingTools: new Map(),
     statusRefresh: null,
+    controlTurnId: null,
+    controlPrompt: '',
+    externalTurn: false,
+    useBearerTransport: false,
+    pendingApproval: null,
+    approvalSubmitting: false,
   };
 
-  const mobileSidebarQuery = window.matchMedia('(max-width: 780px)');
+  const mobileSidebarQuery = window.matchMedia('(max-width: 900px)');
+  const systemThemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
   let sidebarReturnFocus = null;
   let inspectorReturnFocus = null;
 
+  const webSessionTokenKey = 'orbit.webui.bootstrap-token';
   const tokenFromHash = new URLSearchParams(location.hash.slice(1)).get('token') || '';
+  let webSessionToken = tokenFromHash;
+  let sessionRecoveryPromise = null;
+  try {
+    if (tokenFromHash) sessionStorage.setItem(webSessionTokenKey, tokenFromHash);
+  } catch {}
   if (location.hash) {
     history.replaceState(null, document.title, location.pathname + location.search);
   }
 
+  function readLocalStorage(key, fallback) {
+    try {
+      return localStorage.getItem(key) || fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function writeLocalStorage(key, value) {
+    try {
+      if (value) localStorage.setItem(key, value);
+      else localStorage.removeItem(key);
+    } catch {}
+  }
+
   function setConnection(kind, label) {
+    if (state.connectionNoticeTimer) {
+      window.clearTimeout(state.connectionNoticeTimer);
+      state.connectionNoticeTimer = 0;
+    }
     elements.connectionState.classList.toggle('is-connected', kind === 'connected');
     elements.connectionState.classList.toggle('is-disconnected', kind === 'disconnected');
+    elements.appShell.classList.toggle('is-connected', kind === 'connected');
+    elements.appShell.classList.remove('is-reconnecting', 'is-disconnected');
+    if (kind === 'connecting') {
+      state.connectionNoticeTimer = window.setTimeout(() => {
+        state.connectionNoticeTimer = 0;
+        if (!state.ready && elements.connectionLabel.textContent === label) {
+          elements.appShell.classList.add('is-reconnecting');
+        }
+      }, 1400);
+    } else if (kind === 'disconnected') {
+      elements.appShell.classList.add('is-disconnected');
+    }
     elements.connectionLabel.textContent = label;
+    elements.connectionState.setAttribute('aria-label', label + '. ' + copy.retry);
   }
 
   function showToast(message, kind) {
+    const text = String(message || '');
+    const existing = Array.from(elements.toasts.children).find((item) => item.dataset.message === text);
+    if (existing) return;
     const toast = document.createElement('div');
     toast.className = 'toast' + (kind ? ' is-' + kind : '');
+    toast.dataset.message = text;
     const body = document.createElement('div');
-    body.textContent = String(message || '');
+    body.textContent = text;
     const close = document.createElement('button');
     close.type = 'button';
-    close.setAttribute('aria-label', 'Close');
+    close.setAttribute('aria-label', copy.close);
     close.textContent = '×';
     close.addEventListener('click', () => toast.remove());
     toast.append(document.createElement('span'), body, close);
@@ -181,32 +347,72 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
   }
 
   async function bootstrapSession() {
-    if (!tokenFromHash) return;
+    let savedToken = '';
+    try { savedToken = sessionStorage.getItem(webSessionTokenKey) || ''; } catch {}
+    const bootstrapToken = tokenFromHash || savedToken;
+    if (!bootstrapToken) return;
+    webSessionToken = bootstrapToken;
     const response = await fetch('/api/bootstrap', {
       method: 'POST',
       credentials: 'same-origin',
-      headers: { Authorization: 'Bearer ' + tokenFromHash },
+      headers: { Authorization: 'Bearer ' + bootstrapToken },
     });
-    if (!response.ok) throw new Error(copy.accessExpired);
+    if (!response.ok) {
+      try { sessionStorage.removeItem(webSessionTokenKey); } catch {}
+      webSessionToken = '';
+      state.useBearerTransport = false;
+    }
+  }
+
+  async function recoverSessionCookie() {
+    if (sessionRecoveryPromise) return sessionRecoveryPromise;
+    sessionRecoveryPromise = (async () => {
+      const response = await fetch(location.pathname || '/', {
+        method: 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { Accept: 'text/html' },
+      });
+      if (!response.ok) return false;
+      try { sessionStorage.removeItem(webSessionTokenKey); } catch {}
+      webSessionToken = '';
+      state.useBearerTransport = false;
+      return true;
+    })().finally(() => {
+      sessionRecoveryPromise = null;
+    });
+    return sessionRecoveryPromise;
   }
 
   async function api(url, options) {
     const request = options || {};
-    const response = await fetch(url, {
+    const requestApi = (useBearer) => fetch(url, {
       ...request,
       credentials: 'same-origin',
       headers: {
         Accept: 'application/json',
+        ...(useBearer && webSessionToken ? { Authorization: 'Bearer ' + webSessionToken } : {}),
         ...(request.headers || {}),
       },
     });
+    let response = await requestApi(state.useBearerTransport);
+    if (response.status === 401 && webSessionToken && !state.useBearerTransport) {
+      state.useBearerTransport = true;
+      response = await requestApi(true);
+    }
+    if (response.status === 401 && await recoverSessionCookie()) {
+      response = await requestApi(false);
+    }
     let data = {};
     const type = response.headers.get('content-type') || '';
     if (type.includes('application/json')) {
       data = await response.json();
     }
     if (!response.ok || data.ok === false) {
-      const error = new Error(data.message || data.error || response.statusText || 'Request failed');
+      const message = response.status === 401
+        ? copy.accessExpired
+        : data.message || data.error || response.statusText || 'Request failed';
+      const error = new Error(message);
       error.status = response.status;
       throw error;
     }
@@ -220,12 +426,15 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
       delete document.documentElement.dataset.theme;
       theme = 'system';
     }
-    localStorage.setItem('orbit.webui.theme', theme);
+    writeLocalStorage('orbit.webui.theme', theme);
     document.querySelectorAll('[data-theme-value]').forEach((button) => {
-      button.classList.toggle('is-active', button.dataset.themeValue === theme);
+      const active = button.dataset.themeValue === theme;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.content = theme === 'dark' ? '#151514' : '#f7f6f2';
+    const isDark = theme === 'dark' || (theme === 'system' && systemThemeQuery.matches);
+    if (meta) meta.content = isDark ? '#151b21' : '#edf1f0';
   }
 
   function autoSizePrompt() {
@@ -234,10 +443,35 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
   }
 
   function syncSidebarInteractivity() {
-    const hidden = mobileSidebarQuery.matches && !elements.appShell.classList.contains('sidebar-open');
-    elements.sidebar.inert = hidden;
-    if (hidden) elements.sidebar.setAttribute('aria-hidden', 'true');
+    const inspectorOpen = elements.inspector.classList.contains('is-open');
+    const mobile = mobileSidebarQuery.matches;
+    const sidebarOpen = mobile && elements.appShell.classList.contains('sidebar-open');
+    const desktopCollapsed = !mobile && elements.appShell.classList.contains('sidebar-collapsed');
+    const sidebarHidden = inspectorOpen || desktopCollapsed || (mobile && !sidebarOpen);
+    elements.sidebar.inert = sidebarHidden;
+    elements.workspaceView.inert = inspectorOpen || sidebarOpen;
+    if (sidebarHidden) elements.sidebar.setAttribute('aria-hidden', 'true');
     else elements.sidebar.removeAttribute('aria-hidden');
+    elements.menuButton.setAttribute('aria-expanded', String(mobile ? sidebarOpen : !desktopCollapsed));
+    elements.menuButton.setAttribute('aria-label', copy.openNavigation);
+    elements.sidebarCollapseButton.setAttribute('aria-expanded', String(!desktopCollapsed));
+    elements.sidebarCollapseButton.setAttribute('aria-label', copy.collapseNavigation);
+  }
+
+  function setDesktopSidebarCollapsed(collapsed) {
+    elements.appShell.classList.toggle('sidebar-collapsed', collapsed);
+    writeLocalStorage('orbit.webui.sidebar', collapsed ? 'collapsed' : 'expanded');
+    syncSidebarInteractivity();
+    if (collapsed) elements.menuButton.focus();
+  }
+
+  function toggleNavigation() {
+    if (mobileSidebarQuery.matches) {
+      if (elements.appShell.classList.contains('sidebar-open')) closeSidebar();
+      else openSidebar();
+      return;
+    }
+    setDesktopSidebarCollapsed(!elements.appShell.classList.contains('sidebar-collapsed'));
   }
 
   function closeSidebar() {
@@ -265,10 +499,17 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
   function setInspector(open, tab) {
     const wasOpen = elements.inspector.classList.contains('is-open');
     if (open && !wasOpen) inspectorReturnFocus = document.activeElement;
+    if (open) {
+      elements.appShell.classList.remove('sidebar-open');
+      elements.menuButton.setAttribute('aria-expanded', 'false');
+    }
     elements.inspector.classList.toggle('is-open', open);
+    elements.inspectorBackdrop.classList.toggle('is-open', open);
+    elements.inspectorBackdrop.hidden = !open;
     elements.inspector.setAttribute('aria-hidden', open ? 'false' : 'true');
     elements.inspector.inert = !open;
     elements.inspectorButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+    syncSidebarInteractivity();
     if (open && tab) selectInspectorTab(tab);
     if (open && !wasOpen) {
       elements.inspectorClose.focus();
@@ -281,14 +522,51 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
     }
   }
 
+  function trapInspectorFocus(event) {
+    if (event.key !== 'Tab' || !elements.inspector.classList.contains('is-open')) return;
+    const focusable = Array.from(elements.inspector.querySelectorAll(
+      'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+    )).filter((node) => !node.hidden && node.offsetParent !== null);
+    if (!focusable.length) {
+      event.preventDefault();
+      elements.inspector.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   function selectInspectorTab(tab) {
     const settings = tab === 'settings';
     elements.activityTab.classList.toggle('is-active', !settings);
     elements.activityTab.setAttribute('aria-selected', settings ? 'false' : 'true');
+    elements.activityTab.tabIndex = settings ? -1 : 0;
     elements.settingsTab.classList.toggle('is-active', settings);
     elements.settingsTab.setAttribute('aria-selected', settings ? 'true' : 'false');
+    elements.settingsTab.tabIndex = settings ? 0 : -1;
     elements.activityPanel.hidden = settings;
     elements.settingsPanel.hidden = !settings;
+  }
+
+  function handleInspectorTabKeydown(event) {
+    const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (!keys.includes(event.key)) return;
+    event.preventDefault();
+    const tabs = [elements.activityTab, elements.settingsTab];
+    const current = Math.max(0, tabs.indexOf(event.currentTarget));
+    let next = current;
+    if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = tabs.length - 1;
+    else next = (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    selectInspectorTab(next === 1 ? 'settings' : 'activity');
+    tabs[next].focus();
   }
 
   function nearBottom() {
@@ -304,20 +582,43 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
 
   function setBusy(busy, label) {
     state.busy = busy;
+    elements.appShell.classList.toggle('is-busy', busy);
     if (!busy) state.stopping = false;
     elements.sendButton.classList.toggle('is-stop', busy);
     elements.sendGlyph.textContent = busy ? '■' : '↑';
     elements.sendButton.setAttribute('aria-label', busy ? copy.stopAction : copy.sendAction);
+    elements.contextPickerButton.disabled = busy;
+    elements.clearContextButton.disabled = busy;
+    elements.contextFileList.querySelectorAll('button').forEach((button) => { button.disabled = busy; });
+    if (busy) closeContextPicker({ skipRestore: true });
     document.querySelectorAll(
       '#modelSelect, #permissionSelect, #searchToggle, #settingsPanel input, #settingsPanel select, #settingsPanel button:not([data-theme-value])',
     ).forEach((control) => { control.disabled = busy; });
+    syncSearchSettings(Boolean(state.status && state.status.tools && state.status.tools.webSearch && state.status.tools.webSearch.enabled));
     elements.turnStatus.classList.toggle('is-working', busy);
     elements.turnStatus.textContent = label || (busy ? copy.thinking : '');
+    updateSendButtonState();
+  }
+
+  function updateSendButtonState() {
+    const hasPrompt = Boolean(elements.prompt.value.trim());
+    elements.sendButton.disabled = state.busy
+      ? state.stopping
+      : !state.ready || !hasPrompt;
   }
 
   function setEmptyState() {
     const hasMessages = elements.messages.childElementCount > 0;
     elements.emptyState.hidden = hasMessages;
+    elements.conversation.classList.toggle('has-messages', hasMessages);
+    const target = hasMessages ? elements.composerAnchor : elements.emptyComposerSlot;
+    if (hasMessages) {
+      if (elements.composerDock.nextElementSibling !== elements.composerAnchor) {
+        elements.composerAnchor.before(elements.composerDock);
+      }
+    } else if (elements.composerDock.parentElement !== target) {
+      target.append(elements.composerDock);
+    }
   }
 
   function formatTime(value) {

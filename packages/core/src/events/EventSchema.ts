@@ -5,7 +5,7 @@ export const ModelRequestEventSchema = z.object({
   type: z.literal("model_request"),
   payload: z.object({
     model: z.string(),
-    messages: z.array(z.any()),
+    messages: z.array(z.unknown()),
   }),
 });
 
@@ -23,7 +23,7 @@ export const ModelResponseEventSchema = z.object({
         cacheWriteTokens: z.number().optional(),
       })
       .optional(),
-    toolCalls: z.array(z.any()).optional(),
+    toolCalls: z.array(z.unknown()).optional(),
   }),
 });
 
@@ -60,8 +60,31 @@ export const AgentCompletedEventSchema = z.object({
   payload: z.object({
     taskId: z.string(),
     success: z.boolean(),
-    result: z.any().optional(),
+    result: z.unknown().optional(),
     error: z.string().optional(),
+  }),
+});
+
+// --- User-facing turn lifecycle ---
+// These events describe the outer interaction owned by a UI surface. They are
+// intentionally separate from agent lifecycle events because orchestrated
+// runs can start and complete several internal agents for one user turn.
+export const UiTurnStartedEventSchema = z.object({
+  type: z.literal("ui_turn_started"),
+  payload: z.object({
+    turnId: z.string(),
+    source: z.enum(["terminal", "web"]),
+    prompt: z.string(),
+  }),
+});
+
+export const UiTurnCompletedEventSchema = z.object({
+  type: z.literal("ui_turn_completed"),
+  payload: z.object({
+    turnId: z.string(),
+    source: z.enum(["terminal", "web"]),
+    status: z.enum(["completed", "failed", "aborted"]),
+    message: z.string().optional(),
   }),
 });
 
@@ -118,7 +141,7 @@ export const ToolProposalEventSchema = z.object({
   payload: z.object({
     toolCallId: z.string().optional(),
     toolName: z.string(),
-    arguments: z.any(),
+    arguments: z.unknown(),
     explanation: z.string().optional(),
   }),
 });
@@ -137,8 +160,26 @@ export const ToolResultEventSchema = z.object({
   payload: z.object({
     toolCallId: z.string().optional(),
     toolName: z.string(),
-    result: z.any().optional(),
+    result: z.unknown().optional(),
     error: z.string().optional(),
+  }),
+});
+
+export const WebApprovalRequestedEventSchema = z.object({
+  type: z.literal("web_approval_requested"),
+  payload: z.object({
+    approvalId: z.string(),
+    kind: z.enum(["tool", "change", "action"]),
+    title: z.string(),
+    toolCallId: z.string().optional(),
+  }),
+});
+
+export const WebApprovalResolvedEventSchema = z.object({
+  type: z.literal("web_approval_resolved"),
+  payload: z.object({
+    approvalId: z.string(),
+    approved: z.boolean(),
   }),
 });
 
@@ -173,7 +214,7 @@ export const VerificationEndedEventSchema = z.object({
   type: z.literal("verification_ended"),
   payload: z.object({
     success: z.boolean(),
-    results: z.any().optional(),
+    results: z.unknown().optional(),
   }),
 });
 
@@ -224,6 +265,8 @@ export const OrbitEventSchema = z.discriminatedUnion("type", [
   AgentSpawnEventSchema,
   AgentStatusEventSchema,
   AgentCompletedEventSchema,
+  UiTurnStartedEventSchema,
+  UiTurnCompletedEventSchema,
   LoopStartEventSchema,
   ModelDeltaEventSchema,
   ThinkingDeltaEventSchema,
@@ -232,6 +275,8 @@ export const OrbitEventSchema = z.discriminatedUnion("type", [
   ToolProposalEventSchema,
   ToolApprovalEventSchema,
   ToolResultEventSchema,
+  WebApprovalRequestedEventSchema,
+  WebApprovalResolvedEventSchema,
   FileChangeEventSchema,
   CheckpointCreatedEventSchema,
   VerificationStartedEventSchema,

@@ -59,6 +59,11 @@ export const WEB_UI_FEEDBACK_STYLES = String.raw`
   49%, 100% { opacity: 0; }
 }
 
+@keyframes breathe {
+  0%, 100% { opacity: 0.45; transform: scale(0.88); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
 @keyframes message-in {
   from { opacity: 0; transform: translateY(5px); }
   to { opacity: 1; transform: translateY(0); }

@@ -186,7 +186,9 @@ export async function probeProviderCapabilities(
           typeof event.usage.cacheWriteTokens === "number";
       } else if (event.type === "error") {
         result.observed.error = redactSecrets(
-          event.error?.message || String(event.error),
+          event.error instanceof Error
+            ? event.error.message
+            : String(event.error),
         );
         break;
       } else if (event.type === "done") {

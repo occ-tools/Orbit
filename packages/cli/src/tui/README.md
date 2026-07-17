@@ -17,6 +17,9 @@ history persistence, paging, and theme constants.
 | `TextPager.ts`         | Interactive long-text paging with non-TTY fallback.              |
 | `TuiTheme.ts`          | Curated Morandi color tokens.                                    |
 
+The cat mascot and Morandi palette are part of the established terminal
+identity. Keep their placement stable when improving layout or behavior.
+
 ## Lifecycle
 
 1. Construction only initializes in-memory state.

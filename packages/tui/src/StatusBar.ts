@@ -6,38 +6,63 @@ export class StatusBar {
   private startTime = 0;
   private isActive = false;
   private spinnerFrame = 0;
-  private spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-  private originalWrite = process.stdout.write.bind(process.stdout);
-  private originalErrWrite = process.stderr.write.bind(process.stderr);
+  private readonly spinnerFrames = [
+    "⠋",
+    "⠙",
+    "⠹",
+    "⠸",
+    "⠼",
+    "⠴",
+    "⠦",
+    "⠧",
+    "⠇",
+    "⠏",
+  ];
+  private originalWrite: typeof process.stdout.write | null = null;
+  private originalErrWrite: typeof process.stderr.write | null = null;
+  private stdoutInterceptor: typeof process.stdout.write | null = null;
+  private stderrInterceptor: typeof process.stderr.write | null = null;
 
   constructor(private disabled = false) {}
 
   public start(message: string): void {
-    if (this.disabled) return;
-    if (this.isActive) return;
+    if (this.disabled || process.stdout.isTTY !== true) return;
+    if (this.isActive) {
+      this.update(message);
+      return;
+    }
     this.isActive = true;
     this.message = message;
     this.startTime = Date.now();
     this.spinnerFrame = 0;
 
-    process.stdout.write = (chunk: any, encoding?: any, cb?: any) => {
+    this.originalWrite = process.stdout.write;
+    this.originalErrWrite = process.stderr.write;
+    this.stdoutInterceptor = ((...args: unknown[]) => {
       this.clearStatus();
-      const res = this.originalWrite(chunk, encoding, cb);
+      const result = Reflect.apply(this.originalWrite!, process.stdout, args);
       this.drawStatus();
-      return res;
-    };
+      return result;
+    }) as typeof process.stdout.write;
 
-    process.stderr.write = (chunk: any, encoding?: any, cb?: any) => {
+    this.stderrInterceptor = ((...args: unknown[]) => {
       this.clearStatus();
-      const res = this.originalErrWrite(chunk, encoding, cb);
+      const result = Reflect.apply(
+        this.originalErrWrite!,
+        process.stderr,
+        args,
+      );
       this.drawStatus();
-      return res;
-    };
+      return result;
+    }) as typeof process.stderr.write;
+    process.stdout.write = this.stdoutInterceptor;
+    process.stderr.write = this.stderrInterceptor;
 
     this.timer = setInterval(() => {
       this.spinnerFrame = (this.spinnerFrame + 1) % this.spinnerFrames.length;
       this.drawStatus();
     }, 100);
+    this.timer.unref?.();
   }
 
   public update(message: string): void {
@@ -58,8 +83,19 @@ export class StatusBar {
 
     this.clearStatus();
 
-    process.stdout.write = this.originalWrite;
-    process.stderr.write = this.originalErrWrite;
+    if (this.originalWrite && process.stdout.write === this.stdoutInterceptor) {
+      process.stdout.write = this.originalWrite;
+    }
+    if (
+      this.originalErrWrite &&
+      process.stderr.write === this.stderrInterceptor
+    ) {
+      process.stderr.write = this.originalErrWrite;
+    }
+    this.originalWrite = null;
+    this.originalErrWrite = null;
+    this.stdoutInterceptor = null;
+    this.stderrInterceptor = null;
   }
 
   private drawStatus(): void {
@@ -67,10 +103,14 @@ export class StatusBar {
     const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(1);
     const spinner = this.spinnerFrames[this.spinnerFrame];
     const statusLine = `\r\x1b[K${picocolors.cyan(spinner)} ${this.message} (${elapsed}s)`;
-    this.originalWrite(statusLine);
+    if (this.originalWrite) {
+      Reflect.apply(this.originalWrite, process.stdout, [statusLine]);
+    }
   }
 
   private clearStatus(): void {
-    this.originalWrite("\r\x1b[K");
+    if (this.originalWrite) {
+      Reflect.apply(this.originalWrite, process.stdout, ["\r\x1b[K"]);
+    }
   }
 }

@@ -98,7 +98,11 @@ async function runSingleBench(
         cacheMissTokens = event.usage.cacheMissTokens || 0;
         reasoningTokens = event.usage.reasoningTokens || 0;
       } else if (event.type === "error") {
-        error = redactSecrets(event.error?.message || String(event.error));
+        error = redactSecrets(
+          event.error instanceof Error
+            ? event.error.message
+            : String(event.error),
+        );
         break;
       }
     }

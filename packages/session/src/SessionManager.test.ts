@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -158,5 +158,32 @@ describe("SessionManager audit persistence", () => {
     expect(JSON.parse(record.outputJson ?? "null") as unknown).toBe(
       "[Undefined]",
     );
+  });
+
+  it("persists terminal status and reactivates a resumed session", () => {
+    const manager = new SessionManager(tempDir);
+    const session = manager.startNewSession("deepseek", "deepseek-v4-flash");
+
+    manager.setStatus("completed");
+    expect(manager.getSessionStore().getSession(session.id)?.status).toBe(
+      "completed",
+    );
+
+    const resumedManager = new SessionManager(tempDir);
+    expect(resumedManager.resumeSession(session.id)?.status).toBe("active");
+    expect(
+      resumedManager.getSessionStore().getSession(session.id)?.status,
+    ).toBe("active");
+  });
+
+  it("honors a workspace-safe custom session root", () => {
+    const manager = new SessionManager(tempDir, ".orbit/custom-sessions");
+    const session = manager.startNewSession("deepseek", "deepseek-v4-flash");
+
+    expect(
+      existsSync(
+        join(tempDir, ".orbit", "custom-sessions", session.id, "session.json"),
+      ),
+    ).toBe(true);
   });
 });

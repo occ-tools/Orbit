@@ -1,16 +1,19 @@
 import http, { type IncomingMessage, type ServerResponse } from "http";
 import { randomBytes, randomUUID } from "crypto";
 import { z } from "zod";
+import { getAutocompleteCandidates } from "../AutocompleteCandidates.js";
 import {
   type ActiveWebTurn,
   type WebUiHandle,
   type WebUiOptions,
 } from "./WebUiContracts.js";
 import { WEB_UI_CLIENT_SCRIPT } from "./WebUiClient.js";
+import { WEB_UI_FAVICON_SVG } from "./WebUiBrand.js";
 import {
   collectWebUiMessages,
   collectWebUiSettings,
   collectWebUiStatus,
+  filterWebUiCompletionFiles,
 } from "./WebUiData.js";
 import { WebUiEventStream } from "./WebUiEventStream.js";
 import {
@@ -23,6 +26,7 @@ import {
 import { renderWebUiPage } from "./WebUiPage.js";
 import {
   isAuthorizedWebRequest,
+  isAuthorizedWebEventRequest,
   isBearerAuthorizedWebRequest,
   isNodeError,
   safeWebMessage,
@@ -46,6 +50,12 @@ const ChatRequestSchema = z
 const CancelRequestSchema = z
   .object({ turnId: WebTurnIdSchema.nullish() })
   .strict();
+const ApprovalDecisionSchema = z
+  .object({
+    id: WebTurnIdSchema,
+    approved: z.boolean(),
+  })
+  .strict();
 const SettingsPatchSchema = z
   .object({
     model: z.string().trim().min(1).max(200).optional(),
@@ -57,6 +67,21 @@ const SettingsPatchSchema = z
     webSearchMaxResults: z.number().int().min(1).max(20).optional(),
   })
   .strict();
+const SessionActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("new") }).strict(),
+  z
+    .object({
+      action: z.literal("resume"),
+      sessionId: z
+        .string()
+        .trim()
+        .min(1)
+        .max(200)
+        .regex(/^[a-zA-Z0-9_-]+$/),
+    })
+    .strict(),
+]);
+const CompletionQuerySchema = z.string().trim().max(200);
 
 type RuntimeState = "idle" | "starting" | "running" | "stopping" | "stopped";
 
@@ -100,6 +125,7 @@ export class OrbitWebUiRuntime {
   private server: http.Server | undefined;
   private handle: WebUiHandle | undefined;
   private stopPromise: Promise<void> | undefined;
+  private completionFilesPromise: Promise<string[]> | undefined;
 
   public constructor(options: WebUiOptions) {
     this.options = options;
@@ -131,6 +157,7 @@ export class OrbitWebUiRuntime {
       throw new Error("Orbit Web UI is not running.");
     }
     this.options = options;
+    this.completionFilesPromise = undefined;
   }
 
   /** Return this instance's live public handle. */
@@ -237,12 +264,17 @@ export class OrbitWebUiRuntime {
       sendJson(res, 403, { error: "Invalid Host header." });
       return;
     }
-    const url = new URL(req.url || "/", `http://${host}`);
+    // The Host header is validated above, so request routing does not need to
+    // incorporate it into the URL base. A fixed loopback base also keeps URL
+    // parsing stable across browser/proxy variants that preserve an absolute
+    // request target.
+    const url = new URL(req.url || "/", "http://127.0.0.1");
     if (req.method === "GET" && url.pathname === "/") {
       sendHtml(
         res,
         200,
         renderWebUiPage(options.config.language === "zh" ? "zh" : "en"),
+        token,
       );
       return;
     }
@@ -254,6 +286,10 @@ export class OrbitWebUiRuntime {
       sendAsset(res, "text/javascript", WEB_UI_CLIENT_SCRIPT);
       return;
     }
+    if (req.method === "GET" && url.pathname === "/assets/orbit-mark.svg") {
+      sendAsset(res, "image/svg+xml", WEB_UI_FAVICON_SVG);
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/bootstrap") {
       if (!isBearerAuthorizedWebRequest(req, token)) {
         sendJson(res, 401, { error: "Unauthorized." });
@@ -262,7 +298,13 @@ export class OrbitWebUiRuntime {
       bootstrapWebSession(res, token || "");
       return;
     }
-    if (!isAuthorizedWebRequest(req, token)) {
+    const isEventStream =
+      req.method === "GET" && url.pathname === "/api/events";
+    const isAuthorized = isEventStream
+      ? isAuthorizedWebRequest(req, token) ||
+        isAuthorizedWebEventRequest(req, token, url)
+      : isAuthorizedWebRequest(req, token);
+    if (!isAuthorized) {
       sendJson(res, 401, { error: "Unauthorized." });
       return;
     }
@@ -285,7 +327,22 @@ export class OrbitWebUiRuntime {
       sendJson(res, 200, collectWebUiSettings(options));
       return;
     }
-    if (req.method === "GET" && url.pathname === "/api/events") {
+    if (req.method === "GET" && url.pathname === "/api/completions") {
+      const query = CompletionQuerySchema.safeParse(
+        url.searchParams.get("query") || "",
+      );
+      if (!query.success) {
+        sendJson(res, 400, { error: "Invalid completion query." });
+        return;
+      }
+      const files = await this.getCompletionFiles(options);
+      sendJson(res, 200, {
+        files: filterWebUiCompletionFiles(files, query.data),
+        total: files.length,
+      });
+      return;
+    }
+    if (isEventStream) {
       this.events.attach(req, res);
       return;
     }
@@ -297,11 +354,57 @@ export class OrbitWebUiRuntime {
       await this.handleSettings(req, res, options);
       return;
     }
+    if (req.method === "POST" && url.pathname === "/api/session") {
+      await this.handleSession(req, res, options);
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/cancel") {
       await this.handleCancel(req, res, options);
       return;
     }
+    if (req.method === "POST" && url.pathname === "/api/approval") {
+      await this.handleApproval(req, res, options);
+      return;
+    }
     sendJson(res, 404, { error: "Not found" });
+  }
+
+  private async handleApproval(
+    req: IncomingMessage,
+    res: ServerResponse,
+    options: WebUiOptions,
+  ): Promise<void> {
+    if (!options.respondToApproval) {
+      sendJson(res, 409, {
+        ok: false,
+        message: "Approval bridge is not available.",
+      });
+      return;
+    }
+    try {
+      const decision = ApprovalDecisionSchema.parse(await readJsonBody(req));
+      const result = sanitizeActionResult(
+        await options.respondToApproval(decision),
+      );
+      sendJson(res, result.ok ? 200 : 409, result);
+    } catch (error) {
+      sendJson(res, webRequestErrorStatus(error), {
+        ok: false,
+        message: safeWebMessage(error),
+      });
+    }
+  }
+
+  private getCompletionFiles(options: WebUiOptions): Promise<string[]> {
+    if (!this.completionFilesPromise) {
+      this.completionFilesPromise = getAutocompleteCandidates(
+        options.cwd,
+        options.config,
+      ).then((candidates) =>
+        candidates.files.slice(0, options.config.context.maxFilesToIndex),
+      );
+    }
+    return this.completionFilesPromise;
   }
 
   private async handleChat(
@@ -422,10 +525,15 @@ export class OrbitWebUiRuntime {
       const body = CancelRequestSchema.parse(await readJsonBody(req));
       const turn = this.activeTurn;
       if (!turn) {
-        sendJson(res, 409, {
-          ok: false,
-          message: "Nothing is currently running.",
-        });
+        if (!options.cancelPrompt) {
+          sendJson(res, 409, {
+            ok: false,
+            message: "Nothing is currently running.",
+          });
+          return;
+        }
+        const result = await options.cancelPrompt();
+        sendJson(res, result.ok ? 200 : 409, sanitizeActionResult(result));
         return;
       }
       if (body.turnId && body.turnId !== turn.id) {
@@ -447,6 +555,37 @@ export class OrbitWebUiRuntime {
       if (!result.ok && this.activeTurn === turn) {
         turn.cancelRequested = false;
       }
+      sendJson(res, result.ok ? 200 : 409, sanitizeActionResult(result));
+    } catch (error: unknown) {
+      sendJson(res, webRequestErrorStatus(error), {
+        ok: false,
+        message: safeWebMessage(error),
+      });
+    }
+  }
+
+  private async handleSession(
+    req: IncomingMessage,
+    res: ServerResponse,
+    options: WebUiOptions,
+  ): Promise<void> {
+    if (!options.updateSession) {
+      sendJson(res, 409, {
+        ok: false,
+        message: "Session navigation is not available.",
+      });
+      return;
+    }
+    if (this.activeTurn) {
+      sendJson(res, 409, {
+        ok: false,
+        message: "Wait for the active task to finish before changing sessions.",
+      });
+      return;
+    }
+    try {
+      const action = SessionActionSchema.parse(await readJsonBody(req));
+      const result = await options.updateSession(action);
       sendJson(res, result.ok ? 200 : 409, sanitizeActionResult(result));
     } catch (error: unknown) {
       sendJson(res, webRequestErrorStatus(error), {

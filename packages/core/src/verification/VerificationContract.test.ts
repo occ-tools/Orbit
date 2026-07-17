@@ -137,6 +137,58 @@ describe("VerificationContractManager Tests", () => {
     expect(res.error).toContain("disallowed.txt");
   });
 
+  it("accepts allowed modified filenames containing spaces", async () => {
+    fs.writeFileSync(
+      path.join(cwd, ".orbit", "verification.json"),
+      JSON.stringify({ allowedModifiedFiles: ["src/**/*.ts"] }),
+      "utf8",
+    );
+    try {
+      execSync("git init", { cwd, stdio: "ignore" });
+    } catch {
+      return;
+    }
+    fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, "src", "file with spaces.ts"), "code");
+
+    const manager = new VerificationContractManager(
+      cwd,
+      "test-session",
+      cpManager,
+      true,
+    );
+    manager.initialize();
+
+    await expect(manager.runVerification()).resolves.toEqual({
+      success: true,
+    });
+  });
+
+  it("redacts credentials from failed suite output", async () => {
+    const credential = "sk-abcdefghijklmnopqrstuvwxyz1234567890";
+    fs.writeFileSync(
+      path.join(cwd, ".orbit", "verification.json"),
+      JSON.stringify({
+        suites: {
+          secret: `node -e "console.error('${credential}'); process.exit(1)"`,
+        },
+      }),
+      "utf8",
+    );
+    const manager = new VerificationContractManager(
+      cwd,
+      "test-session",
+      cpManager,
+      true,
+    );
+    manager.initialize();
+
+    const result = await manager.runVerification();
+    expect(result.success).toBe(false);
+    expect(result.error).not.toContain(credential);
+    expect(result.error).toContain("REDACTED");
+  });
+
   it("ignores repository verification commands unless project executables are trusted", () => {
     fs.writeFileSync(
       path.join(cwd, ".orbit", "verification.json"),

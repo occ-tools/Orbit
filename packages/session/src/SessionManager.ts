@@ -2,6 +2,8 @@ import { SessionStore } from "./SessionStore.js";
 import { serializeAuditValue } from "./auditSerialization.js";
 import type { Session, StoredHistoryMessage } from "./types.js";
 
+export type SessionStatus = Session["status"];
+
 function getToolCallId(input: unknown): string {
   try {
     if (
@@ -23,8 +25,8 @@ export class SessionManager {
   private store: SessionStore;
   private currentSession?: Session;
 
-  constructor(cwd: string) {
-    this.store = new SessionStore(cwd);
+  constructor(cwd: string, sessionRootPath = ".orbit/sessions") {
+    this.store = new SessionStore(cwd, sessionRootPath);
   }
 
   public startNewSession(provider: string, model: string): Session {
@@ -36,14 +38,23 @@ export class SessionManager {
   public resumeSession(id: string): Session | undefined {
     const session = this.store.getSession(id);
     if (session) {
-      this.currentSession = session;
+      this.currentSession = { ...session, status: "active" };
+      this.store.updateSession(this.currentSession);
       this.logEvent("session_resume", { id });
     }
-    return session;
+    return this.currentSession;
   }
 
   public getActiveSession(): Session | undefined {
     return this.currentSession;
+  }
+
+  /** Persists the lifecycle status for the current session. */
+  public setStatus(status: SessionStatus): void {
+    if (!this.currentSession || this.currentSession.status === status) return;
+    this.currentSession = { ...this.currentSession, status };
+    this.store.updateSession(this.currentSession);
+    this.logEvent("session_status", { status });
   }
 
   public logEvent(type: string, payload: unknown): void {

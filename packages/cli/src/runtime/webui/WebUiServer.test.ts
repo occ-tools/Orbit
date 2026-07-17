@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { ConfigSchema } from "@orbit-build/config";
 import {
   parseWebUiArgs,
+  resolveBrowserLaunch,
   startOrbitWebUi,
   stopOrbitWebUi,
 } from "./WebUiServer.js";
@@ -123,29 +127,153 @@ describe("WebUiServer", () => {
     });
   });
 
+  it("launches browsers without routing URLs through a command shell", () => {
+    const url = "http://127.0.0.1:6060/#token=value&unsafe=%26calc";
+    expect(resolveBrowserLaunch(url, "win32")).toEqual({
+      command: "explorer.exe",
+      args: [url],
+    });
+    expect(resolveBrowserLaunch(url, "darwin")).toEqual({
+      command: "open",
+      args: [url],
+    });
+    expect(resolveBrowserLaunch(url, "linux")).toEqual({
+      command: "xdg-open",
+      args: [url],
+    });
+  });
+
   it("ships valid standalone client assets and localized markup", () => {
     expect(() => new Function(WEB_UI_CLIENT_SCRIPT)).not.toThrow();
     expect(WEB_UI_STYLES).toContain("100dvh");
     expect(WEB_UI_STYLES).toContain("prefers-reduced-motion");
     const localizedPage = renderWebUiPage("zh");
     expect(localizedPage).toContain('lang="zh"');
-    expect(localizedPage).toContain("今天想完成什么？");
+    expect(localizedPage).toContain("接下来想做什么？");
+    expect(localizedPage).toContain('class="orbit-mark brand-mark"');
+    expect(localizedPage).toContain('class="orbit-cat-head"');
+    expect(localizedPage).toContain(
+      'id="sidebarCollapseButton" type="button" aria-label="收起导航"',
+    );
+    expect(localizedPage).toContain(
+      'id="recentSessions" aria-label="最近任务"',
+    );
+    expect(localizedPage).toContain(
+      'rel="icon" type="image/svg+xml" href="/assets/orbit-mark.svg"',
+    );
+    expect(localizedPage).toContain('id="emptyComposerSlot"');
+    expect(localizedPage).toContain('id="contextPicker"');
+    expect(localizedPage).toContain('id="contextSearch"');
+    expect(localizedPage).toContain('id="contextShelf"');
+    expect(localizedPage).toContain('id="contextFileList"');
+    expect(localizedPage).toContain('id="clearContextButton"');
+    expect(localizedPage).toContain('aria-controls="contextResults"');
+    expect(localizedPage).toContain("搜索工作区文件…");
+    expect(localizedPage).toContain('id="connectionHelp"');
+    expect(localizedPage.indexOf('id="connectionHelp"')).toBeLessThan(
+      localizedPage.indexOf('id="conversation"'),
+    );
+    expect(localizedPage).toContain("页面会自动重连");
+    expect(localizedPage).toContain("autofocus");
+    expect(localizedPage).not.toContain('class="orbit-companion"');
     expect(localizedPage).toContain('id="inspector"');
-    expect(localizedPage).toContain('aria-hidden="true" inert');
+    expect(localizedPage).toContain('id="inspectorBackdrop"');
+    expect(localizedPage).toContain('aria-modal="true"');
+    expect(localizedPage).toContain('id="commandPalette"');
+    expect(localizedPage).toContain(
+      'aria-label="命令帮助" aria-haspopup="dialog"',
+    );
+    expect(localizedPage).toContain('aria-labelledby="commandPaletteTitle"');
+    expect(localizedPage).toContain('aria-label="搜索操作…"');
+    expect(localizedPage).toContain('aria-controls="commandResults"');
+    expect(localizedPage).toContain('aria-autocomplete="list"');
+    expect(localizedPage).toContain("需要时使用已配置的搜索工具。");
+    expect(localizedPage).toContain('id="searchDependencies"');
+    expect(localizedPage).toContain('class="switch-track" aria-hidden="true"');
+    expect(localizedPage).toContain('aria-label="联网"');
+    expect(localizedPage).toContain('data-mode="normal" aria-pressed="false"');
+    expect(localizedPage).toContain(
+      'data-theme-value="system" aria-pressed="false"',
+    );
+    expect(localizedPage).toContain(
+      'id="settingsTab" type="button" role="tab" aria-selected="false" aria-controls="settingsPanel" tabindex="-1"',
+    );
+    expect(localizedPage).toContain('<option value="normal">标准</option>');
+    expect(localizedPage).toContain('aria-label="滚动到最新消息"');
+    expect(localizedPage).toContain('class="ui-icon"');
+    const englishPage = renderWebUiPage("en");
+    expect(englishPage).toContain(
+      'aria-label="Commands" aria-haspopup="dialog"',
+    );
+    expect(englishPage).toContain('aria-label="Search actions…"');
+    expect(localizedPage).toContain('id="contextMeter"');
+    expect(localizedPage).toContain('aria-hidden="true"');
+    expect(localizedPage).toContain('tabindex="-1" inert');
     expect(WEB_UI_CLIENT_SCRIPT).toContain("ensureStreamingTurn(event.turnId)");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("void reconcileStatus()");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("state.eventRetryAttempt");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("Math.min(8000");
     expect(WEB_UI_CLIENT_SCRIPT).toContain(
       "elements.events.querySelector('.activity-row')",
     );
-    expect(WEB_UI_CLIENT_SCRIPT).toContain("elements.sidebar.inert = hidden");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "elements.sidebar.inert = sidebarHidden",
+    );
     expect(WEB_UI_CLIENT_SCRIPT).toContain("elements.inspector.inert = !open");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("sidebarReturnFocus.focus()");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("elements.inspectorClose.focus()");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("returnTarget.focus()");
     expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "elements.appShell.classList.toggle('is-busy', busy)",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "elements.composerAnchor.before(elements.composerDock)",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
       "aborted ? 'warning' : failed ? 'error' : 'success'",
     );
     expect(WEB_UI_CLIENT_SCRIPT).toContain("command === '/doctor'");
+  });
+
+  it("serves authenticated workspace file completions", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "orbit-webui-files-"));
+    mkdirSync(join(cwd, "src", "runtime"), { recursive: true });
+    mkdirSync(join(cwd, "node_modules", "private"), { recursive: true });
+    writeFileSync(join(cwd, "src", "index.ts"), "export {};\n");
+    writeFileSync(join(cwd, "src", "runtime", "indexer.ts"), "export {};\n");
+    writeFileSync(join(cwd, "node_modules", "private", "index.ts"), "hidden\n");
+
+    try {
+      const handle = await startOrbitWebUi({
+        cwd,
+        port: 0,
+        open: false,
+        config: ConfigSchema.parse({}),
+      });
+      const url = new URL(handle.url);
+      const token = new URLSearchParams(url.hash.slice(1)).get("token");
+      const endpoint = `${url.origin}/api/completions?query=index`;
+
+      const unauthorized = await fetch(endpoint);
+      expect(unauthorized.status).toBe(401);
+
+      const response = await fetch(endpoint, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        files: ["src/index.ts", "src/runtime/indexer.ts"],
+        total: 2,
+      });
+
+      const invalid = await fetch(
+        `${url.origin}/api/completions?query=${"x".repeat(201)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      expect(invalid.status).toBe(400);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("allowlists and redacts events before sending them to browsers", () => {
@@ -177,6 +305,8 @@ describe("WebUiServer", () => {
   it("serves the Orbit graphical page and status API", async () => {
     const submitted: string[] = [];
     const patches: unknown[] = [];
+    const sessionActions: unknown[] = [];
+    const approvalDecisions: unknown[] = [];
     const handle = await startOrbitWebUi({
       cwd: "D:/repo",
       port: 0,
@@ -273,6 +403,22 @@ describe("WebUiServer", () => {
         patches.push(patch);
         return { ok: true };
       },
+      updateSession: async (action) => {
+        sessionActions.push(action);
+        return { ok: true };
+      },
+      getPendingApproval: () => ({
+        id: "approval-12345678",
+        kind: "tool",
+        title: "Allow bash?",
+        reason: "Bearer private-approval-token",
+        preview: "pnpm test",
+        requestedAt: "2026-07-17T00:00:00.000Z",
+      }),
+      respondToApproval: async (decision) => {
+        approvalDecisions.push(decision);
+        return { ok: decision.id === "approval-12345678" };
+      },
     });
     const handleUrl = new URL(handle.url);
     const token = new URLSearchParams(handleUrl.hash.slice(1)).get("token");
@@ -280,6 +426,7 @@ describe("WebUiServer", () => {
     const authHeaders = { Authorization: `Bearer ${token}` };
 
     const htmlResponse = await fetch(handle.url);
+    const rootCookie = htmlResponse.headers.get("set-cookie") || "";
     const html = await htmlResponse.text();
     const css = await fetch(`${baseUrl}assets/orbit.css`).then((response) =>
       response.text(),
@@ -287,11 +434,18 @@ describe("WebUiServer", () => {
     const script = await fetch(`${baseUrl}assets/orbit.js`).then((response) =>
       response.text(),
     );
+    const faviconResponse = await fetch(`${baseUrl}assets/orbit-mark.svg`);
+    const favicon = await faviconResponse.text();
     const status = await fetch(`${baseUrl}api/status`, {
       headers: authHeaders,
     }).then((response) => response.json());
     const messages = await fetch(`${baseUrl}api/messages`, {
       headers: authHeaders,
+    }).then((response) => response.json());
+    const approval = await fetch(`${baseUrl}api/approval`, {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "approval-12345678", approved: true }),
     }).then((response) => response.json());
     const chat = await fetch(`${baseUrl}api/chat`, {
       method: "POST",
@@ -309,6 +463,11 @@ describe("WebUiServer", () => {
         webSearchMaxResults: 12,
       }),
     }).then((response) => response.json());
+    const session = await fetch(`${baseUrl}api/session`, {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "resume", sessionId: "sess-test" }),
+    }).then((response) => response.json());
 
     expect(html).toContain('class="app-shell"');
     expect(html).toContain('id="emptyState"');
@@ -320,6 +479,14 @@ describe("WebUiServer", () => {
     expect(css).toContain("prefers-reduced-motion");
     expect(script).toContain("/api/chat");
     expect(script).toContain("/api/cancel");
+    expect(script).toContain("/api/session");
+    expect(faviconResponse.headers.get("content-type")).toContain(
+      "image/svg+xml",
+    );
+    expect(favicon).toContain("<svg");
+    expect(favicon).toContain("#d97972");
+    expect(script).toContain("/api/approval");
+    expect(html).toContain('id="approvalPanel"');
     expect(script).toContain("history.replaceState");
     expect(htmlResponse.headers.get("content-security-policy")).toContain(
       "script-src 'self'",
@@ -327,10 +494,18 @@ describe("WebUiServer", () => {
     expect(htmlResponse.headers.get("content-security-policy")).not.toContain(
       "unsafe-inline",
     );
+    expect(rootCookie).toContain("orbit_web_token=");
+    expect(rootCookie).toContain("HttpOnly");
+    expect(rootCookie).toContain("SameSite=Strict");
     expect(status.workspace).toBe("D:/repo");
     expect(status.provider.id).toBe("deepseek-openai");
     expect(status.provider.baseUrl).toBe("https://api.deepseek.com/v1");
     expect(status.permissions).toEqual({ mode: "normal" });
+    expect(status.approval).toMatchObject({
+      id: "approval-12345678",
+      kind: "tool",
+      reason: "Bearer ***REDACTED***",
+    });
     expect(status.tools.webSearch).toEqual({
       enabled: true,
       provider: "auto",
@@ -341,8 +516,19 @@ describe("WebUiServer", () => {
       /api-password|query-secret|Bearer-sensitive-token|search-secret|tavily-secret|skill-password|private-permission-marker/,
     );
     expect(status.session.activeId).toBe("sess-test");
-    expect(status.session.historyMessages).toBe(3);
+    expect(status.session.recent).toEqual([
+      expect.objectContaining({ id: "sess-test", active: true }),
+    ]);
+    expect(status.session.historyMessages).toBe(2);
     expect(status.context.relevantFiles).toBe(1);
+    expect(status.context.files).toEqual([
+      { path: "src/index.ts", readOnly: false },
+    ]);
+    expect(status.context.filesTruncated).toBe(false);
+    expect(approval).toEqual({ ok: true });
+    expect(approvalDecisions).toEqual([
+      { id: "approval-12345678", approved: true },
+    ]);
     expect(
       status.modelOptions.map((item: { id: string }) => item.id),
     ).toContain("deepseek-v4-flash");
@@ -355,11 +541,14 @@ describe("WebUiServer", () => {
     expect(messages.messages[1].blocks).toEqual([
       { type: "thinking", text: "checking" },
       { type: "text", text: "done" },
-      { type: "tool", name: "read_file", status: "running" },
+      {
+        type: "tool",
+        id: "tool-1",
+        name: "read_file",
+        status: "success",
+      },
     ]);
-    expect(messages.messages[2].blocks).toEqual([
-      { type: "tool", name: "read_file", status: "success" },
-    ]);
+    expect(messages.messages).toHaveLength(2);
     expect(chat.ok).toBe(true);
     expect(chat.turnId).toEqual(expect.any(String));
     expect(submitted).toEqual(["hi from web"]);
@@ -373,9 +562,17 @@ describe("WebUiServer", () => {
         webSearchMaxResults: 12,
       },
     ]);
+    expect(session.ok).toBe(true);
+    expect(sessionActions).toEqual([
+      { action: "resume", sessionId: "sess-test" },
+    ]);
 
     const unauthorized = await fetch(`${baseUrl}api/status`);
     expect(unauthorized.status).toBe(401);
+    const rootCookieStatus = await fetch(`${baseUrl}api/status`, {
+      headers: { Cookie: rootCookie.split(";", 1)[0] },
+    });
+    expect(rootCookieStatus.status).toBe(200);
 
     const bootstrap = await fetch(`${baseUrl}api/bootstrap`, {
       method: "POST",
@@ -472,6 +669,30 @@ describe("WebUiServer", () => {
     });
   });
 
+  it("forwards cancellation for a turn owned by another local surface", async () => {
+    const cancelPrompt = vi.fn(() => ({ ok: true }));
+    const handle = await startOrbitWebUi({
+      cwd: "D:/repo",
+      port: 0,
+      open: false,
+      config: ConfigSchema.parse({}),
+      cancelPrompt,
+    });
+    const handleUrl = new URL(handle.url);
+    const token = new URLSearchParams(handleUrl.hash.slice(1)).get("token");
+    const response = await fetch(`${handleUrl.origin}/api/cancel`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ turnId: "terminal-turn" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(cancelPrompt).toHaveBeenCalledOnce();
+  });
+
   it("redacts failed turn messages before broadcasting them", async () => {
     const handle = await startOrbitWebUi({
       cwd: "D:/repo",
@@ -503,6 +724,29 @@ describe("WebUiServer", () => {
       status: "failed",
       message: "Bearer ***REDACTED***",
     });
+  });
+
+  it("keeps the event stream available when a browser cannot retain its cookie", async () => {
+    const handle = await startOrbitWebUi({
+      cwd: "D:/repo",
+      port: 0,
+      open: false,
+      config: ConfigSchema.parse({}),
+    });
+    const url = new URL(handle.url);
+    const token = new URLSearchParams(url.hash.slice(1)).get("token");
+    const events = await fetch(
+      `${url.origin}/api/events?access_token=${encodeURIComponent(token || "")}`,
+    );
+
+    expect(events.status).toBe(200);
+    await expect(readSseEvent(events, "system")).resolves.toMatchObject({
+      kind: "system",
+      message: "connected",
+    });
+    await expect(
+      fetch(`${url.origin}/api/events?access_token=wrong-token`),
+    ).resolves.toMatchObject({ status: 401 });
   });
 
   it("can restart after a handle is closed directly", async () => {

@@ -1,4 +1,4 @@
-import { toolRegistry, ToolResult } from "@orbit-build/tools";
+import { toolRegistry, type ToolResult } from "@orbit-build/tools";
 import { OrbitToolCall } from "@orbit-build/model-providers";
 import type { OrbitConfig } from "@orbit-build/config";
 
@@ -12,7 +12,7 @@ export class StepRunner {
   public async run(
     toolCall: OrbitToolCall,
     abortSignal?: AbortSignal,
-  ): Promise<ToolResult<any>> {
+  ): Promise<ToolResult<unknown>> {
     const tool = toolRegistry.get(toolCall.name);
     if (!tool) {
       return {
@@ -22,16 +22,14 @@ export class StepRunner {
     }
 
     let parsedArgs: unknown;
-    let validated:
-      | { success: true; data: any }
-      | { success: false; error: any };
+    let validated: ReturnType<typeof tool.inputSchema.safeParse>;
     try {
       parsedArgs = JSON.parse(toolCall.arguments);
       validated = tool.inputSchema.safeParse(parsedArgs);
-    } catch (e: any) {
+    } catch (error: unknown) {
       return {
         ok: false,
-        error: `Tool input JSON parse failed: ${e.message}`,
+        error: `Tool input JSON parse failed: ${getErrorMessage(error)}`,
       };
     }
 
@@ -72,7 +70,7 @@ export class StepRunner {
       });
 
       return result;
-    } catch (e: any) {
+    } catch (error: unknown) {
       if (
         timeoutController.signal.aborted &&
         (!abortSignal || !abortSignal.aborted)
@@ -84,7 +82,7 @@ export class StepRunner {
       }
       return {
         ok: false,
-        error: `Tool execution threw exception: ${e.message}`,
+        error: `Tool execution threw exception: ${getErrorMessage(error)}`,
       };
     } finally {
       clearTimeout(timeoutId);
@@ -94,16 +92,23 @@ export class StepRunner {
     }
   }
 
-  private getExecutionTimeoutMs(validatedArgs: any): number {
+  private getExecutionTimeoutMs(validatedArgs: unknown): number {
     const configured = this.config?.tools?.bash?.timeoutMs;
     const configuredTimeout =
       typeof configured === "number" && Number.isFinite(configured)
         ? Math.max(1000, configured)
         : 120000;
-    const requested = validatedArgs?.timeoutMs;
+    const requested =
+      typeof validatedArgs === "object" && validatedArgs !== null
+        ? (validatedArgs as Record<string, unknown>).timeoutMs
+        : undefined;
     if (typeof requested === "number" && Number.isFinite(requested)) {
       return Math.max(1000, Math.min(requested, configuredTimeout));
     }
     return configuredTimeout;
   }
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

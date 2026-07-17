@@ -10,6 +10,22 @@ export function sanitizeWebEventPayload(
 ): Record<string, unknown> | undefined {
   if (!isRecord(payload)) return undefined;
   switch (type) {
+    case "ui_turn_started":
+      return {
+        turnId: safeWebText(payload.turnId, 200),
+        source: payload.source === "terminal" ? "terminal" : "web",
+        prompt: safeWebText(payload.prompt, 8_000),
+      };
+    case "ui_turn_completed":
+      return {
+        turnId: safeWebText(payload.turnId, 200),
+        source: payload.source === "terminal" ? "terminal" : "web",
+        status:
+          payload.status === "failed" || payload.status === "aborted"
+            ? payload.status
+            : "completed",
+        message: safeWebText(payload.message, 2_000),
+      };
     case "model_request":
       return { model: safeWebText(payload.model, 200) };
     case "model_response":
@@ -24,6 +40,9 @@ export function sanitizeWebEventPayload(
       return {
         toolCallId: safeWebText(payload.toolCallId, 200),
         toolName: safeWebText(payload.toolName, 200),
+        ...(summarizeWebToolValue(payload.arguments)
+          ? { detail: summarizeWebToolValue(payload.arguments) }
+          : {}),
         explanation: safeWebText(payload.explanation, 500),
       };
     case "tool_result":
@@ -37,6 +56,21 @@ export function sanitizeWebEventPayload(
         toolCallId: safeWebText(payload.toolCallId, 200),
         approved: payload.approved === true,
         reason: safeWebText(payload.reason, 500),
+      };
+    case "web_approval_requested":
+      return {
+        approvalId: safeWebText(payload.approvalId, 200),
+        kind:
+          payload.kind === "change" || payload.kind === "action"
+            ? payload.kind
+            : "tool",
+        title: safeWebText(payload.title, 200),
+        toolCallId: safeWebText(payload.toolCallId, 200),
+      };
+    case "web_approval_resolved":
+      return {
+        approvalId: safeWebText(payload.approvalId, 200),
+        approved: payload.approved === true,
       };
     case "cost_update":
       return {
@@ -107,12 +141,72 @@ export function isBearerAuthorizedWebRequest(
   return safeTokenMatch(supplied, expectedToken);
 }
 
+/**
+ * Authorize the local SSE endpoint when a browser has declined the HttpOnly
+ * loopback cookie. The capability is accepted only for this stream URL and
+ * remains protected by the same-origin check.
+ */
+export function isAuthorizedWebEventRequest(
+  req: IncomingMessage,
+  expectedToken: string | undefined,
+  url: URL,
+): boolean {
+  if (!expectedToken || !isRequestOriginAllowed(req)) return false;
+  return safeTokenMatch(
+    url.searchParams.get("access_token") || "",
+    expectedToken,
+  );
+}
+
 /** Convert an unknown failure into a bounded, credential-safe browser message. */
 export function safeWebMessage(error: unknown): string {
   return safeWebText(
     error instanceof Error ? error.message : String(error),
     2_000,
   );
+}
+
+/** Extract only low-risk, display-oriented fields from tool data. */
+export function summarizeWebToolValue(
+  value: unknown,
+  options: { allowPlainText?: boolean } = {},
+): string {
+  let candidate = value;
+  if (typeof candidate === "string") {
+    try {
+      candidate = JSON.parse(candidate);
+    } catch {
+      return options.allowPlainText ? safeWebToolText(candidate, 700) : "";
+    }
+  }
+  if (!isRecord(candidate)) return "";
+  const safeFields = [
+    "path",
+    "filePath",
+    "file",
+    "cwd",
+    "query",
+    "pattern",
+    "symbol",
+    "url",
+    "language",
+    "description",
+  ];
+  const entries: string[] = [];
+  for (const field of safeFields) {
+    const fieldValue = candidate[field];
+    if (
+      typeof fieldValue !== "string" &&
+      typeof fieldValue !== "number" &&
+      typeof fieldValue !== "boolean"
+    ) {
+      continue;
+    }
+    const text = safeWebToolText(String(fieldValue), 220);
+    if (text) entries.push(`${field}: ${text}`);
+    if (entries.length >= 3) break;
+  }
+  return entries.join("\n");
 }
 
 /** Sanitize an action result crossing the Web UI boundary. */
@@ -202,6 +296,15 @@ function safeNumber(value: unknown): number {
 function safeWebText(value: unknown, maxLength: number): string {
   if (typeof value !== "string") return "";
   return redactSecrets(stripAnsi(value)).slice(0, maxLength);
+}
+
+function safeWebToolText(value: string, maxLength: number): string {
+  return safeWebText(value, maxLength)
+    .replace(
+      /((?:api[_-]?key|token|password|secret)\s*[=:]\s*)[^\s,;]+/gi,
+      "$1***REDACTED***",
+    )
+    .trim();
 }
 
 function stripAnsi(value: string): string {

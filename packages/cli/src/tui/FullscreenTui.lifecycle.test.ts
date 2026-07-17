@@ -2,6 +2,7 @@ import readline from "readline";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FullscreenTui } from "./FullscreenTui.js";
 import { InputHistoryStore } from "./InputHistoryStore.js";
+import { stripAnsiCodes } from "./TerminalText.js";
 
 describe("FullscreenTui lifecycle", () => {
   const originalWrite = process.stdout.write;
@@ -63,5 +64,73 @@ describe("FullscreenTui lifecycle", () => {
     );
     tui.dispose();
     await expect(pending).resolves.toBeNull();
+  });
+
+  it("mirrors prompts submitted by another local UI", () => {
+    const tui = new FullscreenTui("C:/repo", "model", "test-version");
+    vi.spyOn(
+      tui as unknown as { render: () => void },
+      "render",
+    ).mockImplementation(() => undefined);
+
+    tui.addUserMessage("  inspect the workspace  ");
+
+    expect(
+      (tui as unknown as { history: Array<{ role: string; text: string }> })
+        .history,
+    ).toEqual([{ role: "user", text: "inspect the workspace" }]);
+  });
+
+  it("does not render an epoch-sized duration when an attempt start event is absent", () => {
+    const tui = new FullscreenTui("C:/repo", "model", "test-version");
+    const internals = tui as unknown as {
+      history: Array<{
+        role: "assistant";
+        text: string;
+        totalTime?: number;
+        thoughtTime?: number;
+      }>;
+      render: () => void;
+    };
+    internals.history = [{ role: "assistant", text: "done" }];
+    vi.spyOn(internals, "render").mockImplementation(() => undefined);
+
+    tui.finishAttempt();
+
+    expect(internals.history[0]?.totalTime).toBeUndefined();
+    expect(internals.history[0]?.thoughtTime).toBeUndefined();
+  });
+
+  it("preserves the Orbit cat mascot in the full-screen header", () => {
+    const output: string[] = [];
+    process.stdout.write = vi.fn((chunk: string | Uint8Array) => {
+      output.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    const tui = new FullscreenTui("C:/repo", "deepseek-v4-flash", "0.1.3");
+    const internals = tui as unknown as {
+      getGitSummary: () => {
+        branch: string;
+        added: number;
+        modified: number;
+        deleted: number;
+      };
+      getNpmNeedsUpdate: () => boolean;
+    };
+    vi.spyOn(internals, "getGitSummary").mockReturnValue({
+      branch: "main",
+      added: 0,
+      modified: 0,
+      deleted: 0,
+    });
+    vi.spyOn(internals, "getNpmNeedsUpdate").mockReturnValue(false);
+
+    tui.render(true);
+
+    const plain = stripAnsiCodes(output.join(""));
+    expect(plain).toContain("O R B I T");
+    expect(plain).toContain("/\\___/\\");
+    expect(plain).toContain("o.o");
+    expect(plain).toContain("♥");
   });
 });

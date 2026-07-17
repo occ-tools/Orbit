@@ -26,12 +26,15 @@ describe("CommandRouter Unit Tests", () => {
     getCheckpoints: () => [],
     getRelevantFiles: () => [],
     addRelevantFilePublic: vi.fn(),
+    setUserInteraction: vi.fn(),
   };
 
   const mockTui = {
     isActive: true,
     addSystemMessage: vi.fn(),
     addLog: vi.fn(),
+    addUserMessage: vi.fn(),
+    abortActiveRunnable: vi.fn(() => false),
     syncFromLoop: vi.fn(),
     setCandidates: vi.fn(),
   };
@@ -46,6 +49,62 @@ describe("CommandRouter Unit Tests", () => {
 
   it("includes the Orbit Web UI command in built-in slash commands", () => {
     expect(BUILTIN_SLASH_COMMANDS).toContain("/webui");
+  });
+
+  it("creates and resumes sessions through the Web UI bridge", async () => {
+    const history = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
+    const loop = {
+      ...mockLoop,
+      getSessionId: vi.fn(() => "session-existing"),
+      startNewSession: vi.fn(() => "session-new"),
+      resumeSession: vi.fn(() => true),
+      getHistory: vi.fn(() => history),
+    };
+    const tui = {
+      ...mockTui,
+      hasActiveRunnable: vi.fn(() => false),
+      loadHistory: vi.fn(),
+    };
+    const saveState = vi.fn();
+    const router = new CommandRouter(
+      process.cwd(),
+      mockConfig,
+      mockProvider,
+      vi.fn(),
+      loop as any,
+      tui as any,
+      true,
+      () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+      vi.fn(),
+      () => localState,
+      saveState,
+      mockInteraction as any,
+      false,
+    );
+    const updateSession = (
+      router as unknown as {
+        updateWebUiSession(action: {
+          action: "new" | "resume";
+          sessionId?: string;
+        }): Promise<{ ok: boolean }>;
+      }
+    ).updateWebUiSession.bind(router);
+
+    await expect(updateSession({ action: "new" })).resolves.toEqual({
+      ok: true,
+    });
+    await expect(
+      updateSession({ action: "resume", sessionId: "session-existing" }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(loop.startNewSession).toHaveBeenCalledWith("openai", "gpt-4");
+    expect(loop.resumeSession).toHaveBeenCalledWith("session-existing");
+    expect(tui.loadHistory).toHaveBeenNthCalledWith(1, []);
+    expect(tui.loadHistory).toHaveBeenNthCalledWith(2, history);
+    expect(saveState).toHaveBeenCalledWith({
+      lastSessionId: "session-new",
+      lastModel: "gpt-4",
+    });
   });
 
   it("serializes terminal turns while a Web UI turn owns the agent loop", async () => {
@@ -98,6 +157,7 @@ describe("CommandRouter Unit Tests", () => {
 
     expect(router.isWebUiBusy()).toBe(true);
     expect(router.beginTerminalRun()).toBeUndefined();
+    expect(tui.addUserMessage).toHaveBeenCalledWith("long browser task");
 
     finishWebRun?.();
     await expect(pendingWebTurn).resolves.toEqual({ ok: true });
@@ -159,6 +219,38 @@ describe("CommandRouter Unit Tests", () => {
       message: "Provider rejected the request.",
     });
     expect(router.isWebUiBusy()).toBe(false);
+  });
+
+  it("lets the Web UI stop a turn started in the terminal", () => {
+    const tui = {
+      ...mockTui,
+      abortActiveRunnable: vi.fn(() => true),
+    };
+    const router = new CommandRouter(
+      "/dummy/cwd",
+      mockConfig,
+      mockProvider,
+      vi.fn(),
+      mockLoop as any,
+      tui as any,
+      true,
+      () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+      vi.fn(),
+      () => localState,
+      vi.fn(),
+      mockInteraction as any,
+      false,
+    );
+    const release = router.beginTerminalRun();
+    const result = (
+      router as unknown as {
+        cancelWebPrompt(): { ok: boolean; message?: string };
+      }
+    ).cancelWebPrompt();
+
+    expect(result).toEqual({ ok: true });
+    expect(tui.abortActiveRunnable).toHaveBeenCalledWith("immediate");
+    release?.();
   });
 
   it("should output help message when /help is executed", async () => {

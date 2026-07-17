@@ -110,7 +110,13 @@ export class WebUiEventStream {
     heartbeat.unref();
     this.clients.set(res, heartbeat);
 
-    req.once("close", () => this.removeClient(res, false));
+    // IncomingMessage emits `close` after the request side has completed on
+    // supported Node versions. An SSE response intentionally remains open
+    // beyond that point, so treating request close as a disconnect drops the
+    // browser immediately after the initial `connected` event. `aborted`
+    // represents an interrupted request; the response close event remains the
+    // authoritative signal for a normal client disconnect.
+    req.once("aborted", () => this.removeClient(res, false));
     res.once("close", () => this.removeClient(res, false));
   }
 

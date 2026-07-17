@@ -62,6 +62,21 @@ describe("ConfigLoader tests", () => {
       ".claude/skills",
       "~/.claude/skills",
     ]);
+    expect(config.session).toEqual({
+      store: "jsonl",
+      path: ".orbit/sessions",
+    });
+  });
+
+  it("migrates the legacy unimplemented SQLite session setting", () => {
+    const config = loadConfig({
+      session: { store: "sqlite", path: ".orbit/sessions.sqlite" },
+    });
+
+    expect(config.session).toEqual({
+      store: "jsonl",
+      path: ".orbit/sessions",
+    });
   });
 
   it("migrates unversioned configuration to schema version 1", () => {

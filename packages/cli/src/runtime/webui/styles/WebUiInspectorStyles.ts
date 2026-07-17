@@ -1,5 +1,28 @@
 /** Inspector panels, runtime diagnostics, and settings controls. */
 export const WEB_UI_INSPECTOR_STYLES = String.raw`
+.inspector-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  background: color-mix(in srgb, var(--canvas-deep) 18%, transparent);
+  border: 0;
+  backdrop-filter: blur(2px) saturate(92%);
+  cursor: default;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.inspector-backdrop[hidden] {
+  display: none;
+}
+
+.inspector-backdrop.is-open {
+  opacity: 1;
+}
+
 .inspector {
   position: fixed;
   z-index: 50;
@@ -389,7 +412,7 @@ export const WEB_UI_INSPECTOR_STYLES = String.raw`
   pointer-events: none;
 }
 
-.switch span {
+.switch-track {
   position: absolute;
   inset: 0;
   background: var(--surface-hover);
@@ -398,7 +421,7 @@ export const WEB_UI_INSPECTOR_STYLES = String.raw`
   transition: background 150ms ease;
 }
 
-.switch span::after {
+.switch-track::after {
   content: "";
   position: absolute;
   top: 2px;
@@ -411,18 +434,28 @@ export const WEB_UI_INSPECTOR_STYLES = String.raw`
   transition: transform 150ms ease;
 }
 
-.switch input:checked + span {
+.switch input:checked + .switch-track {
   background: var(--accent);
   border-color: var(--accent);
 }
 
-.switch input:checked + span::after {
+.switch input:checked + .switch-track::after {
   transform: translateX(14px);
 }
 
-.switch input:focus-visible + span {
+.switch input:focus-visible + .switch-track {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+.search-dependencies {
+  display: grid;
+  gap: 8px;
+  transition: opacity 150ms ease;
+}
+
+.search-dependencies.is-disabled {
+  opacity: 0.48;
 }
 
 `;

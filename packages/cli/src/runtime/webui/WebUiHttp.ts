@@ -22,8 +22,9 @@ export function sendHtml(
   res: ServerResponse,
   status: number,
   body: string,
+  sessionToken?: string,
 ): void {
-  res.writeHead(status, {
+  const headers: Record<string, string> = {
     "Content-Type": "text/html; charset=utf-8",
     "Cache-Control": "no-store",
     "Content-Security-Policy":
@@ -33,14 +34,17 @@ export function sendHtml(
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-  });
+  };
+  if (sessionToken)
+    headers["Set-Cookie"] = createWebSessionCookie(sessionToken);
+  res.writeHead(status, headers);
   res.end(body);
 }
 
 /** Send an in-memory Web UI asset without allowing browser caching. */
 export function sendAsset(
   res: ServerResponse,
-  contentType: "text/css" | "text/javascript",
+  contentType: "text/css" | "text/javascript" | "image/svg+xml",
   body: string,
 ): void {
   res.writeHead(200, {
@@ -57,11 +61,15 @@ export function bootstrapWebSession(res: ServerResponse, token: string): void {
   res.writeHead(200, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
-    "Set-Cookie": `orbit_web_token=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`,
+    "Set-Cookie": createWebSessionCookie(token),
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
   });
   res.end(JSON.stringify({ ok: true }));
+}
+
+function createWebSessionCookie(token: string): string {
+  return `orbit_web_token=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`;
 }
 
 /** Parse a bounded JSON request body. */

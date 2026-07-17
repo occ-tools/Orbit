@@ -53,6 +53,7 @@ describe("REPL Autocomplete Completer Tests", () => {
       "/exit",
       "/quit",
       "/rollback",
+      "/compact",
       "/clear",
       "/add",
       "/drop",
@@ -94,8 +95,9 @@ describe("REPL Autocomplete Completer Tests", () => {
     const [codeHits, codeLine] = completer("/co");
     expect(codeHits).toContain("/config");
     expect(codeHits).toContain("/commit");
+    expect(codeHits).toContain("/compact");
     expect(codeHits).toContain("/copy");
-    expect(codeHits.length).toBe(3);
+    expect(codeHits.length).toBe(4);
     expect(codeLine).toBe("/co");
   });
 

@@ -21,6 +21,17 @@ function createLoop() {
     }),
     clearRelevantFilesPublic: vi.fn(() => files.splice(0)),
     clearHistoryPublic: vi.fn(),
+    compactHistoryPublic: vi.fn(async () => ({
+      model: "test-model",
+      maxContextTokens: 128_000,
+      compactAtTokens: 96_000,
+      beforeTokens: 20_000,
+      afterTokens: 8_000,
+      truncatedToolResults: 2,
+      truncatedContextMessages: 0,
+      droppedMessages: 12,
+      changed: true,
+    })),
   };
 }
 
@@ -62,6 +73,18 @@ describe("handleContextCommand workspace boundary", () => {
       "inside.ts",
       expect.any(String),
     );
+  });
+
+  it("manually compacts history and reports the model-aware result", async () => {
+    const deps = dependencies();
+    const result = await handleContextCommand("/compact", "", deps);
+
+    expect(result).toEqual({ shouldExit: false, processed: true });
+    expect(deps.loop.compactHistoryPublic).toHaveBeenCalledOnce();
+    expect(deps.printOutput).toHaveBeenCalledWith(
+      expect.stringContaining("20,000 → 8,000"),
+    );
+    expect(deps.tui.syncFromLoop).toHaveBeenCalledWith(deps.loop);
   });
 
   it("rejects parent traversal and outside absolute paths", async () => {

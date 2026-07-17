@@ -42,12 +42,17 @@ function runCli(args, options = {}) {
     windowsHide: true,
   });
   if (result.error) throw result.error;
-  if (result.status !== 0) {
+  const expectedStatus = options.expectedStatus ?? 0;
+  if (result.status !== expectedStatus) {
     fail(
-      `${JSON.stringify(args)} exited with ${result.status}: ${(result.stderr || result.stdout).trim()}`,
+      `${JSON.stringify(args)} exited with ${result.status}, expected ${expectedStatus}: ${(result.stderr || result.stdout).trim()}`,
     );
   }
-  return { stdout: result.stdout.trim(), stderr: result.stderr.trim() };
+  return {
+    status: result.status,
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim(),
+  };
 }
 
 function jsonAfterFirstBrace(output) {
@@ -184,6 +189,27 @@ try {
   if (!repl.stdout.includes("Exiting Orbit Interactive Shell")) {
     fail("non-TTY interactive fallback did not exit cleanly");
   }
+  const failedExec = runCli(
+    [
+      "exec",
+      "provider failure smoke",
+      "--provider",
+      "orbit-missing-provider",
+      "--jsonl",
+    ],
+    { cwd: tempWorkspace, expectedStatus: 4 },
+  );
+  const terminalEvent = failedExec.stdout
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .find((event) => event.type === "agent_completed");
+  if (
+    terminalEvent?.payload?.success !== false ||
+    terminalEvent?.payload?.result?.error?.code !== "provider_error"
+  ) {
+    fail("orbit exec did not emit a structured provider failure outcome");
+  }
 } finally {
   rmSync(tempWorkspace, { recursive: true, force: true });
 }
@@ -191,5 +217,5 @@ try {
 await smokeLsp();
 
 console.log(
-  `✔ CLI smoke passed: version, help, redacted config, doctor JSON, init, text REPL, and LSP lifecycle (${manifest.version}).`,
+  `✔ CLI smoke passed: version, help, redacted config, doctor JSON, init, text REPL, exec exit codes/JSONL, and LSP lifecycle (${manifest.version}).`,
 );

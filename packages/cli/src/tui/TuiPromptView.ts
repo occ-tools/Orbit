@@ -232,9 +232,12 @@ export function renderPromptScreen(
   for (let index = 0; index < rows - lines.length - 5; index++) {
     lines.push("");
   }
-  const leftPad = " ".repeat(Math.max(0, columns - 11));
-  lines.push(leftPad + theme.gray(" /\\ /\\ "));
-  lines.push(leftPad + theme.gray("/ °_° \\"));
+  const catLines = [theme.gray(" /\\ /\\ "), theme.gray("/ °_° \\")];
+  for (const row of catLines) {
+    lines.push(
+      " ".repeat(Math.max(0, columns - getStringWidth(row) - 2)) + row,
+    );
+  }
   lines.push(theme.gray("  " + "─".repeat(columns - 4)));
   lines.push(
     "  " +

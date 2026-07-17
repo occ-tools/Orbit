@@ -6,14 +6,14 @@ only small process-level commands whose state cannot yet be cleanly isolated.
 
 ## File map
 
-| Module                             | Responsibility                                            |
-| ---------------------------------- | --------------------------------------------------------- |
-| `CommandHandlerTypes.ts`           | Shared handled/not-handled result and output contracts.   |
-| `ShellCommandHandler.ts`           | `!` and `/run`, including permission approval.            |
-| `WorkspaceConfigCommandHandler.ts` | Validated direct and interactive `/config` updates.       |
-| `ContextCommandHandler.ts`         | `/add`, `/drop`, and `/clear` context/history operations. |
-| `RollbackCommandHandler.ts`        | Safe Git/checkpoint `/rollback` selection and execution.  |
-| `SessionCommandHandler.ts`         | `/chat` list, create, resume, delete, and picker flows.   |
+| Module                             | Responsibility                                                        |
+| ---------------------------------- | --------------------------------------------------------------------- |
+| `CommandHandlerTypes.ts`           | Shared handled/not-handled result and output contracts.               |
+| `ShellCommandHandler.ts`           | `!` and `/run`, including permission approval.                        |
+| `WorkspaceConfigCommandHandler.ts` | Validated direct and interactive `/config` updates.                   |
+| `ContextCommandHandler.ts`         | `/add`, `/drop`, `/compact`, and `/clear` context/history operations. |
+| `RollbackCommandHandler.ts`        | Safe Git/checkpoint `/rollback` selection and execution.              |
+| `SessionCommandHandler.ts`         | `/chat` list, create, resume, delete, and picker flows.               |
 
 Each implementation has a colocated Vitest file. Dependencies that touch
 prompts, Git, or process state should be injected through a narrow adapter so

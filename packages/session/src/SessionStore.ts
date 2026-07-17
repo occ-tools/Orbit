@@ -134,9 +134,11 @@ function appendJsonLine(filePath: string, value: unknown): void {
 
 export class SessionStore {
   private readonly cwd: string;
+  private readonly sessionRootPath: string;
 
-  constructor(cwd: string) {
+  constructor(cwd: string, sessionRootPath = ".orbit/sessions") {
     this.cwd = resolve(cwd);
+    this.sessionRootPath = sessionRootPath.trim();
   }
 
   public createSession(provider: string, model: string): Session {
@@ -374,7 +376,10 @@ export class SessionStore {
   }
 
   private resolveSessionRoot(): string {
-    const sessionRoot = resolveSafePath(this.cwd, join(".orbit", "sessions"));
+    const sessionRoot = resolveSafePath(this.cwd, this.sessionRootPath);
+    if (sessionRoot === this.cwd) {
+      throw new Error("Orbit session root cannot be the workspace root.");
+    }
     if (existsSync(sessionRoot)) {
       const rootStats = lstatSync(sessionRoot);
       if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
@@ -387,10 +392,7 @@ export class SessionStore {
   private resolveSessionDirectory(id: string): string {
     const validId = SessionIdSchema.parse(id);
     const sessionRoot = this.resolveSessionRoot();
-    const resolved = resolveSafePath(
-      this.cwd,
-      join(".orbit", "sessions", validId),
-    );
+    const resolved = resolveSafePath(this.cwd, join(sessionRoot, validId));
     const relativePath = relative(sessionRoot, resolved);
     if (
       relativePath !== validId ||

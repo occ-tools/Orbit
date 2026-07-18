@@ -3,6 +3,12 @@ name: Publish npm release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to verify and publish
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -18,25 +24,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: npm-production
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
       - uses: pnpm/action-setup@v4
         with:
           version: 10.34.5
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install an OIDC-capable npm CLI
+        run: npm install --global npm@11.18.0 && npm --version
       - run: pnpm install --frozen-lockfile
       - name: Match the release tag to the package version
         shell: bash
         run: |
           version="$(node -p "require('./packages/cli/package.json').version")"
-          test "${{ github.event.release.tag_name }}" = "v${version}"
+          test "${RELEASE_TAG}" = "v${version}"
       - run: pnpm verify:release
       - name: Pack the verified artifact
         id: pack
@@ -50,7 +59,7 @@ jobs:
           echo "filename=${filename}" >> "${GITHUB_OUTPUT}"
       - uses: actions/upload-artifact@v6
         with:
-          name: orbit-cli-${{ github.event.release.tag_name }}
+          name: orbit-cli-${{ env.RELEASE_TAG }}
           path: |
             ${{ steps.pack.outputs.filename }}
             ${{ steps.pack.outputs.filename }}.sha256
@@ -58,5 +67,3 @@ jobs:
           retention-days: 90
       - name: Publish the exact verified tarball with provenance
         run: npm publish "${{ steps.pack.outputs.filename }}" --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

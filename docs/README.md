@@ -16,3 +16,4 @@ Feature-specific implementation notes live next to the code they describe:
 - [Runtime command handlers](../packages/cli/src/runtime/commands/README.md)
 - [Full-screen TUI](../packages/cli/src/tui/README.md)
 - [Web UI runtime](../packages/cli/src/runtime/webui/README.md)
+- [Agent runtime](../packages/core/src/agent/README.md)

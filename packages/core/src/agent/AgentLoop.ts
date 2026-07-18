@@ -47,7 +47,6 @@ import { exec, execFile } from "child_process";
 import { promisify } from "util";
 const execPromise = promisify(exec);
 const execFilePromise = promisify(execFile);
-import { createRequire } from "module";
 import { MCPClient, DynamicMCPTool } from "@orbit-build/mcp";
 import {
   estimateTokenCount,
@@ -62,6 +61,20 @@ import {
   type ContextWindowStatus,
   type HistoryCompactionStats,
 } from "./ContextWindowManager.js";
+import { buildAuditDiff, isFileMutationTool, sha256 } from "./AgentAudit.js";
+import {
+  cleanAndTruncateTestLog,
+  parseSearchReplaceBlocks,
+} from "./AgentTextTransforms.js";
+import {
+  generateNativeToolsPrompt,
+  generateXMLToolsPrompt,
+  parseXMLToolCalls,
+} from "./AgentToolProtocol.js";
+import {
+  executeLocalPackageBinary,
+  isValidPackageName,
+} from "./LocalPackageBinary.js";
 
 const DEEPSEEK_CACHE_DEGRADED_HIT_RATE = 0.85;
 const DEEPSEEK_VERBOSE_CACHE_ENV = "ORBIT_DEEPSEEK_VERBOSE_CACHE";
@@ -3614,189 +3627,6 @@ ${errLog}`;
   }
 }
 
-function isFileMutationTool(toolName: string): boolean {
-  return [
-    "write_file",
-    "edit_file",
-    "replace_file_content",
-    "multi_replace_file_content",
-  ].includes(toolName);
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function buildAuditDiff(
-  filePath: string,
-  before: string | null,
-  after: string,
-): string {
-  const maxChars = 40_000;
-  const bounded = (value: string): string =>
-    value.length <= maxChars
-      ? value
-      : `${value.slice(0, maxChars)}\n... [truncated by Orbit audit]`;
-  const beforeText = bounded(before || "")
-    .split("\n")
-    .map((line) => `-${line}`)
-    .join("\n");
-  const afterText = bounded(after)
-    .split("\n")
-    .map((line) => `+${line}`)
-    .join("\n");
-  return `--- a/${filePath}\n+++ b/${filePath}\n@@ Orbit recorded before/after @@\n${beforeText}\n${afterText}`;
-}
-
-function generateXMLToolsPrompt(tools: any[]): string {
-  let prompt = `\n\n### Tool Use Instructions\n`;
-  prompt += `You can execute tasks by calling tools. To call a tool, wrap it in a <tool_call> XML block with the correct parameter tags.\n`;
-  prompt += `Format:\n`;
-  prompt += `<tool_call name="tool_name">\n`;
-  prompt += `  <param_name>value</param_name>\n`;
-  prompt += `</tool_call>\n\n`;
-  prompt += `Crucial XML Rules:\n`;
-  prompt += `1. DO NOT escape special characters (like <, >, &) inside parameter tags (e.g. inside <content> or <newText>). Write them raw. The parser handles raw content.\n`;
-  prompt += `2. Ensure parameter tag names match the parameter names exactly (case-sensitive).\n`;
-  prompt += `3. You can execute multiple tool calls in a single turn.\n\n`;
-  prompt += `Available Tools:\n\n`;
-
-  for (const tool of tools) {
-    prompt += `- **${tool.name}**: ${tool.description}\n`;
-    prompt += `  Parameters:\n`;
-    const schema = tool.inputSchema as any;
-    if (schema && schema.shape) {
-      for (const [key, prop] of Object.entries(schema.shape)) {
-        const field = describeZodPromptField(prop);
-        const values = field.values ? `, values: ${field.values}` : "";
-        const description = field.description
-          ? ` - ${field.description.replace(/\s+/g, " ").trim()}`
-          : "";
-        prompt += `    - \`${key}\`: (type: ${field.typeName}${field.isOptional ? ", optional" : ""}${values})${description}\n`;
-      }
-    }
-    prompt += `\n`;
-  }
-  return prompt;
-}
-
-function generateNativeToolsPrompt(
-  tools: Array<{ name: string; description: string }>,
-): string {
-  const names = tools
-    .map((tool) => tool.name)
-    .sort()
-    .join(", ");
-  return [
-    "### Native Tool Use",
-    "Use the provided native function tools when an operation requires workspace access.",
-    "Validate every argument against the supplied schema, use exact tool names, and wait for tool results before claiming success.",
-    "Do not print XML <tool_call> blocks or imitate tool calls in normal response text.",
-    `Available tools: ${names || "none"}.`,
-  ].join("\n");
-}
-
-function describeZodPromptField(schema: any): {
-  typeName: string;
-  isOptional: boolean;
-  values?: string;
-  description?: string;
-} {
-  const description = schema?.description || schema?._def?.description;
-  let current = schema;
-  let isOptional = false;
-
-  while (current?._def) {
-    const typeName = current._def.typeName;
-    if (typeName === "ZodOptional" || typeName === "ZodDefault") {
-      isOptional = true;
-      current = current._def.innerType;
-      continue;
-    }
-    if (typeName === "ZodNullable" || typeName === "ZodEffects") {
-      current = current._def.innerType || current._def.schema;
-      continue;
-    }
-    break;
-  }
-
-  const typeName = String(current?._def?.typeName || "ZodString")
-    .replace("Zod", "")
-    .toLowerCase();
-  const values =
-    current instanceof z.ZodEnum
-      ? (current as any)._def.values.join(", ")
-      : undefined;
-
-  return {
-    typeName,
-    isOptional,
-    values,
-    description:
-      description || current?.description || current?._def?.description,
-  };
-}
-
-function parseXMLToolCalls(text: string): OrbitToolCall[] {
-  const toolCalls: OrbitToolCall[] = [];
-  const toolCallRegex =
-    /<tool_call\s+name="([^"]+)"\s*>([\s\S]*?)<\/tool_call>/g;
-
-  let match;
-  let idCounter = 1;
-  while ((match = toolCallRegex.exec(text)) !== null) {
-    const name = match[1];
-    const innerContent = match[2];
-
-    const paramRegex = /<([a-zA-Z0-9_]+)\s*>([\s\S]*?)<\/\1\s*>/g;
-    const args: Record<string, any> = {};
-
-    let paramMatch;
-    while ((paramMatch = paramRegex.exec(innerContent)) !== null) {
-      const paramName = paramMatch[1];
-      let paramValue = paramMatch[2];
-
-      if (paramValue.startsWith("\n")) {
-        paramValue = paramValue.substring(1);
-      }
-      if (paramValue.endsWith("\n")) {
-        paramValue = paramValue.substring(0, paramValue.length - 1);
-      } else if (paramValue.endsWith("\r\n")) {
-        paramValue = paramValue.substring(0, paramValue.length - 2);
-      }
-
-      let typedValue: any = paramValue;
-      if (paramValue === "true") {
-        typedValue = true;
-      } else if (paramValue === "false") {
-        typedValue = false;
-      } else if (/^-?\d+$/.test(paramValue)) {
-        typedValue = parseInt(paramValue, 10);
-      } else if (/^-?\d+\.\d+$/.test(paramValue)) {
-        typedValue = parseFloat(paramValue);
-      } else if (
-        (paramValue.startsWith("[") && paramValue.endsWith("]")) ||
-        (paramValue.startsWith("{") && paramValue.endsWith("}"))
-      ) {
-        try {
-          typedValue = JSON.parse(paramValue);
-        } catch {
-          // Keep as string
-        }
-      }
-      args[paramName] = typedValue;
-    }
-
-    toolCalls.push({
-      id: `xml_call_${idCounter++}_${Date.now()}`,
-      name,
-      arguments: JSON.stringify(args),
-    });
-  }
-
-  return toolCalls;
-}
-
 export function extractFilePathFromLine(line: string): string {
   const winAbsMatch = line.match(/([a-zA-Z]:[\\/][^`*:"#\s]+)/);
   if (winAbsMatch) {
@@ -3814,165 +3644,4 @@ export function extractFilePathFromLine(line: string): string {
   }
 
   return line.replace(/[`*:*#\-+]/g, "").trim();
-}
-
-function parseSearchReplaceBlocks(
-  text: string,
-): { filePath: string; oldText: string; newText: string }[] {
-  const blocks: { filePath: string; oldText: string; newText: string }[] = [];
-  const regex =
-    /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>>/g;
-
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    const startIndex = match.index;
-    const oldText = match[1];
-    const newText = match[2];
-
-    const beforeText = text.substring(0, startIndex);
-    const lines = beforeText.split(/\r?\n/);
-    let filePath = "";
-
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      const extracted = extractFilePathFromLine(line);
-      if (
-        extracted &&
-        (extracted.includes("/") ||
-          extracted.includes("\\") ||
-          extracted.endsWith(".ts") ||
-          extracted.endsWith(".js") ||
-          extracted.endsWith(".txt"))
-      ) {
-        filePath = extracted;
-        break;
-      }
-    }
-
-    if (filePath) {
-      blocks.push({
-        filePath,
-        oldText,
-        newText,
-      });
-    }
-  }
-  return blocks;
-}
-
-function cleanAndTruncateTestLog(log: string): string {
-  const cleaned = log
-    .replace(/\u001b\[\d+(;\d+)*m/g, "")
-    .replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "");
-  const lines = cleaned.split(/\r?\n/);
-  const filteredLines: string[] = [];
-  let skipCount = 0;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (
-      trimmed.startsWith("at ") &&
-      (trimmed.includes("node_modules") ||
-        trimmed.includes("node:internal") ||
-        trimmed.includes("node:events"))
-    ) {
-      skipCount++;
-      continue;
-    }
-
-    if (skipCount > 0) {
-      filteredLines.push(
-        `    ... skipped ${skipCount} internal/library stack frames ...`,
-      );
-      skipCount = 0;
-    }
-    filteredLines.push(line);
-  }
-
-  if (skipCount > 0) {
-    filteredLines.push(
-      `    ... skipped ${skipCount} internal/library stack frames ...`,
-    );
-  }
-
-  if (filteredLines.length > 200) {
-    const top = filteredLines.slice(0, 80);
-    const bottom = filteredLines.slice(filteredLines.length - 120);
-    return [
-      ...top,
-      "\n[... WARNING: Log output truncated by Orbit for Token Optimization ...]\n",
-      ...bottom,
-    ].join("\n");
-  }
-
-  return filteredLines.join("\n");
-}
-
-async function executeLocalPackageBinary(
-  cwd: string,
-  packageName: string,
-  binaryName: string,
-  args: string[],
-): Promise<{ stdout: string; stderr: string }> {
-  const binaryPath = resolveLocalPackageBinary(cwd, packageName, binaryName);
-  const isJavaScript = /\.(?:cjs|mjs|js)$/i.test(binaryPath);
-  const executable = isJavaScript ? process.execPath : binaryPath;
-  const executableArgs = isJavaScript ? [binaryPath, ...args] : args;
-  return execFilePromise(executable, executableArgs, {
-    cwd,
-    encoding: "utf8",
-    timeout: 120000,
-  });
-}
-
-function resolveLocalPackageBinary(
-  cwd: string,
-  packageName: string,
-  binaryName: string,
-): string {
-  const workspaceRequire = createRequire(path.join(cwd, "package.json"));
-  const entryPath = workspaceRequire.resolve(packageName);
-  let currentDirectory = path.dirname(entryPath);
-
-  while (true) {
-    const manifestPath = path.join(currentDirectory, "package.json");
-    if (fs.existsSync(manifestPath)) {
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
-        name?: unknown;
-        bin?: unknown;
-      };
-      if (manifest.name === packageName) {
-        const bin = manifest.bin;
-        const relativeBinary =
-          typeof bin === "string"
-            ? bin
-            : typeof bin === "object" &&
-                bin !== null &&
-                binaryName in bin &&
-                typeof (bin as Record<string, unknown>)[binaryName] === "string"
-              ? (bin as Record<string, string>)[binaryName]
-              : undefined;
-        if (!relativeBinary) {
-          throw new Error(
-            `Package "${packageName}" does not expose binary "${binaryName}".`,
-          );
-        }
-        return path.resolve(currentDirectory, relativeBinary);
-      }
-    }
-    const parent = path.dirname(currentDirectory);
-    if (parent === currentDirectory) break;
-    currentDirectory = parent;
-  }
-
-  throw new Error(
-    `Unable to locate local package binary for "${packageName}".`,
-  );
-}
-
-function isValidPackageName(packageName: string): boolean {
-  if (packageName.length === 0 || packageName.length > 214) return false;
-  return /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/.test(
-    packageName,
-  );
 }

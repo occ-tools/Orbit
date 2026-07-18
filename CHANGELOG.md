@@ -4,6 +4,21 @@ All notable user-facing changes are recorded here. Orbit is pre-1.0; minor
 versions may still include configuration or API migrations, which must be
 called out explicitly.
 
+## 0.1.6 - 2026-07-18
+
+### Changed
+
+- Reorganized the core agent runtime by separating tool-protocol parsing,
+  SEARCH/replace and log transforms, audit-diff helpers, and local package
+  binary execution from the main stateful agent loop.
+- Rebuilt the repository and npm READMEs around the published installation,
+  project/chat workflow, synchronized TUI/Web UI, provider profiles, live model
+  discovery, local Ollama, DeepSeek V4 routing, and model-aware continuity.
+- Added focused agent-runtime navigation and tests for the extracted support
+  boundaries, keeping future maintenance changes easier to locate and verify.
+
+No configuration migration or runtime behavior change is required from 0.1.5.
+
 ## 0.1.5 - 2026-07-18
 
 ### Added

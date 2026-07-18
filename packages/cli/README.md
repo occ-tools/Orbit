@@ -1,94 +1,95 @@
 # @orbit-build/cli
 
-Orbit is a local-first AI coding agent for the terminal and editor. The CLI opens an interactive TUI, runs one-shot tasks, exposes an LSP autocomplete server, and includes provider diagnostics and repeatable latency/cache benchmarks.
+Orbit is a local-first AI coding agent for the terminal, browser, and editor. It
+is optimized for DeepSeek V4, supports compatible hosted providers and local
+Ollama models, and keeps project chats, active model state, approvals, and
+context synchronized between its TUI and Web UI.
 
-## Requirements
+## Install
 
-- Node.js 20 or newer
-- A supported model provider API key, or a local Ollama installation
-
-## Install and open Orbit
-
-From the Orbit workspace:
+Requires Node.js 20 or newer.
 
 ```bash
-pnpm install
-pnpm build
-pnpm install-global
+npm install --global @orbit-build/cli
+orbit --version
+orbit login
 ```
 
-The global command works in Command Prompt and PowerShell:
+Run `orbit` from a project folder:
 
 ```bash
-orbit login
+cd path/to/project
 orbit
 ```
 
-Enter `/webui` inside the interactive prompt to open the local browser UI.
+The global command works in PowerShell, Command Prompt, and POSIX shells. Open a
+new terminal if an existing shell has not refreshed npm's global binary path.
 
-## Development map
-
-- Runtime slash commands: [`src/runtime/commands/README.md`](src/runtime/commands/README.md)
-- Full-screen terminal UI: [`src/tui/README.md`](src/tui/README.md)
-- Loopback browser UI: [`src/runtime/webui/README.md`](src/runtime/webui/README.md)
-- Repository maintenance guide: [`../../docs/MAINTAINER_GUIDE.md`](../../docs/MAINTAINER_GUIDE.md)
-
-Run `pnpm test:cli` for CLI tests or `pnpm verify:cli` for lint, formatting,
-tests, and the CLI ESM/type build.
-
-## DeepSeek V4 defaults
-
-The default provider is `deepseek-openai` at `https://api.deepseek.com`.
-
-| Model               | Default roles             | Thinking default |   Context | Provider max output | Orbit request default |
-| ------------------- | ------------------------- | ---------------- | --------: | ------------------: | --------------------: |
-| `deepseek-v4-flash` | default, fast, summarizer | disabled         | 1,000,000 |             384,000 |                 8,192 |
-| `deepseek-v4-pro`   | planner, coder, reviewer  | high             | 1,000,000 |             384,000 |                16,384 |
-
-Both models support thinking/non-thinking modes, native tools, JSON output, and streaming. DeepSeek context caching is automatic and best-effort. Orbit keeps reusable prefixes stable, reports real hit/miss token telemetry, and does not send synthetic primer or keepalive requests.
-
-The temporary aliases preserve their historical mode while moving to V4:
-
-- `deepseek-chat` → `deepseek-v4-flash`, thinking disabled
-- `deepseek-reasoner` → `deepseek-v4-flash`, thinking high
-
-DeepSeek announced that both aliases will become inaccessible after 2026-07-24 15:59 UTC, so new configuration should use the V4 IDs.
-
-## Diagnostics and benchmarks
+## Main workflows
 
 ```bash
+orbit                         # interactive full-screen TUI
+orbit "Fix the failing tests" # one-shot task
+orbit exec "Review src" --jsonl
 orbit doctor --deepseek
-orbit doctor --probe --deepseek
-orbit doctor --json
-orbit doctor --strict
+orbit config
+orbit lsp
+```
 
+Enter `/webui` inside the TUI to open Orbit's authenticated local browser UI.
+Projects map to codebase folders and contain independent persisted chats that
+can be resumed, archived, or deleted.
+
+Use `/goal`, `/plan`, opt-in `/memory`, `/compact`, `/metrics`, `/model`,
+`/timeline`, `/rewind`, and `/rollback` to manage durable work. Switching models
+preserves the chat and recalculates context against the selected model window;
+automatic compaction protects continuity when the new window is smaller.
+
+## Providers
+
+`orbit login` creates and deletes saved provider profiles. For an
+OpenAI-compatible provider, supply its exact base URL, including `/v1` when the
+service requires it; Orbit does not guess URL suffixes. Authenticated provider
+catalogs and the local Ollama API populate the model selector with models that
+are actually available.
+
+The default official provider is DeepSeek's OpenAI-compatible endpoint at
+`https://api.deepseek.com`:
+
+| Model               | Default roles             | Thinking |   Context | Orbit output default |
+| ------------------- | ------------------------- | -------- | --------: | -------------------: |
+| `deepseek-v4-flash` | default, fast, summarizer | disabled | 1,000,000 |                8,192 |
+| `deepseek-v4-pro`   | planner, coder, reviewer  | high     | 1,000,000 |               16,384 |
+
+Orbit keeps reusable prefixes stable and reports measured DeepSeek cache
+hit/miss usage. It does not send synthetic cache primers or promise a fixed hit
+rate.
+
+```bash
+orbit doctor --probe --deepseek
+orbit doctor --json --strict
 orbit bench --model deepseek-v4-flash --thinking disabled --repeat 3 --max-tokens 256
 orbit bench --model deepseek-v4-pro --thinking high --repeat 3 --max-tokens 4096
-orbit bench --model deepseek-v4-flash --thinking disabled --cache-profile --repeat 3 --min-cache-hit 75
 ```
 
-`--repeat` accepts 1–20 samples. `--max-tokens` accepts 1–16,384; defaults are 256 with thinking disabled, 4,096 for high, and 8,192 for max. A cache profile runs at least three samples and defaults to disabled thinking unless explicitly overridden.
+## Automation contract
 
-`doctor --json` emits a versioned, credential-safe support snapshot and redacts
-the workspace path by default. Add `--strict` in automation to return a non-zero
-status when the snapshot contains warnings or errors.
+`orbit exec "task" --jsonl` never opens interactive approval menus. Approved
+operations continue; operations that require user approval are denied safely.
+The final event contains the structured outcome. Exit codes are `0` for
+completion, `2` for task or verification failure, `4` for provider startup
+failure, and `130` for abort.
 
-See the official DeepSeek [V4 release notes](https://api-docs.deepseek.com/news/news260424/), [thinking-mode guide](https://api-docs.deepseek.com/guides/thinking_mode/), and [context-cache guide](https://api-docs.deepseek.com/guides/kv_cache/).
+## Documentation and development
 
-## Other commands
+- [Repository overview](https://github.com/Hephaestus-DevKit/Orbit#readme)
+- [Maintainer guide](https://github.com/Hephaestus-DevKit/Orbit/blob/main/docs/MAINTAINER_GUIDE.md)
+- [Security policy](https://github.com/Hephaestus-DevKit/Orbit/blob/main/SECURITY.md)
+- [Changelog](https://github.com/Hephaestus-DevKit/Orbit/blob/main/CHANGELOG.md)
 
-```text
-orbit [task]      Open the TUI or execute a task
-orbit config      Show resolved, redacted configuration
-orbit init        Create project ORBIT.md instructions
-orbit lsp         Start the local autocomplete language server
-orbit exec        Run a non-interactive task with optional JSONL events
-```
+From a source checkout, run `pnpm install`, `pnpm build`, and
+`pnpm install-global`. Use `pnpm verify:cli` for focused CLI verification or
+`pnpm verify:release` before publishing.
 
-For automation, use `orbit exec "task" --jsonl`. It never opens terminal
-approval menus: policy-approved changes continue, while actions that still
-require approval are denied safely. The final `agent_completed` event contains
-the structured outcome. Exit codes are stable: `0` completed, `2` task or
-verification failure, `4` provider startup failure, and `130` aborted.
-
-Run `orbit --help` or `orbit <command> --help` for all options.
+License terms have not yet been finalized; repository visibility alone does not
+grant permission to use, modify, or redistribute the source.

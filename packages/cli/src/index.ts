@@ -11,6 +11,8 @@ import { runLSPServer } from "./commands/LSPServer.js";
 import { runLogin } from "./commands/login.js";
 import { runTraceExport } from "./commands/trace.js";
 import { runEval } from "./commands/eval.js";
+import { runClean } from "./commands/clean.js";
+import { runUpdate } from "./commands/update.js";
 import { readCliVersion } from "./runtime/CliVersion.js";
 import { existsSync, realpathSync, statSync } from "fs";
 import { resolve } from "path";
@@ -66,6 +68,41 @@ program
   .description("show resolved configurations")
   .action(() => {
     runConfig(process.cwd());
+  });
+
+program
+  .command("clean")
+  .description("preview and remove Orbit-owned user or project data")
+  .option("--user", "include user data under ~/.orbit")
+  .option(
+    "--project [path]",
+    "include project data under <path>/.orbit (default: current directory)",
+  )
+  .option("--all", "include both user and current-project Orbit data")
+  .option("--yes", "apply without an interactive DELETE confirmation")
+  .option("--json", "print the versioned cleanup plan and result as JSON")
+  .action(async (options) => {
+    await runClean(process.cwd(), {
+      user: !!options.user,
+      project: options.project,
+      all: !!options.all,
+      yes: !!options.yes,
+      json: !!options.json,
+    });
+  });
+
+program
+  .command("update")
+  .description("check for and install the latest published Orbit CLI")
+  .option("--check", "check for an update without installing it")
+  .option("--yes", "install an available update without prompting")
+  .option("--json", "print a versioned machine-readable result")
+  .action(async (options) => {
+    await runUpdate(readCliVersion(), {
+      check: !!options.check,
+      yes: !!options.yes,
+      json: !!options.json,
+    });
   });
 
 program

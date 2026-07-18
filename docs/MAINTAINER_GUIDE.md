@@ -45,7 +45,9 @@
 | DeepSeek 协议与流式解析 | `packages/model-providers/src/deepseek/*`                                                                  | `DeepSeekV4.test.ts`、OpenAI/Anthropic 兼容路径、usage/cache 字段                                                      |
 | DeepSeek 模型路由与诊断 | `packages/core/src/agent/ModelRouter.ts`、`packages/cli/src/runtime/ModelCatalog.ts`、`ProviderFactory.ts` | `packages/cli/src/commands/doctor.ts`、`bench.ts`、Flash/Pro 与 thinking 模式是否匹配                                  |
 | DeepSeek 缓存命中       | `packages/core/src/agent/PromptCacheSlab.ts`、`MessageBuilder.ts`                                          | 稳定前缀是否保持稳定、动态仓库上下文是否位于后部、不要伪造命中率                                                       |
-| 凭据登录与存储          | `packages/config/src/Credentials.ts`、`ConfigLoader.ts`                                                    | `packages/cli/src/commands/login.ts`、`doctor.ts`、Windows DPAPI 与日志脱敏                                            |
+| 凭据登录与存储          | `packages/config/src/Credentials.ts`、`CredentialKeyStore.ts`、`ConfigLoader.ts`                           | `packages/cli/src/commands/login.ts`、`doctor.ts`、Windows DPAPI、macOS Keychain、旧密钥迁移与日志脱敏                 |
+| 本地数据清理            | `packages/cli/src/runtime/CleanupManager.ts`                                                               | `packages/cli/src/commands/clean.ts`、用户目录/项目目录去重、符号链接与根目录保护、JSON 预览                           |
+| CLI 版本更新            | `packages/cli/src/runtime/UpdateManager.ts`                                                                | `packages/cli/src/commands/update.ts`、固定 npm 参数、SemVer 校验、超时、显式确认与 JSON 检查模式                      |
 | 配置字段                | `packages/config/src/schema.ts`、`defaults.ts`、`ConfigLoader.ts`                                          | Zod 默认值、环境变量覆盖、`redactConfig.ts`、兼容旧配置                                                                |
 | AgentLoop 行为          | `packages/core/src/agent/AgentLoop.ts`、`Orchestrator.ts`、`StepRunner.ts`                                 | `AgentToolProtocol.ts`、`AgentTextTransforms.ts`、`AgentAudit.ts`、`LocalPackageBinary.ts`、中止与失败结果是否完整传播 |
 | Agent 事件              | `packages/core/src/events/EventSchema.ts`、`EventBus.ts`                                                   | TUI/WebUI 消费方、事件是否可序列化、是否含敏感字段                                                                     |
@@ -195,6 +197,8 @@ cmd /d /c "orbit --version"
 8. **会话输出必须可恢复且可公开**：持久化写入应原子化；内部 volatile/system 上下文不应出现在普通历史或 Web API 中；序列化必须脱敏并保持旧数据兼容。
 9. **DeepSeek 缓存只能测量，不能假设**：保持可复用前缀稳定，读取服务端 usage 中的 hit/miss；不要发送合成预热/保活请求，也不要承诺固定命中率或延迟。
 10. **索引和工作树必须可降级、可清理**：无 Git、向量服务或交互终端时保留安全的功能降级；worktree、临时分支、锁和临时文件在成功、失败、中止时均清理。
+11. **清理范围必须显式且可预览**：`orbit clean` 只能删除用户级或项目级 `.orbit` 运行时目录；不得删除源码、`ORBIT.md`、`orbit.config.yaml` 或未验证的根路径。非交互删除必须显式传入 `--yes`。
+12. **更新不得静默改变安装**：TUI 每个进程只允许一次有超时、非阻塞、失败静默降级的后台版本检查；不得自动替换 CLI。版本必须来自 npm `dist-tags.latest` 并通过 SemVer 校验，安装只能在交互确认或显式 `--yes` 后执行。
 
 ## 建议工作流
 
@@ -214,3 +218,4 @@ cmd /d /c "orbit --version"
 - **WebUI 没有收到事件**：先确认 Agent 是否发出了 schema 内事件，再检查 `WebUiSecurity` allowlist、`WebUiEventStream` 实例状态，最后检查 Client 的 SSE 消费。
 - **会话恢复异常**：先验证磁盘数据 schema 与审计序列化，再看 AgentLoop/CommandRouter 的活动会话切换，不要直接编辑用户会话文件。
 - **Windows 凭据异常**：优先运行 `orbit doctor --deepseek`；检查 DPAPI 子进程环境和 PowerShell 版本，但不要打印或手动解密 key。
+- **macOS 凭据异常**：确认 `security` 命令和登录 Keychain 可用；旧 `master.key` 只应在 Keychain 写入成功后删除，清理用户数据时必须同步删除原生密钥。

@@ -9,8 +9,6 @@ import { FullscreenTui } from "../tui/FullscreenTui.js";
 import { ConfigSchema } from "@orbit-build/config";
 import { DiffView, Prompt } from "@orbit-build/tui";
 import picocolors from "picocolors";
-import { existsSync } from "fs";
-import { join } from "path";
 import {
   expandCustomCommand,
   loadCustomCommands,
@@ -47,6 +45,8 @@ import { launchOrbitProject } from "./ProjectLauncher.js";
 import { selectOrbitProjectFolder } from "./ProjectFolderPicker.js";
 import { handleSessionMetadataCommand } from "./commands/SessionMetadataCommandHandler.js";
 import { handleWorkspaceStateCommand } from "./commands/WorkspaceStateCommandHandler.js";
+import { runUpdate } from "../commands/update.js";
+import { readCliVersion } from "./CliVersion.js";
 
 export { getAutocompleteCandidates } from "./AutocompleteCandidates.js";
 export { BUILTIN_SLASH_COMMANDS } from "./SlashCommandCatalog.js";
@@ -76,6 +76,7 @@ export class CommandRouter {
     private saveLocalState: (state: any) => void,
     private tuiInteraction: UserInteraction,
     private multi?: boolean,
+    private updateOrbit: typeof runUpdate = runUpdate,
   ) {}
 
   /** Acquires the shared agent loop for a terminal turn. */
@@ -265,60 +266,35 @@ export class CommandRouter {
       if (command === "/update") {
         const isZh = config.language === "zh";
         const wasActive = useFullscreenTui && tui.isActive;
-
-        // 1. Check if package.json exists
-        const packageJsonPath = join(cwd, "package.json");
-        if (!existsSync(packageJsonPath)) {
+        const requestedFromWebUi = this.runCoordinator.isActive("web");
+        try {
+          const updateResult = await this.updateOrbit(
+            readCliVersion(),
+            { check: requestedFromWebUi },
+            {
+              interactive: true,
+              confirm: (prompt) => Prompt.askApproval(prompt),
+              write: (text) => this.printOutput(text),
+              beforeInstall: () => {
+                if (wasActive) tui.stop();
+              },
+              afterInstall: () => {
+                tui.syncFromLoop(loop);
+                if (wasActive) tui.start(config.budgetLimit);
+              },
+            },
+          );
+          tui.setOrbitUpdateAvailable?.(
+            updateResult.installed ? false : updateResult.check.updateAvailable,
+          );
+        } catch (error: unknown) {
+          const message =
+            error instanceof Error ? error.message : String(error);
           this.printOutput(
             isZh
-              ? picocolors.yellow(
-                  "当前工作区没有检测到 package.json，不支持 npm 更新。",
-                )
-              : picocolors.yellow(
-                  "No package.json found in the workspace. npm update not supported.",
-                ),
+              ? picocolors.red(`✖ Orbit 更新失败: ${message}`)
+              : picocolors.red(`✖ Orbit update failed: ${message}`),
           );
-          return { shouldExit: false, processed: true };
-        }
-
-        // 2. Determine command to use
-        let installCmd = "npm install";
-        if (existsSync(join(cwd, "pnpm-lock.yaml"))) {
-          installCmd = "pnpm install";
-        } else if (existsSync(join(cwd, "yarn.lock"))) {
-          installCmd = "yarn install";
-        } else if (existsSync(join(cwd, "bun.lockb"))) {
-          installCmd = "bun install";
-        }
-
-        if (wasActive) tui.stop();
-
-        try {
-          const approved = await Prompt.askApproval(
-            isZh
-              ? `检测到项目依赖需要更新，是否运行 "${installCmd}"？`
-              : `NPM dependencies need update. Run "${installCmd}"?`,
-          );
-
-          if (approved) {
-            console.log(picocolors.cyan(`\n● Running "${installCmd}"...`));
-            const { execSync } = await import("child_process");
-            execSync(installCmd, { cwd, stdio: "inherit" });
-            console.log(
-              picocolors.green(`✔ Dependencies updated successfully.\n`),
-            );
-
-            // Force clear TUI's cached npm check status so the heart turns red immediately
-            (tui as any).npmNeedsUpdate = false;
-            (tui as any).lastNpmCheckTime = Date.now();
-          } else {
-            console.log(picocolors.yellow(`\n✖ Update cancelled by user.\n`));
-          }
-        } catch (err: any) {
-          console.log(picocolors.red(`\n✖ Update failed: ${err.message}\n`));
-        } finally {
-          tui.syncFromLoop(loop);
-          if (wasActive) tui.start(config.budgetLimit);
         }
         return { shouldExit: false, processed: true };
       }

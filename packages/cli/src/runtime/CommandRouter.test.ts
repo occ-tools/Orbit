@@ -3,6 +3,7 @@ import { BUILTIN_SLASH_COMMANDS, CommandRouter } from "./CommandRouter.js";
 import { Prompt } from "@orbit-build/tui";
 import type { AgentLoopRunOutcome } from "@orbit-build/core";
 import { ConfigSchema } from "@orbit-build/config";
+import { runUpdate } from "../commands/update.js";
 
 describe("CommandRouter Unit Tests", () => {
   afterEach(() => {
@@ -50,6 +51,99 @@ describe("CommandRouter Unit Tests", () => {
 
   it("includes the Orbit Web UI command in built-in slash commands", () => {
     expect(BUILTIN_SLASH_COMMANDS).toContain("/webui");
+  });
+
+  it("routes /update to the Orbit CLI updater", async () => {
+    const updateOrbit = vi.fn(
+      async (
+        ...args: Parameters<typeof runUpdate>
+      ): Promise<Awaited<ReturnType<typeof runUpdate>>> => {
+        args[2]?.beforeInstall?.();
+        args[2]?.afterInstall?.();
+        return {
+          check: {
+            currentVersion: args[0],
+            latestVersion: "0.2.0",
+            updateAvailable: true,
+          },
+          installed: true,
+        };
+      },
+    );
+    const tui = {
+      ...mockTui,
+      stop: vi.fn(),
+      start: vi.fn(),
+      setOrbitUpdateAvailable: vi.fn(),
+    };
+    const router = new CommandRouter(
+      process.cwd(),
+      mockConfig,
+      mockProvider,
+      vi.fn(),
+      mockLoop as any,
+      tui as any,
+      true,
+      () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+      vi.fn(),
+      () => localState,
+      vi.fn(),
+      mockInteraction as any,
+      false,
+      updateOrbit,
+    );
+
+    await expect(router.route("/update")).resolves.toMatchObject({
+      processed: true,
+    });
+
+    expect(updateOrbit).toHaveBeenCalledOnce();
+    expect(tui.stop).toHaveBeenCalledOnce();
+    expect(tui.start).toHaveBeenCalledOnce();
+    expect(tui.setOrbitUpdateAvailable).toHaveBeenCalledWith(false);
+  });
+
+  it("keeps Web UI /update non-blocking and check-only", async () => {
+    const updateOrbit = vi.fn(
+      async (
+        ...args: Parameters<typeof runUpdate>
+      ): Promise<Awaited<ReturnType<typeof runUpdate>>> => ({
+        check: {
+          currentVersion: args[0],
+          latestVersion: "0.2.0",
+          updateAvailable: true,
+        },
+        installed: false,
+      }),
+    );
+    const router = new CommandRouter(
+      process.cwd(),
+      mockConfig,
+      mockProvider,
+      vi.fn(),
+      mockLoop as any,
+      { ...mockTui, hasActiveRunnable: vi.fn(() => false) } as any,
+      true,
+      () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+      vi.fn(),
+      () => localState,
+      vi.fn(),
+      mockInteraction as any,
+      false,
+      updateOrbit,
+    );
+    const submitWebPrompt = (
+      router as unknown as {
+        submitWebPrompt(prompt: string): Promise<{ ok: boolean }>;
+      }
+    ).submitWebPrompt.bind(router);
+
+    await expect(submitWebPrompt("/update")).resolves.toEqual({ ok: true });
+    expect(updateOrbit).toHaveBeenCalledWith(
+      expect.any(String),
+      { check: true },
+      expect.any(Object),
+    );
   });
 
   it("creates and resumes sessions through the Web UI bridge", async () => {

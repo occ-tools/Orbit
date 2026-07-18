@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { CredentialsManager } from "./Credentials.js";
@@ -130,4 +136,50 @@ describe("CredentialsManager tests", () => {
       }
     }
   });
+
+  it("migrates a legacy macOS master key into Keychain", () => {
+    const legacyKey = Buffer.alloc(32, 11);
+    const keyStore = createKeyStore();
+    writeFileSync(join(orbitDir, "master.key"), legacyKey.toString("base64"));
+    const manager = new CredentialsManager({
+      orbitDir,
+      platform: "darwin",
+      keyStore,
+    });
+
+    manager.storeSecret("DEEPSEEK_API_KEY", "secret");
+
+    expect(keyStore.store).toHaveBeenCalledWith(legacyKey);
+    expect(existsSync(join(orbitDir, "master.key"))).toBe(false);
+    expect(manager.getSecret("DEEPSEEK_API_KEY")).toBe("secret");
+  });
+
+  it("purges encrypted files and the native platform key", () => {
+    const keyStore = createKeyStore(Buffer.alloc(32, 13));
+    const manager = new CredentialsManager({
+      orbitDir,
+      platform: "darwin",
+      keyStore,
+    });
+    manager.storeSecret("DEEPSEEK_API_KEY", "secret");
+
+    manager.purge();
+
+    expect(keyStore.delete).toHaveBeenCalledOnce();
+    expect(existsSync(join(orbitDir, "secrets.json"))).toBe(false);
+    expect(manager.hasSecret("DEEPSEEK_API_KEY")).toBe(false);
+  });
 });
+
+function createKeyStore(initialKey: Buffer | null = null) {
+  let storedKey = initialKey;
+  return {
+    load: vi.fn(() => storedKey),
+    store: vi.fn((key: Buffer) => {
+      storedKey = key;
+    }),
+    delete: vi.fn(() => {
+      storedKey = null;
+    }),
+  };
+}

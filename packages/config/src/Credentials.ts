@@ -12,6 +12,10 @@ import { join } from "path";
 import { homedir } from "os";
 import crypto from "crypto";
 import { z } from "zod";
+import {
+  MacOSKeychainKeyStore,
+  type CredentialKeyStore,
+} from "./CredentialKeyStore.js";
 
 const CredentialKeySchema = z
   .string()
@@ -51,6 +55,7 @@ export interface CredentialsManagerOptions {
   orbitDir?: string;
   platform?: NodeJS.Platform;
   fallbackKey?: Buffer;
+  keyStore?: CredentialKeyStore | null;
 }
 
 export class CredentialsManager {
@@ -58,13 +63,21 @@ export class CredentialsManager {
   private readonly secretsPath: string;
   private readonly masterKeyPath: string;
   private readonly isWindows: boolean;
+  private readonly keyStore: CredentialKeyStore | null;
   private fallbackKey?: Buffer;
 
   constructor(options: CredentialsManagerOptions = {}) {
     this.orbitDir = options.orbitDir ?? join(homedir(), ".orbit");
     this.secretsPath = join(this.orbitDir, "secrets.json");
     this.masterKeyPath = join(this.orbitDir, "master.key");
-    this.isWindows = (options.platform ?? process.platform) === "win32";
+    const platform = options.platform ?? process.platform;
+    this.isWindows = platform === "win32";
+    this.keyStore =
+      options.keyStore === undefined
+        ? platform === "darwin"
+          ? new MacOSKeychainKeyStore()
+          : null
+        : options.keyStore;
     this.fallbackKey = options.fallbackKey;
   }
 
@@ -123,6 +136,14 @@ export class CredentialsManager {
       this.loadSecretsFile(),
       validatedKey.data,
     );
+  }
+
+  /** Remove encrypted credentials and their platform key without revealing data. */
+  public purge(): void {
+    this.keyStore?.delete();
+    this.removeFileIfPresent(this.secretsPath);
+    this.removeFileIfPresent(this.masterKeyPath);
+    this.fallbackKey = undefined;
   }
 
   private loadSecretsFile(): Record<string, string> {
@@ -254,20 +275,34 @@ export class CredentialsManager {
       return this.fallbackKey;
     }
 
-    if (existsSync(this.masterKeyPath)) {
-      const decoded = Buffer.from(
-        readFileSync(this.masterKeyPath, "utf8"),
-        "base64",
-      );
-      if (decoded.length !== 32) {
-        throw new Error("Credential master key is invalid.");
+    const platformKey = this.keyStore?.load();
+    if (platformKey) {
+      this.fallbackKey = this.validateFallbackKey(platformKey);
+      return this.fallbackKey;
+    }
+
+    const legacyKey = this.readMasterKeyFile();
+    if (legacyKey) {
+      if (this.keyStore) {
+        this.keyStore.store(legacyKey);
+        this.removeFileIfPresent(this.masterKeyPath);
       }
-      this.fallbackKey = decoded;
-      return decoded;
+      this.fallbackKey = legacyKey;
+      return legacyKey;
+    }
+
+    const generated = crypto.randomBytes(32);
+    if (this.keyStore) {
+      try {
+        this.keyStore.store(generated);
+        this.fallbackKey = generated;
+        return generated;
+      } catch {
+        // Preserve a functional encrypted fallback if Keychain is unavailable.
+      }
     }
 
     this.ensureOrbitDir();
-    const generated = crypto.randomBytes(32);
     writeFileSync(this.masterKeyPath, generated.toString("base64"), {
       encoding: "utf8",
       mode: 0o600,
@@ -276,6 +311,35 @@ export class CredentialsManager {
     this.restrictFilePermissions(this.masterKeyPath);
     this.fallbackKey = generated;
     return generated;
+  }
+
+  private readMasterKeyFile(): Buffer | null {
+    if (!existsSync(this.masterKeyPath)) return null;
+    return this.validateFallbackKey(
+      Buffer.from(readFileSync(this.masterKeyPath, "utf8"), "base64"),
+    );
+  }
+
+  private validateFallbackKey(key: Buffer): Buffer {
+    if (key.length !== 32) {
+      throw new Error("Credential master key is invalid.");
+    }
+    return key;
+  }
+
+  private removeFileIfPresent(filePath: string): void {
+    try {
+      unlinkSync(filePath);
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        error.code !== "ENOENT"
+      ) {
+        throw error;
+      }
+    }
   }
 
   private restrictFilePermissions(filePath: string): void {

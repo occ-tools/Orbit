@@ -138,7 +138,7 @@ describe("FullscreenTui lifecycle", () => {
         modified: number;
         deleted: number;
       };
-      getNpmNeedsUpdate: () => boolean;
+      getOrbitUpdateAvailable: () => boolean;
     };
     vi.spyOn(internals, "getGitSummary").mockReturnValue({
       branch: "main",
@@ -146,7 +146,7 @@ describe("FullscreenTui lifecycle", () => {
       modified: 0,
       deleted: 0,
     });
-    vi.spyOn(internals, "getNpmNeedsUpdate").mockReturnValue(false);
+    vi.spyOn(internals, "getOrbitUpdateAvailable").mockReturnValue(false);
 
     tui.render(true);
 
@@ -155,5 +155,56 @@ describe("FullscreenTui lifecycle", () => {
     expect(plain).toContain("/\\___/\\");
     expect(plain).toContain("o.o");
     expect(plain).toContain("♥");
+  });
+
+  it("checks the Orbit release once and marks the heart for blinking", async () => {
+    const checkOrbitUpdate = vi.fn().mockResolvedValue(true);
+    const tui = new FullscreenTui(
+      "C:/repo",
+      "deepseek-v4-flash",
+      "v0.1.6",
+      undefined,
+      { checkOrbitUpdate },
+    );
+    const internals = tui as unknown as {
+      getOrbitUpdateAvailable: () => boolean;
+    };
+
+    expect(internals.getOrbitUpdateAvailable()).toBe(false);
+    await vi.waitFor(() =>
+      expect(internals.getOrbitUpdateAvailable()).toBe(true),
+    );
+    expect(checkOrbitUpdate).toHaveBeenCalledOnce();
+    expect(checkOrbitUpdate).toHaveBeenCalledWith("0.1.6");
+  });
+
+  it("renders the update heart with the terminal blink attribute", () => {
+    const output: string[] = [];
+    process.stdout.write = vi.fn((chunk: string | Uint8Array) => {
+      output.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    const tui = new FullscreenTui("C:/repo", "model", "v0.1.6");
+    const internals = tui as unknown as {
+      getGitSummary: () => {
+        branch: string;
+        added: number;
+        modified: number;
+        deleted: number;
+      };
+      getOrbitUpdateAvailable: () => boolean;
+    };
+    vi.spyOn(internals, "getGitSummary").mockReturnValue({
+      branch: "main",
+      added: 0,
+      modified: 0,
+      deleted: 0,
+    });
+    vi.spyOn(internals, "getOrbitUpdateAvailable").mockReturnValue(true);
+
+    tui.render(true);
+
+    expect(output.join("")).toContain("\u001b[5m");
+    expect(stripAnsiCodes(output.join(""))).toContain("♥");
   });
 });

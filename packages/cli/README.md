@@ -33,8 +33,41 @@ orbit "Fix the failing tests" # one-shot task
 orbit exec "Review src" --jsonl
 orbit doctor --deepseek
 orbit config
+orbit update --check
 orbit lsp
 ```
+
+Inspect or remove Orbit-owned runtime data with `orbit clean`. It never removes
+project source, `ORBIT.md`, or `orbit.config.yaml`:
+
+```bash
+orbit clean --project
+orbit clean --user
+orbit clean --all
+orbit clean --all --yes --json
+```
+
+Interactive cleanup requires the exact confirmation `DELETE`. Non-interactive
+cleanup requires `--yes`; `--json` without `--yes` only returns the cleanup
+preview. Uninstall the executable separately with
+`npm uninstall --global @orbit-build/cli`.
+
+Updates are explicit and use the installed npm runtime:
+
+```bash
+orbit update --check       # network check only
+orbit update               # check, then confirm interactively
+orbit update --yes         # explicit non-interactive install
+orbit update --check --json
+```
+
+The TUI performs one bounded background version check per process: the cat heart
+blinks when a newer release exists and stays steady otherwise. This check never
+installs anything or blocks input, and Orbit never silently replaces itself.
+The interactive `/update` command invokes this same Orbit CLI updater; it no
+longer runs a package-manager install inside the active project. From the Web
+UI it remains check-only to avoid interrupting the local server; the TUI can
+confirm and install an available release.
 
 Enter `/webui` inside the TUI to open Orbit's authenticated local browser UI.
 Projects map to codebase folders and contain independent persisted chats that

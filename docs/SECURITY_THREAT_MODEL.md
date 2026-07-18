@@ -43,8 +43,10 @@ release-engineering artifact, not a claim that arbitrary model output is safe.
 - A process running as the same operating-system user may be able to inspect
   that user's files or process memory. Orbit does not provide an OS security
   boundary.
-- Non-Windows credential encryption uses a locally stored restricted master
-  key. Operating-system account compromise can expose both ciphertext and key.
+- macOS keeps the credential encryption key in the user's Keychain and migrates
+  legacy restricted key files on first use. Linux and systems without an
+  available native key store use a restricted local master key. Operating-system
+  account compromise can still expose credentials available to that account.
 - Generated code and model reasoning may be incorrect. Verification reduces
   risk but is not a substitute for review in safety-critical systems.
 

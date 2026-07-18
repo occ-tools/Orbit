@@ -1,12 +1,6 @@
 import { join } from "path";
 import { homedir } from "os";
-import {
-  existsSync,
-  readFileSync,
-  writeFileSync,
-  mkdirSync,
-  statSync,
-} from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { exec } from "child_process";
 import readline from "readline";
 import { Prompt, Renderer } from "@orbit-build/tui";
@@ -42,6 +36,7 @@ import {
   type TuiPromptResult,
 } from "./TuiPromptSession.js";
 import { renderPromptScreen } from "./TuiPromptView.js";
+import { UpdateManager } from "../runtime/UpdateManager.js";
 
 export {
   filterPromptOptionIndices,
@@ -62,6 +57,10 @@ export type SubmittedInputEcho = boolean | ((submitted: string) => boolean);
 
 export interface AskInputOptions {
   echoSubmitted?: SubmittedInputEcho;
+}
+
+export interface FullscreenTuiDependencies {
+  checkOrbitUpdate?: (currentVersion: string) => Promise<boolean>;
 }
 
 // Width of the fixed input-box left prefix "  │ orbit > " (constant, pre-calculated)
@@ -116,9 +115,9 @@ export class FullscreenTui {
   private isThinking = false;
 
   private sessionCost = 0;
-  private lastNpmCheckTime = 0;
-  private isCheckingNpm = false;
-  private npmNeedsUpdate = false;
+  private hasCheckedOrbitUpdate = false;
+  private isCheckingOrbitUpdate = false;
+  private orbitUpdateAvailable = false;
   private totalInputTokens = 0;
   private totalCacheReadTokens = 0;
   private totalOutputTokens = 0;
@@ -191,6 +190,9 @@ export class FullscreenTui {
   private hasNewOutputWhileScrolled = false;
   private readonly inputHistoryStore = new InputHistoryStore();
   private terminalInitialized = false;
+  private readonly checkOrbitUpdate: (
+    currentVersion: string,
+  ) => Promise<boolean>;
 
   private getPlanLines(): string[] {
     const now = Date.now();
@@ -274,7 +276,13 @@ export class FullscreenTui {
     private modelName: string,
     private version: string,
     private config?: any,
-  ) {}
+    dependencies: FullscreenTuiDependencies = {},
+  ) {
+    this.checkOrbitUpdate =
+      dependencies.checkOrbitUpdate ??
+      (async (currentVersion) =>
+        (await new UpdateManager().checkAsync(currentVersion)).updateAvailable);
+  }
 
   /**
    * Installs process-level terminal hooks and loads persisted input history.
@@ -598,82 +606,32 @@ export class FullscreenTui {
     this.terminalInitialized = false;
   }
 
-  private getNpmNeedsUpdate(): boolean {
-    const now = Date.now();
-    if (now - this.lastNpmCheckTime > 8000) {
-      this.refreshNpmStatusAsync().catch(() => {});
+  private getOrbitUpdateAvailable(): boolean {
+    if (!this.hasCheckedOrbitUpdate && !this.isCheckingOrbitUpdate) {
+      void this.refreshOrbitUpdateStatus();
     }
-    return this.npmNeedsUpdate;
+    return this.orbitUpdateAvailable;
   }
 
-  private async refreshNpmStatusAsync() {
-    if (this.isCheckingNpm) return;
-    this.isCheckingNpm = true;
-    this.lastNpmCheckTime = Date.now();
+  public setOrbitUpdateAvailable(updateAvailable: boolean): void {
+    this.hasCheckedOrbitUpdate = true;
+    this.orbitUpdateAvailable = updateAvailable;
+    if (this.isActive) this.render();
+  }
 
+  private async refreshOrbitUpdateStatus(): Promise<void> {
+    if (this.hasCheckedOrbitUpdate || this.isCheckingOrbitUpdate) return;
+    this.isCheckingOrbitUpdate = true;
+    this.hasCheckedOrbitUpdate = true;
     try {
-      const packageJsonPath = join(this.cwd, "package.json");
-      if (!existsSync(packageJsonPath)) {
-        this.npmNeedsUpdate = false;
-        this.isCheckingNpm = false;
-        return;
-      }
-
-      const nodeModulesPath = join(this.cwd, "node_modules");
-      if (!existsSync(nodeModulesPath)) {
-        this.npmNeedsUpdate = true;
-        this.isCheckingNpm = false;
-        this.render();
-        return;
-      }
-
-      // Find lockfiles
-      const lockfiles = [
-        "package-lock.json",
-        "pnpm-lock.yaml",
-        "yarn.lock",
-        "bun.lockb",
-      ];
-      let maxLockfileMtime = 0;
-      let hasLockfile = false;
-
-      for (const lf of lockfiles) {
-        const lfPath = join(this.cwd, lf);
-        if (existsSync(lfPath)) {
-          hasLockfile = true;
-          const stat = statSync(lfPath);
-          if (stat.mtimeMs > maxLockfileMtime) {
-            maxLockfileMtime = stat.mtimeMs;
-          }
-        }
-      }
-
-      // Determine what configuration time to check: check lockfiles if present, otherwise fallback to package.json
-      const configMtimeToCheck = hasLockfile
-        ? maxLockfileMtime
-        : statSync(packageJsonPath).mtimeMs;
-
-      // Determine the installation state time by checking state files updated on successful install
-      let maxInstallStateMtime = statSync(nodeModulesPath).mtimeMs;
-      const stateFiles = [
-        join(nodeModulesPath, ".modules.yaml"), // pnpm
-        join(nodeModulesPath, ".package-lock.json"), // npm
-      ];
-      for (const sf of stateFiles) {
-        if (existsSync(sf)) {
-          const stat = statSync(sf);
-          if (stat.mtimeMs > maxInstallStateMtime) {
-            maxInstallStateMtime = stat.mtimeMs;
-          }
-        }
-      }
-
-      this.npmNeedsUpdate = configMtimeToCheck > maxInstallStateMtime;
+      this.orbitUpdateAvailable = await this.checkOrbitUpdate(
+        this.version.replace(/^v/i, ""),
+      );
     } catch {
-      this.npmNeedsUpdate = false;
+      this.orbitUpdateAvailable = false;
     } finally {
-      this.isCheckingNpm = false;
-      this.render();
+      this.isCheckingOrbitUpdate = false;
+      if (this.isActive) this.render();
     }
   }
 
@@ -1929,7 +1887,7 @@ export class FullscreenTui {
               "/mode": "动态切换系统安全确认模式 (strict, normal, auto, plan)",
               "/copy": "拷贝 AI 的上一条回复到系统剪贴板",
               "/run": "执行一条本机 Shell 命令，会先走权限检查",
-              "/update": "检测并更新当前项目依赖",
+              "/update": "检查并更新 Orbit 到最新 npm 版本",
               "/webui": "启动并打开 Orbit 图形控制台页面",
             }
           : {
@@ -1958,7 +1916,7 @@ export class FullscreenTui {
               "/mode": "Switch permission mode (strict, normal, auto, plan)",
               "/copy": "Copy last assistant response to clipboard",
               "/run": "Run one local shell command after permission checks",
-              "/update": "Detect and update current project dependencies",
+              "/update": "Check and update Orbit from npm",
               "/webui": "Start and open the Orbit graphical console",
             };
 
@@ -2235,7 +2193,7 @@ export class FullscreenTui {
     const gitBranch = gitSummary.branch;
 
     // 2. 渲染左上角像素小猫 Logo 及其右侧信息
-    const heartColor = this.getNpmNeedsUpdate()
+    const heartColor = this.getOrbitUpdateAvailable()
       ? `\x1b[5m\x1b[38;2;230;190;80m`
       : `\x1b[38;2;230;110;110m`;
 

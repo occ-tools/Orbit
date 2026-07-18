@@ -85,7 +85,10 @@ platform supports it, with a validated path field as the fallback.
 
 Run `orbit login` to create, inspect, and delete saved provider profiles. Orbit
 stores credentials through its credential manager and redacts secrets from
-configuration output, diagnostics, events, and sessions.
+configuration output, diagnostics, events, and sessions. Windows uses DPAPI,
+while macOS stores the encryption key in the user's Keychain. Existing macOS
+`master.key` files migrate on first use; restricted file storage remains the
+portable fallback when a native key store is unavailable.
 
 For an OpenAI-compatible service, enter the exact base URL required by that
 service—for example `https://provider.example/v1`. Orbit does not guess or append
@@ -194,6 +197,51 @@ missing verification.
 Run it with `/review packages/core`. Templates support `$ARGUMENTS`, `{{args}}`,
 and `$1` through `$9`. Project commands override user commands; built-ins cannot
 be shadowed.
+
+## Data cleanup and uninstall
+
+Preview and remove Orbit-owned runtime data without touching source files or
+project instructions:
+
+```bash
+orbit clean --project           # current project's .orbit directory
+orbit clean --project ../app    # another project's .orbit directory
+orbit clean --user              # ~/.orbit profiles, credentials, and state
+orbit clean --all               # user data and the current project
+```
+
+Interactive cleanup prints an inventory and requires the exact confirmation
+`DELETE`. Automation must add `--yes`; `--json` without `--yes` is always a
+non-destructive preview. Cleanup preserves the codebase, `ORBIT.md`, and
+`orbit.config.yaml`.
+
+Remove the globally installed executable separately:
+
+```bash
+npm uninstall --global @orbit-build/cli
+```
+
+## Updates
+
+The TUI performs one bounded, non-blocking npm version check per process so the
+cat heart can indicate an available release. Orbit never downloads or installs
+an update during startup; installation still requires explicit confirmation:
+
+```bash
+orbit update --check
+orbit update
+orbit update --yes
+orbit update --check --json
+```
+
+Inside the interactive TUI or synchronized Web UI, `/update` performs the same
+Orbit CLI version check. The TUI can confirm and install the update; the Web UI
+stays check-only and directs the user to the terminal so it never replaces its
+own running server. It does not modify the current project's dependencies.
+
+The updater resolves npm's `dist-tags.latest`, validates the exact semantic
+version, and invokes the user's npm installation with fixed arguments. JSON
+mode without `--yes` is check-only, which keeps automation non-destructive.
 
 ## Non-interactive automation
 

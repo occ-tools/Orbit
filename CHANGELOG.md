@@ -4,6 +4,30 @@ All notable user-facing changes are recorded here. Orbit is pre-1.0; minor
 versions may still include configuration or API migrations, which must be
 called out explicitly.
 
+## 0.1.7 - 2026-07-19
+
+### Added
+
+- Added `orbit clean` with explicit user/project scopes, inventory previews,
+  versioned JSON output, exact interactive confirmation, and guarded
+  non-interactive deletion.
+- Added native macOS Keychain storage for the credential encryption key, with
+  portable encrypted-file fallback when the native service is unavailable.
+- Added an explicit `orbit update` workflow with npm latest-tag checks, semantic
+  version validation, confirmation, timeouts, and machine-readable check mode.
+
+### Changed
+
+- macOS installations migrate an existing restricted `~/.orbit/master.key`
+  into Keychain on first credential use. `orbit clean --user` removes both
+  Orbit's user data and its native Keychain item; project source and instruction
+  files remain untouched.
+- Interactive `/update` now updates Orbit itself through the same guarded CLI
+  updater instead of installing dependencies in the active project.
+- The TUI cat heart now reflects the published Orbit version rather than project
+  dependency timestamps: it blinks for an available release and stays steady
+  when current or when the one-shot background check cannot complete.
+
 ## 0.1.6 - 2026-07-18
 
 ### Changed

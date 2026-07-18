@@ -1,5 +1,5 @@
 import { EventEmitter } from "events";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,28 +22,29 @@ describe("launchOrbitProject", () => {
     const launch = vi.fn(() => child);
     const registry = { register: vi.fn() };
 
-    expect(
-      launchOrbitProject(
-        { action: "create", path: project },
-        {
-          entryPoint: "C:/orbit/index.js",
-          executable: "node",
-          launch: launch as never,
-          registry,
-        },
-      ),
-    ).toBe(project);
+    const launchedProject = launchOrbitProject(
+      { action: "create", path: project },
+      {
+        entryPoint: "C:/orbit/index.js",
+        executable: "node",
+        launch: launch as never,
+        registry,
+      },
+    );
+    const canonicalProject = realpathSync(project);
+
+    expect(launchedProject).toBe(canonicalProject);
     expect(launch).toHaveBeenCalledWith(
       "node",
-      ["C:/orbit/index.js", "webui", "--cwd", project],
+      ["C:/orbit/index.js", "webui", "--cwd", canonicalProject],
       expect.objectContaining({
-        cwd: project,
+        cwd: canonicalProject,
         detached: true,
         stdio: "ignore",
       }),
     );
     expect(child.unref).toHaveBeenCalledOnce();
-    expect(registry.register).toHaveBeenCalledWith(project);
+    expect(registry.register).toHaveBeenCalledWith(canonicalProject);
   });
 
   it("rejects missing existing projects and relative paths", () => {

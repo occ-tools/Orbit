@@ -1,5 +1,12 @@
 /** Viewport adaptations and reduced-motion accessibility overrides. */
 export const WEB_UI_RESPONSIVE_STYLES = String.raw`
+@media (hover: none), (pointer: coarse) {
+  .session-actions,
+  .registered-project-remove {
+    opacity: 1;
+  }
+}
+
 @media (min-width: 901px) {
   .app-shell.sidebar-collapsed {
     grid-template-columns: 0 minmax(0, 1fr);
@@ -49,6 +56,42 @@ export const WEB_UI_RESPONSIVE_STYLES = String.raw`
 
   .context-meter {
     justify-content: center;
+  }
+}
+
+@media (max-width: 1200px) {
+  .topbar {
+    position: relative;
+    gap: 8px;
+    padding-inline: 12px;
+  }
+
+  .topbar-actions {
+    position: absolute;
+    right: 12px;
+    gap: 4px;
+  }
+
+  .command-trigger {
+    display: none;
+  }
+
+  .context-meter,
+  .workspace-heading span {
+    display: none;
+  }
+
+  .provider-select-trigger {
+    width: 112px;
+  }
+
+  .model-select-trigger {
+    width: min(180px, 20vw);
+  }
+
+  .workspace-heading strong,
+  .workspace-heading span {
+    max-width: 26vw;
   }
 }
 
@@ -107,8 +150,12 @@ export const WEB_UI_RESPONSIVE_STYLES = String.raw`
     display: grid;
   }
 
-  .model-control select {
-    width: min(190px, 35vw);
+  .model-select-trigger {
+    width: min(210px, 36vw);
+  }
+
+  .provider-select-trigger {
+    width: min(145px, 24vw);
   }
 
   .message-column {
@@ -150,7 +197,8 @@ export const WEB_UI_RESPONSIVE_STYLES = String.raw`
 }
 
 @media (max-height: 760px) and (min-width: 901px) {
-  .recent-sessions {
+  .recent-sessions,
+  .archived-sessions {
     max-height: 150px;
   }
 
@@ -174,6 +222,20 @@ export const WEB_UI_RESPONSIVE_STYLES = String.raw`
 }
 
 @media (max-width: 560px) {
+  .project-dialog-card {
+    padding: 17px;
+  }
+
+  .project-dialog-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .project-dialog-cancel {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
   .workspace-view {
     grid-template-rows: 54px auto minmax(0, 1fr);
   }
@@ -186,6 +248,7 @@ export const WEB_UI_RESPONSIVE_STYLES = String.raw`
   .workspace-heading span,
   .command-trigger,
   .context-meter,
+  .provider-control,
   .model-control,
   .brand-version {
     display: none;
@@ -217,13 +280,13 @@ export const WEB_UI_RESPONSIVE_STYLES = String.raw`
   }
 
   .message-avatar {
-    width: 27px;
-    height: 27px;
-    border-radius: 8px;
+    width: 28px;
+    height: 24px;
   }
 
-  .message-avatar .avatar-face {
-    transform: scale(0.88);
+  .message-avatar .message-mark {
+    width: 20px;
+    height: 20px;
   }
 
   .message.user .message-content {

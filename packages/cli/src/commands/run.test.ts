@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  getExplicitModelOverride,
   nextCodePointIndex,
   parseMouseWheelDirection,
   previousCodePointIndex,
@@ -318,6 +319,12 @@ describe("CLI model precedence", () => {
     ).toBe(false);
     expect(shouldUseStoredModel({ models: {} })).toBe(true);
     expect(shouldUseStoredModel(undefined)).toBe(true);
+    expect(
+      getExplicitModelOverride({ models: { default: " deepseek-v4-pro " } }),
+    ).toBe("deepseek-v4-pro");
+    expect(getExplicitModelOverride({ models: { default: " " } })).toBe(
+      undefined,
+    );
   });
 });
 

@@ -102,6 +102,29 @@ export class CredentialsManager {
     }
   }
 
+  /** Remove a securely stored secret without exposing its previous value. */
+  public deleteSecret(key: string): boolean {
+    const validatedKey = CredentialKeySchema.safeParse(key);
+    if (!validatedKey.success) return false;
+    const secrets = this.loadSecretsFile();
+    if (!Object.prototype.hasOwnProperty.call(secrets, validatedKey.data)) {
+      return false;
+    }
+    delete secrets[validatedKey.data];
+    this.saveSecretsFile(secrets);
+    return true;
+  }
+
+  /** Report whether a named secret exists without decrypting it. */
+  public hasSecret(key: string): boolean {
+    const validatedKey = CredentialKeySchema.safeParse(key);
+    if (!validatedKey.success) return false;
+    return Object.prototype.hasOwnProperty.call(
+      this.loadSecretsFile(),
+      validatedKey.data,
+    );
+  }
+
   private loadSecretsFile(): Record<string, string> {
     if (!existsSync(this.secretsPath)) {
       return {};

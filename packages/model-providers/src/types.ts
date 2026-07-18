@@ -2,6 +2,17 @@ import { z } from "zod";
 
 export type OrbitRole = "system" | "user" | "assistant" | "tool";
 
+/** Functional model family used to prevent incompatible API routing. */
+export type ModelKind =
+  | "chat"
+  | "embedding"
+  | "image"
+  | "video"
+  | "audio"
+  | "search"
+  | "rerank"
+  | "unknown";
+
 export interface OrbitToolCall {
   id: string;
   name: string;
@@ -38,6 +49,9 @@ export interface ModelCapabilities {
   promptCaching: boolean;
   maxContextTokens?: number;
   maxOutputTokens?: number;
+  kind?: ModelKind;
+  inputModalities?: string[];
+  outputModalities?: string[];
 }
 
 export interface ProviderRuntimeOptions {
@@ -89,6 +103,12 @@ export interface TokenUsage {
 }
 
 export type ModelEvent =
+  | {
+      type: "response_metadata";
+      requestedModel: string;
+      resolvedModel?: string;
+      providerRequestId?: string;
+    }
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string; signature?: string }
   | { type: "tool_call"; toolCall: OrbitToolCall }

@@ -31,6 +31,7 @@ export const VerificationContractSchema = z.object({
   suites: z.record(z.string()).default({}),
   allowedModifiedFiles: z.array(z.string()).optional(),
   requiredFiles: z.array(z.string()).optional(),
+  maxRepairAttempts: z.number().int().min(0).max(10).default(3),
 });
 
 export type VerificationContract = z.infer<typeof VerificationContractSchema>;
@@ -75,6 +76,10 @@ export class VerificationContractManager {
 
   public hasContract(): boolean {
     return this.contract !== null;
+  }
+
+  public getMaxRepairAttempts(): number {
+    return this.contract?.maxRepairAttempts ?? 0;
   }
 
   public async runVerification(): Promise<{

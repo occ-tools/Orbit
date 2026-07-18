@@ -10,11 +10,13 @@ import {
 } from "./schema.js";
 import { DEFAULT_CONFIG } from "./defaults.js";
 import { CredentialsManager } from "./Credentials.js";
+import { ProviderProfileStore } from "./ProviderProfiles.js";
 
 export interface ConfigLoadOptions {
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
   credentialsManager?: CredentialsManager;
+  providerProfileStore?: ProviderProfileStore;
   trustProjectExecutables?: boolean;
 }
 
@@ -228,6 +230,22 @@ export class ConfigLoader {
       } catch {
         warnIgnoredConfiguration(globalConfigPath);
       }
+    }
+
+    // Saved provider profiles are user-level metadata. API keys remain in the
+    // encrypted credential store and are resolved lazily below.
+    const profileStore =
+      options.providerProfileStore ??
+      new ProviderProfileStore({ orbitDir: join(homeDirectory, ".orbit") });
+    const providerProfiles = profileStore.read();
+    for (const profile of providerProfiles.profiles) {
+      config.providers[profile.id] = profile.config;
+    }
+    if (
+      providerProfiles.activeProvider &&
+      config.providers[providerProfiles.activeProvider]
+    ) {
+      config.provider.default = providerProfiles.activeProvider;
     }
     const trustProjectExecutables =
       options.trustProjectExecutables ??

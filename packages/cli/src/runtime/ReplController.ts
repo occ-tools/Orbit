@@ -502,10 +502,11 @@ export class ReplController {
         if (input === null) {
           if (useFullscreenTui) {
             tui.stop();
+          } else {
+            console.log(
+              picocolors.yellow("Exiting Orbit Interactive Shell. Goodbye!"),
+            );
           }
-          console.log(
-            picocolors.yellow("Exiting Orbit Interactive Shell. Goodbye!"),
-          );
           break;
         }
         if (!input) continue;

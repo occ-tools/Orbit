@@ -372,6 +372,51 @@ describe("DeepSeekOpenAIProvider messages mapping", () => {
     expect(events[1]).toEqual({ type: "text_delta", text: "final answer" });
   });
 
+  it("reports requested and gateway-resolved model identity", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: vi.fn(() => "request-42") },
+      json: vi.fn().mockResolvedValue({
+        id: "completion-42",
+        model: "deepseek-v4-pro-202607",
+        choices: [
+          {
+            finish_reason: "stop",
+            message: { content: "ok" },
+          },
+        ],
+      }),
+    }) as any;
+    const provider = new DeepSeekOpenAIProvider(
+      "test-key",
+      "https://gateway.example/v1",
+      { disablePreheat: true, maxRetries: 0 },
+    );
+    const events = [];
+
+    for await (const event of provider.chat({
+      model: "deepseek-v4-pro",
+      messages: [
+        {
+          id: "msg-identity",
+          role: "user",
+          createdAt: "2026-07-18T00:00:00.000Z",
+          content: [{ type: "text", text: "identity" }],
+        },
+      ],
+      stream: false,
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toContainEqual({
+      type: "response_metadata",
+      requestedModel: "deepseek-v4-pro",
+      resolvedModel: "deepseek-v4-pro-202607",
+      providerRequestId: "completion-42",
+    });
+  });
+
   it("flushes each OpenAI-compatible SSE frame without waiting for the read chunk", async () => {
     const encoder = new TextEncoder();
     global.fetch = vi.fn().mockResolvedValue({

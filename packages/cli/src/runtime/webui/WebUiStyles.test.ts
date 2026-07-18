@@ -34,6 +34,20 @@ describe("WEB_UI_STYLES", () => {
     expect(WEB_UI_STYLES).toContain(".orbit-cat-head");
     expect(WEB_UI_STYLES).toContain(".orbit-cat-satellite");
     expect(WEB_UI_STYLES).toContain(".nav-section-heading");
+    expect(WEB_UI_STYLES).toContain(".project-section");
+    expect(WEB_UI_STYLES).toContain(".recent-projects-shell");
+    expect(WEB_UI_STYLES).toMatch(
+      /\.registered-project \{[^}]*position: relative;[^}]*background: color-mix[^}]*border-radius: 12px;/s,
+    );
+    expect(WEB_UI_STYLES).toMatch(
+      /\.registered-project-remove \{[^}]*position: absolute;[^}]*transform: translateY\(-50%\);/s,
+    );
+    expect(WEB_UI_STYLES).toMatch(
+      /\.registered-project-open:focus-visible \{\s*outline: none;/,
+    );
+    expect(WEB_UI_STYLES).toContain(".project-toggle");
+    expect(WEB_UI_STYLES).toContain(".project-chat-body[hidden]");
+    expect(WEB_UI_STYLES).toContain(".session-row.is-active");
     expect(WEB_UI_STYLES).toContain(".sidebar-collapse-button");
     expect(WEB_UI_STYLES).toContain(".app-shell.sidebar-collapsed");
     expect(WEB_UI_STYLES).toContain(
@@ -51,7 +65,48 @@ describe("WEB_UI_STYLES", () => {
     );
     expect(WEB_UI_STYLES).toContain('.command-result[aria-selected="true"]');
     expect(WEB_UI_STYLES).toContain(".context-ring");
+    expect(WEB_UI_STYLES).toContain(".select-menu");
+    expect(WEB_UI_STYLES).toContain(".select-search");
+    expect(WEB_UI_STYLES).toContain('.select-option[aria-selected="true"]');
+    expect(WEB_UI_STYLES).not.toContain('content: "⌄"');
+    expect(WEB_UI_STYLES).toMatch(
+      /\.select-menu \{[^}]*box-shadow: none;[^}]*filter: none;/s,
+    );
+    expect(WEB_UI_STYLES).toMatch(
+      /\.select-control\.is-open \.select-trigger \{\s*box-shadow: none;/,
+    );
+    expect(WEB_UI_STYLES).toMatch(
+      /\.select-menu \{[^}]*display: grid;[^}]*gap: 2px;/s,
+    );
+    expect(WEB_UI_STYLES).toMatch(
+      /\.select-menu \{[^}]*overflow-x: hidden;[^}]*overflow-y: auto;/s,
+    );
+    expect(WEB_UI_STYLES).toMatch(
+      /\.select-option \{[^}]*min-height: 28px;[^}]*padding: 3px 28px 3px 9px;/s,
+    );
+    expect(WEB_UI_STYLES).toMatch(
+      /\.select-option span \{[^}]*flex: 1 1 auto;[^}]*text-overflow: ellipsis;/s,
+    );
+    expect(WEB_UI_STYLES).toMatch(
+      /\.empty-composer-slot \.composer \{[^}]*box-shadow: none;/s,
+    );
+    expect(WEB_UI_STYLES).toMatch(
+      /\.composer \{[^}]*box-shadow: none;[^}]*backdrop-filter: none;/s,
+    );
+    expect(WEB_UI_STYLES).toMatch(
+      /\.composer:focus-within \{[^}]*box-shadow: none;/s,
+    );
+    expect(WEB_UI_STYLES).toMatch(
+      /\.app-shell\.is-disconnected \.composer \{[^}]*box-shadow: none;/s,
+    );
     expect(WEB_UI_STYLES).toContain(".message-progress");
+    expect(WEB_UI_STYLES).toContain(".archive-toggle");
+    expect(WEB_UI_STYLES).toContain(".archived-panel");
+    expect(WEB_UI_STYLES).toContain(".session-action.is-danger:hover");
+    expect(WEB_UI_STYLES).toContain(".session-delete-dialog");
+    expect(WEB_UI_STYLES).toMatch(
+      /\.session-delete-card \{[^}]*box-shadow: none;/s,
+    );
     expect(WEB_UI_STYLES).toContain(".rich-table");
     expect(WEB_UI_STYLES).toContain(".message-actions");
     expect(WEB_UI_STYLES).toContain(".tool-card-summary");

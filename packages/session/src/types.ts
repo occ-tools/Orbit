@@ -46,9 +46,11 @@ export const SessionIdSchema = z
   .regex(/^sess_[a-z]+-[a-z]+-\d{3}$/, "Invalid Orbit session id.");
 
 export const SessionSchema = z.object({
+  schemaVersion: z.literal(1).default(1),
   id: SessionIdSchema,
   cwd: z.string().min(1),
   title: z.string(),
+  goal: z.string().trim().min(1).max(4000).optional(),
   status: z.enum(["active", "completed", "failed", "aborted"]),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -58,6 +60,7 @@ export const SessionSchema = z.object({
   totalOutputTokens: z.number().int().nonnegative(),
   totalCostEstimate: z.number().finite().nonnegative(),
   totalCacheReadTokens: z.number().int().nonnegative().optional(),
+  archivedAt: z.string().datetime().optional(),
 });
 
 export type Session = z.infer<typeof SessionSchema>;
@@ -71,6 +74,64 @@ export const SessionEventSchema = z.object({
 });
 
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
+
+export const TaskPlanItemSchema = z.object({
+  id: z.string().regex(/^step_[a-z0-9-]+$/, "Invalid task-plan item id."),
+  text: z.string().trim().min(1).max(1000),
+  status: z.enum(["pending", "in_progress", "completed"]),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+
+export const TaskPlanSchema = z.object({
+  schemaVersion: z.literal(1).default(1),
+  sessionId: SessionIdSchema,
+  goal: z.string().trim().min(1).max(4000).optional(),
+  items: z.array(TaskPlanItemSchema).max(100),
+  updatedAt: z.string().datetime(),
+});
+
+export type TaskPlanItem = z.infer<typeof TaskPlanItemSchema>;
+export type TaskPlan = z.infer<typeof TaskPlanSchema>;
+
+export const SessionMetricsSchema = z.object({
+  sessionId: SessionIdSchema,
+  eventCount: z.number().int().nonnegative(),
+  toolRuns: z.number().int().nonnegative(),
+  toolFailures: z.number().int().nonnegative(),
+  deniedTools: z.number().int().nonnegative(),
+  filesChanged: z.number().int().nonnegative(),
+  modelSwitches: z.number().int().nonnegative(),
+  routingDecisions: z.number().int().nonnegative(),
+  fastRoutes: z.number().int().nonnegative(),
+  qualityRoutes: z.number().int().nonnegative(),
+  compactions: z.number().int().nonnegative(),
+  resumedCount: z.number().int().nonnegative(),
+});
+
+export type SessionMetrics = z.infer<typeof SessionMetricsSchema>;
+
+export const RunJournalSchema = z.object({
+  schemaVersion: z.literal(1).default(1),
+  sessionId: SessionIdSchema,
+  state: z.enum([
+    "running",
+    "awaiting_approval",
+    "verifying",
+    "completed",
+    "failed",
+    "aborted",
+    "interrupted",
+  ]),
+  phase: z.string().trim().min(1).max(200),
+  attempt: z.number().int().nonnegative().default(0),
+  activeToolCallId: z.string().min(1).max(512).optional(),
+  startedAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  recoveryCount: z.number().int().nonnegative().default(0),
+});
+
+export type RunJournal = z.infer<typeof RunJournalSchema>;
 
 const StoredToolCallSchema = z.object({
   id: z.string().min(1),
@@ -136,3 +197,25 @@ export const FileChangeRecordSchema = z.object({
 });
 
 export type FileChangeRecord = z.infer<typeof FileChangeRecordSchema>;
+
+/** Stable, credential-redacted session trace suitable for local support and replay tooling. */
+export const SessionTraceBundleSchema = z.object({
+  schemaVersion: z.literal(1),
+  exportedAt: z.string().datetime(),
+  workspace: z.object({
+    id: z.string().regex(/^[a-f0-9]{16}$/),
+    path: z.literal("<workspace>"),
+  }),
+  session: SessionSchema.omit({ cwd: true }).extend({
+    cwd: z.literal("<workspace>"),
+  }),
+  journal: RunJournalSchema.optional(),
+  plan: TaskPlanSchema.optional(),
+  metrics: SessionMetricsSchema,
+  events: z.array(SessionEventSchema),
+  toolCalls: z.array(ToolCallRecordSchema),
+  fileChanges: z.array(FileChangeRecordSchema),
+  history: z.array(JsonValueSchema).optional(),
+});
+
+export type SessionTraceBundle = z.infer<typeof SessionTraceBundleSchema>;

@@ -87,6 +87,12 @@ importers:
       "@orbit-build/permissions":
         specifier: workspace:*
         version: link:../permissions
+      "@orbit-build/sandbox":
+        specifier: workspace:*
+        version: link:../sandbox
+      "@orbit-build/session":
+        specifier: workspace:*
+        version: link:../session
       "@orbit-build/shared":
         specifier: workspace:*
         version: link:../shared
@@ -251,6 +257,9 @@ importers:
       fast-glob:
         specifier: ^3.3.2
         version: 3.3.3
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
       zod:
         specifier: ^3.23.8
         version: 3.25.76

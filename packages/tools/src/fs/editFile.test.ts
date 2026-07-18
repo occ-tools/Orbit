@@ -139,6 +139,25 @@ describe("EditFileTool Fuzzy Hunk Merging Cascade", () => {
     expect(result.error).toContain("JavaScript Syntax Error");
   });
 
+  it("should accept valid ESM exports in .mjs files", async () => {
+    const modulePath = join(tempDir, "sample.mjs");
+    writeFileSync(modulePath, "export const answer = 41;\n", "utf8");
+
+    const result = await tool.execute(
+      {
+        path: "sample.mjs",
+        oldText: "export const answer = 41;",
+        newText: "export const answer = 42;",
+      },
+      { cwd: tempDir, sessionId: "test" },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(modulePath, "utf8")).toContain(
+      "export const answer = 42;",
+    );
+  });
+
   it("should block edits that introduce TS syntax errors", async () => {
     const tsPath = join(tempDir, "sample.ts");
     writeFileSync(tsPath, "const x: number = 10;\nconsole.log(x);", "utf8");

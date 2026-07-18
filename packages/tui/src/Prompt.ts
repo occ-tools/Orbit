@@ -233,12 +233,19 @@ export class Prompt {
   public static async askSelect(
     message: string,
     options: PromptOption[],
+    config: {
+      suppressCloseRenderOnSelect?: boolean;
+      renderOnSelectValues?: string[];
+    } = {},
   ): Promise<string | null> {
     if (this.tuiInstance && this.tuiInstance.isActive) {
       const response = await this.tuiInstance.showPrompt({
         type: "select",
         message,
         options,
+        suppressCloseRenderOnSelect:
+          config.suppressCloseRenderOnSelect === true,
+        renderOnSelectValues: config.renderOnSelectValues,
       });
       if (response && typeof response === "object" && "action" in response) {
         return response.action === "select" ? response.value : null;

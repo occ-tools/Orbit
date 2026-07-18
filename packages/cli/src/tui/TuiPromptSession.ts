@@ -22,6 +22,8 @@ export interface TuiPromptConfig {
   initialSelectedValue?: string;
   deletable?: boolean;
   suppressCloseRenderOnDelete?: boolean;
+  suppressCloseRenderOnSelect?: boolean;
+  renderOnSelectValues?: string[];
 }
 
 export interface TuiPromptState {
@@ -30,6 +32,8 @@ export interface TuiPromptState {
   options: PromptOption[];
   deletable: boolean;
   suppressCloseRenderOnDelete: boolean;
+  suppressCloseRenderOnSelect: boolean;
+  renderOnSelectValues: Set<string>;
   pendingDeleteValue: string | null;
   filterQuery: string;
   filterActive: boolean;
@@ -89,6 +93,8 @@ export function createPromptState(config: TuiPromptConfig): TuiPromptState {
     options,
     deletable: config.deletable === true,
     suppressCloseRenderOnDelete: config.suppressCloseRenderOnDelete === true,
+    suppressCloseRenderOnSelect: config.suppressCloseRenderOnSelect === true,
+    renderOnSelectValues: new Set(config.renderOnSelectValues ?? []),
     pendingDeleteValue: null,
     filterQuery: "",
     filterActive: false,
@@ -478,12 +484,21 @@ export class TuiPromptSession {
     const state = this.promptState;
     const active = this.active;
     if (!state || !active) return;
+    const actionValue =
+      typeof value === "object" && value !== null && "action" in value
+        ? value
+        : null;
     const skipRender =
-      typeof value === "object" &&
-      value !== null &&
-      "action" in value &&
-      value.action === "delete" &&
-      state.suppressCloseRenderOnDelete;
+      (state.suppressCloseRenderOnDelete && actionValue?.action === "delete") ||
+      (state.suppressCloseRenderOnSelect &&
+        (typeof value === "string" || actionValue?.action === "select") &&
+        !state.renderOnSelectValues.has(
+          typeof value === "string"
+            ? value
+            : actionValue?.action === "select"
+              ? actionValue.value
+              : "",
+        ));
     this.cleanupActive();
     this.promptState = null;
     if (!skipRender) this.requestRender();

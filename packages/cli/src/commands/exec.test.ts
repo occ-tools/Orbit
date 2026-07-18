@@ -5,6 +5,7 @@ import { ConfigLoader } from "@orbit-build/config";
 import fs from "fs";
 import path from "path";
 import { tmpdir } from "os";
+import { ProjectRegistry } from "@orbit-build/session";
 
 // Mock AgentLoop to avoid actual provider calls
 vi.mock("@orbit-build/core", async () => {
@@ -58,6 +59,9 @@ describe("non-interactive orbit exec tests", () => {
   beforeEach(() => {
     cwd = path.join(tmpdir(), `orbit-exec-test-${Date.now()}`);
     fs.mkdirSync(cwd, { recursive: true });
+    vi.spyOn(ProjectRegistry.prototype, "register").mockReturnValue(
+      {} as never,
+    );
 
     vi.spyOn(ConfigLoader, "loadSync").mockReturnValue({
       name: "test",
@@ -133,6 +137,9 @@ describe("non-interactive orbit exec tests", () => {
 
     const infoEvent = parsedEvents.find((e) => e && e.type === "info");
     expect(infoEvent).toBeDefined();
+    expect(infoEvent.schemaVersion).toBe(1);
+    expect(infoEvent.sequence).toBeGreaterThan(0);
+    expect(infoEvent.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(infoEvent.payload.message).toBe("Test info message");
     const modelRequest = parsedEvents.find(
       (event) => event?.type === "model_request",

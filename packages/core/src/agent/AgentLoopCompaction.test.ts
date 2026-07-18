@@ -125,6 +125,87 @@ describe("AgentLoop model-aware context compaction", () => {
     });
   });
 
+  it("preserves conversation history while switching provider and context window", () => {
+    const { loop } = createLoop();
+    const state = (loop as unknown as { state: { history: OrbitMessage[] } })
+      .state;
+    state.history = [message(1), message(2)];
+    const before = structuredClone(state.history);
+    const largeProvider: ModelProvider = {
+      id: "secondary-gateway",
+      type: "openai-compatible",
+      capabilities: {
+        streaming: true,
+        toolCalls: true,
+        jsonMode: true,
+        thinking: true,
+        vision: true,
+        promptCaching: true,
+        maxContextTokens: 1_048_576,
+      },
+      getModelCapabilities: () => ({
+        streaming: true,
+        toolCalls: true,
+        jsonMode: true,
+        thinking: true,
+        vision: true,
+        promptCaching: true,
+        maxContextTokens: 1_048_576,
+        maxOutputTokens: 65_536,
+      }),
+      chat: vi.fn(),
+    };
+
+    loop.setProvider(largeProvider);
+    loop.setModelOverride("secondary-large-model");
+
+    expect(loop.getHistory()).toEqual(before);
+    expect(loop.getContextWindowStatus()).toMatchObject({
+      model: "secondary-large-model",
+      maxContextTokens: 1_048_576,
+      compactAtTokens: 786_432,
+    });
+  });
+
+  it("synchronizes resumed session metadata with the current runtime", () => {
+    const { loop } = createLoop();
+    const sessionId = loop.getSessionId();
+    loop.setModelOverride("large-model");
+    const workspace = (loop as unknown as { cwd: string }).cwd;
+    const config = loop.getConfig();
+    const provider: ModelProvider = {
+      id: "resumed-provider",
+      type: "openai-compatible",
+      capabilities: loop.getProvider().capabilities,
+      getModelCapabilities: loop.getProvider().getModelCapabilities,
+      chat: vi.fn(),
+    };
+    const resumed = new AgentLoop(
+      workspace,
+      config,
+      provider,
+      "resume",
+      {
+        askApproval: vi.fn(async () => true),
+        showText: vi.fn(),
+        showDiff: vi.fn(),
+      },
+      {
+        disableStatusBar: true,
+        sessionId,
+        modelOverride: "large-model",
+      },
+    );
+
+    expect(resumed.getSessionId()).toBe(sessionId);
+    expect(
+      resumed.getSessions().find(({ id }) => id === sessionId),
+    ).toMatchObject({
+      provider: "resumed-provider",
+      model: "large-model",
+    });
+  });
+
   it("supports manual compaction and persists a bounded recent tail", async () => {
     const { loop } = createLoop();
     const state = (loop as unknown as { state: { history: OrbitMessage[] } })

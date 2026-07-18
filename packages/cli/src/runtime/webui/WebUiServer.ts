@@ -5,6 +5,7 @@ import { OrbitWebUiRuntime } from "./WebUiRuntime.js";
 export type {
   WebUiHandle,
   WebUiOptions,
+  WebUiProjectAction,
   WebUiSettingsPatch,
 } from "./WebUiContracts.js";
 

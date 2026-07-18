@@ -152,12 +152,29 @@ describe("WebUiServer", () => {
     expect(localizedPage).toContain("接下来想做什么？");
     expect(localizedPage).toContain('class="orbit-mark brand-mark"');
     expect(localizedPage).toContain('class="orbit-cat-head"');
+    expect(localizedPage).toContain('id="orbitAvatarTemplate"');
+    expect(localizedPage).toContain('class="orbit-mark message-mark"');
     expect(localizedPage).toContain(
       'id="sidebarCollapseButton" type="button" aria-label="收起导航"',
     );
+    expect(localizedPage).toContain('id="projectToggle"');
     expect(localizedPage).toContain(
-      'id="recentSessions" aria-label="最近任务"',
+      'aria-expanded="true" aria-controls="projectChatBody"',
     );
+    expect(localizedPage).toContain('id="projectChatCount"');
+    expect(localizedPage).toContain('id="newProjectButton"');
+    expect(localizedPage).toContain('id="projectDialog"');
+    expect(localizedPage).toContain('id="projectPathInput"');
+    expect(localizedPage).toContain('id="providerSelect"');
+    expect(localizedPage).toContain('id="providerSelectTrigger"');
+    expect(localizedPage).toContain('id="providerSelectMenu"');
+    expect(localizedPage).toContain('id="recentSessions"');
+    expect(localizedPage).toContain('aria-label="对话"');
+    expect(localizedPage).not.toContain(">undefined</svg>");
+    expect(localizedPage).not.toContain('id="activeTaskTitle"');
+    expect(localizedPage).toContain('id="archivedSessions"');
+    expect(localizedPage).toContain('id="archiveToggle"');
+    expect(localizedPage).toContain('id="sessionDeleteDialog"');
     expect(localizedPage).toContain(
       'rel="icon" type="image/svg+xml" href="/assets/orbit-mark.svg"',
     );
@@ -468,9 +485,18 @@ describe("WebUiServer", () => {
       headers: { ...authHeaders, "Content-Type": "application/json" },
       body: JSON.stringify({ action: "resume", sessionId: "sess-test" }),
     }).then((response) => response.json());
+    const archivedSession = await fetch(`${baseUrl}api/session`, {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "archive", sessionId: "sess-test" }),
+    }).then((response) => response.json());
 
     expect(html).toContain('class="app-shell"');
     expect(html).toContain('id="emptyState"');
+    expect(html).toContain('id="projectList"');
+    expect(html).toContain('id="recentProjectsShell"');
+    expect(html).toContain('data-testid="composer-input"');
+    expect(html).toContain('data-testid="active-project"');
     expect(html).toContain("/assets/orbit.css");
     expect(html).toContain("/assets/orbit.js");
     expect(html).not.toContain("<style>");
@@ -563,8 +589,10 @@ describe("WebUiServer", () => {
       },
     ]);
     expect(session.ok).toBe(true);
+    expect(archivedSession.ok).toBe(true);
     expect(sessionActions).toEqual([
       { action: "resume", sessionId: "sess-test" },
+      { action: "archive", sessionId: "sess-test" },
     ]);
 
     const unauthorized = await fetch(`${baseUrl}api/status`);
@@ -666,6 +694,69 @@ describe("WebUiServer", () => {
         headers: { Authorization: `Bearer ${token}` },
       }).then((response) => response.json());
       expect(status.turn.active).toBe(false);
+    });
+  });
+
+  it("validates and forwards project open requests", async () => {
+    const openProject = vi.fn(async (action: { action: string }) =>
+      action.action === "pick"
+        ? { ok: true, path: "C:/work/picked-app" }
+        : { ok: true },
+    );
+    const handle = await startOrbitWebUi({
+      cwd: "D:/repo",
+      port: 0,
+      open: false,
+      config: ConfigSchema.parse({}),
+      openProject,
+    });
+    const handleUrl = new URL(handle.url);
+    const token = new URLSearchParams(handleUrl.hash.slice(1)).get("token");
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    };
+
+    const valid = await fetch(`${handleUrl.origin}/api/project`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ action: "create", path: "C:/work/new-app" }),
+    });
+    expect(valid.status).toBe(202);
+    expect(openProject).toHaveBeenCalledWith({
+      action: "create",
+      path: "C:/work/new-app",
+    });
+
+    const picked = await fetch(`${handleUrl.origin}/api/project`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ action: "pick" }),
+    });
+    expect(picked.status).toBe(200);
+    await expect(picked.json()).resolves.toEqual({
+      ok: true,
+      path: "C:/work/picked-app",
+    });
+    expect(openProject).toHaveBeenCalledWith({ action: "pick" });
+
+    const invalid = await fetch(`${handleUrl.origin}/api/project`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ action: "remove", projectId: "bad id" }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(openProject).toHaveBeenCalledTimes(2);
+
+    const removed = await fetch(`${handleUrl.origin}/api/project`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ action: "remove", projectId: "project-123" }),
+    });
+    expect(removed.status).toBe(200);
+    expect(openProject).toHaveBeenLastCalledWith({
+      action: "remove",
+      projectId: "project-123",
     });
   });
 

@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { ConfigLoader } from "./ConfigLoader.js";
 import { CredentialsManager } from "./Credentials.js";
+import { ProviderProfileStore } from "./ProviderProfiles.js";
 import { redactConfigForDisplay } from "./redactConfig.js";
 
 describe("ConfigLoader tests", () => {
@@ -117,6 +118,48 @@ describe("ConfigLoader tests", () => {
     });
     expect(config.name).toBe("overridden-name");
     expect(config.provider.default).toBe("openai");
+  });
+
+  it("loads saved provider profiles and resolves their encrypted credentials", () => {
+    const orbitDir = join(homeDir, ".orbit");
+    const providerProfileStore = new ProviderProfileStore({
+      orbitDir,
+      platform: "linux",
+    });
+    const credentialsManager = new CredentialsManager({
+      orbitDir,
+      platform: "linux",
+      fallbackKey: Buffer.alloc(32, 1),
+    });
+    providerProfileStore.upsert({
+      id: "tokendance",
+      name: "TokenDance",
+      config: {
+        type: "openai-compatible",
+        baseUrl: "https://tokendance.space/gateway/v1",
+        apiKeyEnv: "TOKENDANCE_API_KEY",
+        models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+      },
+    });
+    providerProfileStore.setActive("tokendance");
+    credentialsManager.storeSecret("TOKENDANCE_API_KEY", "stored-secret");
+
+    const config = ConfigLoader.loadSync(cwd, undefined, {
+      homeDir,
+      env: {},
+      credentialsManager,
+      providerProfileStore,
+    });
+
+    expect(config.provider.default).toBe("tokendance");
+    expect(config.providers.tokendance).toMatchObject({
+      baseUrl: "https://tokendance.space/gateway/v1",
+      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+    });
+    expect(config.providers.tokendance?.apiKey).toBe("stored-secret");
+    expect(JSON.stringify(redactConfigForDisplay(config))).not.toContain(
+      "stored-secret",
+    );
   });
 
   it("should resolve environment variables key mapping", () => {

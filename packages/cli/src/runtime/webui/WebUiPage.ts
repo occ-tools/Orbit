@@ -6,7 +6,6 @@ export type WebUiLanguage = "en" | "zh";
 interface WebUiCopy {
   documentTitle: string;
   newTask: string;
-  currentTask: string;
   diagnostics: string;
   addContext: string;
   commands: string;
@@ -14,11 +13,29 @@ interface WebUiCopy {
   commandHint: string;
   noCommands: string;
   navigation: string;
+  projects: string;
+  recentProjects: string;
+  newProject: string;
+  projectDialogTitle: string;
+  projectDialogBody: string;
+  projectPath: string;
+  projectPathPlaceholder: string;
+  openProject: string;
+  createProject: string;
   recentTasks: string;
+  searchChats: string;
+  showMoreChats: string;
+  noMatchingChats: string;
+  noRecentTasks: string;
+  archivedTasks: string;
+  noArchivedTasks: string;
+  deleteChatTitle: string;
+  deleteChatBody: string;
+  cancel: string;
+  delete: string;
   untitledTask: string;
   localAgent: string;
   privateSession: string;
-  workspace: string;
   localOnly: string;
   openNavigation: string;
   collapseNavigation: string;
@@ -54,9 +71,14 @@ interface WebUiCopy {
   activity: string;
   settings: string;
   runtime: string;
+  projectMemory: string;
+  taskPlan: string;
+  noMemory: string;
+  noPlan: string;
   noActivity: string;
   clearActivity: string;
   promptCache: string;
+  provider: string;
   model: string;
   customModel: string;
   apply: string;
@@ -81,20 +103,39 @@ interface WebUiCopy {
 const COPY: Record<WebUiLanguage, WebUiCopy> = {
   en: {
     documentTitle: "Orbit · AI coding workspace",
-    newTask: "New task",
-    currentTask: "Current task",
+    newTask: "New chat",
     diagnostics: "Diagnostics",
     addContext: "Add context",
     commands: "Commands",
     commandSearch: "Search actions…",
     commandHint: "Navigate with ↑↓ · Enter to run · Esc to close",
     noCommands: "No matching actions",
-    navigation: "Workspace",
-    recentTasks: "Recent tasks",
+    navigation: "Tools",
+    projects: "Projects",
+    recentProjects: "Recent projects",
+    newProject: "New project",
+    projectDialogTitle: "Open a project",
+    projectDialogBody:
+      "Use one folder per codebase. Orbit opens it in a separate local tab with its own chats and context.",
+    projectPath: "Project folder path",
+    projectPathPlaceholder: "C:\\path\\to\\project",
+    openProject: "Open folder",
+    createProject: "Create & open",
+    recentTasks: "Chats",
+    searchChats: "Search chats",
+    showMoreChats: "Show more",
+    noMatchingChats: "No matching chats",
+    noRecentTasks: "No chats yet",
+    archivedTasks: "Archived chats",
+    noArchivedTasks: "No archived chats",
+    deleteChatTitle: "Delete this chat?",
+    deleteChatBody:
+      "This permanently removes the conversation and cannot be undone.",
+    cancel: "Cancel",
+    delete: "Delete",
     untitledTask: "Untitled task",
     localAgent: "Local agent",
     privateSession: "Private on this device",
-    workspace: "Workspace",
     localOnly: "Local session",
     openNavigation: "Open navigation",
     collapseNavigation: "Collapse navigation",
@@ -131,9 +172,14 @@ const COPY: Record<WebUiLanguage, WebUiCopy> = {
     activity: "Activity",
     settings: "Settings",
     runtime: "Runtime",
+    projectMemory: "Project memory",
+    taskPlan: "Task plan",
+    noMemory: "No explicit project memory.",
+    noPlan: "No plan steps for this chat.",
     noActivity: "Activity will appear here while Orbit works.",
     clearActivity: "Clear",
     promptCache: "Prompt cache",
+    provider: "Provider",
     model: "Model",
     customModel: "Custom model ID",
     apply: "Apply",
@@ -156,20 +202,38 @@ const COPY: Record<WebUiLanguage, WebUiCopy> = {
   },
   zh: {
     documentTitle: "Orbit · AI 编程工作区",
-    newTask: "新建任务",
-    currentTask: "当前任务",
+    newTask: "新建对话",
     diagnostics: "运行诊断",
     addContext: "添加上下文",
     commands: "命令帮助",
     commandSearch: "搜索操作…",
     commandHint: "↑↓ 选择 · Enter 执行 · Esc 关闭",
     noCommands: "没有匹配的操作",
-    navigation: "工作区",
-    recentTasks: "最近任务",
+    navigation: "工具",
+    projects: "项目",
+    recentProjects: "最近项目",
+    newProject: "新建项目",
+    projectDialogTitle: "打开项目",
+    projectDialogBody:
+      "一个代码工程对应一个文件夹。Orbit 会在新的本地标签页打开，并保留独立的聊天和上下文。",
+    projectPath: "项目文件夹路径",
+    projectPathPlaceholder: "C:\\路径\\项目名称",
+    openProject: "打开文件夹",
+    createProject: "创建并打开",
+    recentTasks: "对话",
+    searchChats: "搜索对话",
+    showMoreChats: "显示更多",
+    noMatchingChats: "没有匹配的对话",
+    noRecentTasks: "还没有对话",
+    archivedTasks: "已归档对话",
+    noArchivedTasks: "没有已归档对话",
+    deleteChatTitle: "删除这个对话？",
+    deleteChatBody: "此操作会永久删除该对话，并且无法撤销。",
+    cancel: "取消",
+    delete: "删除",
     untitledTask: "未命名任务",
     localAgent: "本地智能体",
     privateSession: "仅在本机运行",
-    workspace: "工作区",
     localOnly: "本地会话",
     openNavigation: "打开导航",
     collapseNavigation: "收起导航",
@@ -206,9 +270,14 @@ const COPY: Record<WebUiLanguage, WebUiCopy> = {
     activity: "活动",
     settings: "设置",
     runtime: "运行状态",
+    projectMemory: "项目记忆",
+    taskPlan: "任务计划",
+    noMemory: "暂无显式项目记忆。",
+    noPlan: "当前对话暂无计划步骤。",
     noActivity: "Orbit 工作时，步骤和工具状态会显示在这里。",
     clearActivity: "清空",
     promptCache: "提示词缓存",
+    provider: "服务商",
     model: "模型",
     customModel: "自定义模型 ID",
     apply: "应用",
@@ -233,7 +302,6 @@ const COPY: Record<WebUiLanguage, WebUiCopy> = {
 
 type UiIcon =
   | "add"
-  | "chat"
   | "diagnostics"
   | "context"
   | "commands"
@@ -241,6 +309,9 @@ type UiIcon =
   | "panel"
   | "close"
   | "down"
+  | "archive"
+  | "search"
+  | "folder"
   | "review"
   | "fix"
   | "explain"
@@ -249,7 +320,6 @@ type UiIcon =
 function renderUiIcon(name: UiIcon): string {
   const paths: Record<UiIcon, string> = {
     add: '<path d="M12 5v14M5 12h14" />',
-    chat: '<path d="M6.5 6.5h11v8h-6L8 17.5v-3H6.5z" /><circle cx="9" cy="10.5" r=".7" /><circle cx="12" cy="10.5" r=".7" /><circle cx="15" cy="10.5" r=".7" />',
     diagnostics:
       '<path d="M4.5 12h3l1.7-4 3.1 8 1.7-4h5.5" /><path d="M6 5.5h12v13H6z" />',
     context:
@@ -261,6 +331,10 @@ function renderUiIcon(name: UiIcon): string {
       '<rect x="4.5" y="5" width="15" height="14" rx="2" /><path d="M14 5v14" />',
     close: '<path d="m7 7 10 10M17 7 7 17" />',
     down: '<path d="m7 10 5 5 5-5" />',
+    archive: '<path d="M5.5 8.5h13v10h-13zM4.5 5h15v3.5h-15zM9.5 12h5" />',
+    search:
+      '<circle cx="10.5" cy="10.5" r="5.5" /><path d="m14.7 14.7 4.3 4.3" />',
+    folder: '<path d="M4.5 7h5.3l2-2h7.7v14h-15z" /><path d="M4.5 9h15" />',
     review:
       '<circle cx="10.5" cy="10.5" r="5.5" /><path d="m14.7 14.7 4.3 4.3M10.5 8v5M8 10.5h5" />',
     fix: '<path d="M14.5 5.5a4 4 0 0 0-4.8 5.2L5 15.4 8.6 19l4.7-4.7a4 4 0 0 0 5.2-4.8l-2.7 2.7-3-3z" />',
@@ -291,7 +365,7 @@ function renderComposer(copy: WebUiCopy): string {
     </section>
     <form class="composer" id="composer">
       <label class="sr-only" for="prompt">${copy.inputLabel}</label>
-      <textarea id="prompt" rows="1" maxlength="100000" autocomplete="off" autofocus placeholder="${copy.inputPlaceholder}"></textarea>
+      <textarea id="prompt" data-testid="composer-input" rows="1" maxlength="100000" autocomplete="off" autofocus placeholder="${copy.inputPlaceholder}"></textarea>
       <section class="context-shelf" id="contextShelf" aria-label="${copy.activeContext}" hidden>
         <div class="context-shelf-header">
           <span>${renderUiIcon("context")}<strong>${copy.activeContext}</strong></span>
@@ -303,14 +377,20 @@ function renderComposer(copy: WebUiCopy): string {
         <div class="composer-tools">
           <button class="composer-chip" id="contextPickerButton" type="button" data-open-context aria-haspopup="dialog" aria-controls="contextPicker" aria-expanded="false">${renderUiIcon("context")}<span>${copy.context}</span><span class="context-chip-count" id="contextChipCount" aria-label="0" hidden>0</span></button>
           <button class="composer-chip" id="searchToggle" type="button" aria-pressed="false"><span class="web-status-dot" aria-hidden="true"></span><span>${copy.webSearch}</span></button>
-          <select class="composer-select" id="permissionSelect" aria-label="${copy.permission}">
-            <option value="strict">${copy.modeStrict}</option>
-            <option value="normal">${copy.modeNormal}</option>
-            <option value="auto">${copy.modeAuto}</option>
-            <option value="plan">${copy.modePlan}</option>
-          </select>
+          <div class="select-control composer-select-control" data-select-control>
+            <select class="native-select-proxy" id="permissionSelect" aria-label="${copy.permission}" tabindex="-1" aria-hidden="true" hidden>
+              <option value="strict">${copy.modeStrict}</option>
+              <option value="normal">${copy.modeNormal}</option>
+              <option value="auto">${copy.modeAuto}</option>
+              <option value="plan">${copy.modePlan}</option>
+            </select>
+            <button class="select-trigger composer-select-trigger" id="permissionSelectTrigger" type="button" aria-label="${copy.permission}" aria-haspopup="listbox" aria-controls="permissionSelectMenu" aria-expanded="false">
+              <span class="select-value">${copy.modeNormal}</span>${renderUiIcon("down")}
+            </button>
+            <div class="select-menu" id="permissionSelectMenu" role="listbox" aria-label="${copy.permission}" hidden></div>
+          </div>
         </div>
-        <button class="send-button" id="sendButton" type="submit" aria-label="${copy.inputLabel}"><span id="sendGlyph" aria-hidden="true">↑</span></button>
+        <button class="send-button" id="sendButton" data-testid="composer-send" type="submit" aria-label="${copy.inputLabel}"><span id="sendGlyph" aria-hidden="true">↑</span></button>
       </div>
       <section class="context-picker" id="contextPicker" role="dialog" aria-label="${copy.contextPickerTitle}" aria-hidden="true" hidden>
         <div class="context-picker-header">
@@ -356,7 +436,8 @@ export function renderWebUiPage(language: WebUiLanguage): string {
   <script src="/assets/orbit.js" defer></script>
 </head>
 <body>
-  <div class="app-shell" id="appShell">
+  <template id="orbitAvatarTemplate">${renderOrbitMark("message-mark")}</template>
+  <div class="app-shell" id="appShell" data-testid="orbit-app">
     <button class="sidebar-backdrop" id="sidebarBackdrop" type="button" aria-label="${copy.close}" tabindex="-1"></button>
     <aside class="sidebar" id="sidebar" aria-label="Orbit">
       <div class="brand-row">
@@ -366,7 +447,7 @@ export function renderWebUiPage(language: WebUiLanguage): string {
         <button class="sidebar-collapse-button" id="sidebarCollapseButton" type="button" aria-label="${copy.collapseNavigation}" aria-controls="sidebar" aria-expanded="true">${renderUiIcon("panel")}</button>
       </div>
 
-      <button class="new-task-button" id="newTaskButton" type="button">
+      <button class="new-task-button" id="newTaskButton" data-testid="new-chat" type="button">
         <span class="new-task-icon">${renderUiIcon("add")}</span>
         <span>${copy.newTask}</span>
         <kbd>Ctrl N</kbd>
@@ -374,10 +455,6 @@ export function renderWebUiPage(language: WebUiLanguage): string {
 
       <div class="nav-section-heading"><span>${copy.navigation}</span><i></i></div>
       <nav class="primary-nav" aria-label="${copy.navigation}">
-        <button class="nav-button is-active" id="activeTaskButton" type="button" data-close-sidebar>
-          ${renderUiIcon("chat")}
-          <span id="activeTaskTitle">${copy.currentTask}</span>
-        </button>
         <button class="nav-button" type="button" data-command="/doctor">
           ${renderUiIcon("diagnostics")}
           <span>${copy.diagnostics}</span>
@@ -392,23 +469,54 @@ export function renderWebUiPage(language: WebUiLanguage): string {
         </button>
       </nav>
 
-      <section class="recent-section" id="recentSection" aria-labelledby="recentHeading" hidden>
-        <div class="nav-section-heading" id="recentHeading"><span>${copy.recentTasks}</span><i></i></div>
-        <div class="recent-sessions" id="recentSessions" aria-label="${copy.recentTasks}"></div>
+      <div class="nav-section-heading project-heading">
+        <span>${copy.projects}</span><i></i>
+        <button class="new-project-button" id="newProjectButton" type="button" aria-label="${copy.newProject}" aria-haspopup="dialog" aria-controls="projectDialog">${renderUiIcon("add")}</button>
+      </div>
+      <section class="project-section" id="projectSection" data-testid="active-project" aria-label="${copy.projects}">
+        <button class="project-toggle" id="projectToggle" type="button" aria-expanded="true" aria-controls="projectChatBody">
+          <span class="project-folder-icon">${renderUiIcon("folder")}</span>
+          <span class="project-copy">
+            <strong id="sidebarWorkspace">—</strong>
+            <small id="sidebarSession">${copy.localOnly}</small>
+          </span>
+          <span class="project-chat-count" id="projectChatCount" aria-label="0">0</span>
+          <span class="project-toggle-chevron">${renderUiIcon("down")}</span>
+        </button>
+        <div class="project-chat-body" id="projectChatBody">
+          <section class="recent-section" id="recentSection" aria-labelledby="recentHeading">
+            <div class="nav-section-heading session-section-heading" id="recentHeading">
+              <span>${copy.recentTasks}</span><i></i>
+              <button class="archive-toggle" id="archiveToggle" type="button" aria-label="${copy.archivedTasks}" aria-controls="archivedPanel" aria-expanded="false">
+                ${renderUiIcon("archive")}<b id="archiveCount">0</b>
+              </button>
+            </div>
+            <label class="session-search" id="sessionSearchField" hidden>
+              <span class="sr-only">${copy.searchChats}</span>
+              ${renderUiIcon("search")}
+              <input id="sessionSearch" type="search" maxlength="160" autocomplete="off" spellcheck="false" placeholder="${copy.searchChats}" />
+            </label>
+            <div class="recent-sessions" id="recentSessions" data-testid="chat-list" aria-label="${copy.recentTasks}"></div>
+            <p class="session-list-empty" id="recentEmpty">${copy.noRecentTasks}</p>
+            <button class="session-show-more" id="sessionShowMore" type="button" hidden>${copy.showMoreChats}</button>
+            <section class="archived-panel" id="archivedPanel" aria-label="${copy.archivedTasks}" hidden>
+              <div class="archived-panel-title">${copy.archivedTasks}</div>
+              <div class="archived-sessions" id="archivedSessions"></div>
+              <p class="session-list-empty" id="archivedEmpty">${copy.noArchivedTasks}</p>
+            </section>
+          </section>
+        </div>
+      </section>
+
+      <section class="recent-projects-shell" id="recentProjectsShell" aria-label="${copy.recentProjects}" hidden>
+        <div class="project-list-label">${copy.recentProjects}</div>
+        <div class="project-list" id="projectList"></div>
       </section>
 
       <div class="sidebar-spacer"></div>
       <div class="agent-card">
         <span class="agent-state"><i></i></span>
         <span><strong>${copy.localAgent}</strong><small>${copy.privateSession}</small></span>
-      </div>
-      <div class="workspace-card">
-        <div class="workspace-icon" aria-hidden="true"><span></span></div>
-        <div class="workspace-copy">
-          <span class="workspace-label">${copy.workspace}</span>
-          <strong id="sidebarWorkspace">—</strong>
-          <span id="sidebarSession">${copy.localOnly}</span>
-        </div>
       </div>
     </aside>
 
@@ -431,10 +539,20 @@ export function renderWebUiPage(language: WebUiLanguage): string {
             <span>${copy.commands}</span>
             <kbd>Ctrl K</kbd>
           </button>
-          <label class="model-control" title="${copy.model}">
-            <span class="sr-only">${copy.model}</span>
-            <select id="modelSelect" aria-label="${copy.model}"></select>
-          </label>
+          <div class="select-control provider-control" data-select-control title="${copy.provider}">
+            <select class="native-select-proxy" id="providerSelect" aria-label="${copy.provider}" tabindex="-1" aria-hidden="true" hidden></select>
+            <button class="select-trigger provider-select-trigger" id="providerSelectTrigger" type="button" aria-label="${copy.provider}" aria-haspopup="listbox" aria-controls="providerSelectMenu" aria-expanded="false">
+              <span class="select-value">—</span>${renderUiIcon("down")}
+            </button>
+            <div class="select-menu provider-select-menu" id="providerSelectMenu" role="listbox" aria-label="${copy.provider}" hidden></div>
+          </div>
+          <div class="select-control model-control" data-select-control title="${copy.model}">
+            <select class="native-select-proxy" id="modelSelect" aria-label="${copy.model}" tabindex="-1" aria-hidden="true" hidden></select>
+            <button class="select-trigger model-select-trigger" id="modelSelectTrigger" type="button" aria-label="${copy.model}" aria-haspopup="listbox" aria-controls="modelSelectMenu" aria-expanded="false">
+              <span class="select-value">—</span>${renderUiIcon("down")}
+            </button>
+            <div class="select-menu model-select-menu" id="modelSelectMenu" role="listbox" aria-label="${copy.model}" hidden></div>
+          </div>
           <button class="connection-state" id="connectionState" type="button" aria-label="${copy.connected}. ${copy.retry}" title="${copy.retry}">
             <span class="connection-dot"></span>
             <span id="connectionLabel" role="status" aria-live="polite">${copy.connected}</span>
@@ -503,6 +621,14 @@ export function renderWebUiPage(language: WebUiLanguage): string {
             <div class="section-heading"><h3>${copy.runtime}</h3><span id="runtimeUpdated">—</span></div>
             <dl class="runtime-grid" id="runtime"></dl>
           </section>
+          <section class="detail-section">
+            <div class="section-heading"><h3>${copy.taskPlan}</h3><span id="planCount">0</span></div>
+            <div class="review-list" id="planReview"><p class="review-empty">${copy.noPlan}</p></div>
+          </section>
+          <section class="detail-section">
+            <div class="section-heading"><h3>${copy.projectMemory}</h3><span id="memoryCount">0</span></div>
+            <div class="review-list" id="memoryReview"><p class="review-empty">${copy.noMemory}</p></div>
+          </section>
           <section class="detail-section activity-section">
             <div class="section-heading"><h3>${copy.activity}</h3><button class="text-button" id="clearActivity" type="button">${copy.clearActivity}</button></div>
             <div class="activity-list" id="events">
@@ -539,14 +665,20 @@ export function renderWebUiPage(language: WebUiLanguage): string {
               <label class="switch"><input id="searchEnabled" type="checkbox" aria-label="${copy.webSearch}" /><span class="switch-track" aria-hidden="true"></span></label>
             </div>
             <div class="search-dependencies" id="searchDependencies">
-              <label class="field-label" for="searchProvider">${copy.searchProvider}</label>
-              <select class="field-control" id="searchProvider">
-                <option value="auto">Auto</option>
-                <option value="searxng">SearXNG</option>
-                <option value="tavily">Tavily</option>
-                <option value="bing">Bing</option>
-                <option value="duckduckgo">DuckDuckGo</option>
-              </select>
+              <span class="field-label" id="searchProviderLabel">${copy.searchProvider}</span>
+              <div class="select-control field-select-control" data-select-control>
+                <select class="native-select-proxy" id="searchProvider" aria-labelledby="searchProviderLabel" tabindex="-1" aria-hidden="true" hidden>
+                  <option value="auto">Auto</option>
+                  <option value="searxng">SearXNG</option>
+                  <option value="tavily">Tavily</option>
+                  <option value="bing">Bing</option>
+                  <option value="duckduckgo">DuckDuckGo</option>
+                </select>
+                <button class="select-trigger field-select-trigger" id="searchProviderTrigger" type="button" aria-labelledby="searchProviderLabel" aria-haspopup="listbox" aria-controls="searchProviderMenu" aria-expanded="false">
+                  <span class="select-value">Auto</span>${renderUiIcon("down")}
+                </button>
+                <div class="select-menu" id="searchProviderMenu" role="listbox" aria-labelledby="searchProviderLabel" hidden></div>
+              </div>
               <label class="field-label" for="searchMax">${copy.searchResults}</label>
               <input class="field-control" id="searchMax" type="number" min="1" max="20" />
             </div>
@@ -576,6 +708,42 @@ export function renderWebUiPage(language: WebUiLanguage): string {
       <div class="command-results" id="commandResults" role="listbox"></div>
       <p class="command-empty" id="commandEmpty" hidden>${copy.noCommands}</p>
       <footer class="command-palette-footer">${copy.commandHint}</footer>
+    </section>
+  </div>
+  <div class="session-delete-dialog" id="sessionDeleteDialog" aria-hidden="true" hidden>
+    <button class="session-delete-backdrop" id="sessionDeleteBackdrop" type="button" aria-label="${copy.cancel}" tabindex="-1"></button>
+    <section class="session-delete-card" role="dialog" aria-modal="true" aria-labelledby="sessionDeleteTitle" aria-describedby="sessionDeleteBody">
+      <span class="session-delete-mark" aria-hidden="true">!</span>
+      <div class="session-delete-copy">
+        <h2 id="sessionDeleteTitle">${copy.deleteChatTitle}</h2>
+        <p id="sessionDeleteBody">${copy.deleteChatBody}</p>
+        <strong id="sessionDeleteName"></strong>
+      </div>
+      <div class="session-delete-actions">
+        <button class="session-delete-cancel" id="sessionDeleteCancel" type="button">${copy.cancel}</button>
+        <button class="session-delete-confirm" id="sessionDeleteConfirm" type="button">${copy.delete}</button>
+      </div>
+    </section>
+  </div>
+  <div class="project-dialog" id="projectDialog" aria-hidden="true" hidden>
+    <button class="project-dialog-backdrop" id="projectDialogBackdrop" type="button" aria-label="${copy.cancel}" tabindex="-1"></button>
+    <section class="project-dialog-card" role="dialog" aria-modal="true" aria-labelledby="projectDialogTitle" aria-describedby="projectDialogBody">
+      <div class="project-dialog-heading">
+        <span class="project-dialog-mark">${renderUiIcon("folder")}</span>
+        <div>
+          <h2 id="projectDialogTitle">${copy.projectDialogTitle}</h2>
+          <p id="projectDialogBody">${copy.projectDialogBody}</p>
+        </div>
+      </div>
+      <label class="project-path-field" for="projectPathInput">
+        <span>${copy.projectPath}</span>
+        <input id="projectPathInput" type="text" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="${copy.projectPathPlaceholder}" />
+      </label>
+      <div class="project-dialog-actions">
+        <button class="project-dialog-cancel" id="projectDialogCancel" type="button">${copy.cancel}</button>
+        <button class="project-dialog-open" id="projectDialogOpen" type="button">${copy.openProject}</button>
+        <button class="project-dialog-create" id="projectDialogCreate" type="button">${copy.createProject}</button>
+      </div>
     </section>
   </div>
   <div class="toast-region" id="toasts" aria-live="assertive" aria-atomic="true"></div>

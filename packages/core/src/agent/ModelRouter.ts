@@ -1,0 +1,180 @@
+import { z } from "zod";
+
+const RoutingInputSchema = z.object({
+  query: z.string(),
+  defaultModel: z.string().min(1),
+  fastModel: z.string().min(1).optional(),
+  qualityModel: z.string().min(1).optional(),
+  lockedModel: z.string().min(1).optional(),
+  fallbackModel: z.string().min(1).optional(),
+  activeModel: z.string().min(1).optional(),
+  repairTurn: z.boolean().default(false),
+  hasWrittenFiles: z.boolean().default(false),
+});
+
+export type ModelRoutingInput = z.input<typeof RoutingInputSchema>;
+
+export interface ModelRoutingDecision {
+  model: string;
+  lane: "locked" | "fallback" | "fast" | "balanced" | "quality";
+  reason:
+    | "user_locked"
+    | "provider_fallback"
+    | "verification_repair"
+    | "complex_request"
+    | "simple_request"
+    | "write_escalation"
+    | "continue_active_lane"
+    | "default_lane";
+  confidence: "high" | "medium";
+}
+
+const COMPLEX_SIGNALS = [
+  "debug",
+  "investigate",
+  "root cause",
+  "race condition",
+  "architecture",
+  "refactor",
+  "migrate",
+  "tradeoff",
+  "optimize",
+  "security",
+  "vulnerability",
+  "concurrency",
+  "deadlock",
+  "memory leak",
+  "diagnose",
+  "evaluate",
+  "推理",
+  "分析",
+  "诊断",
+  "调试",
+  "设计",
+  "评估",
+  "为什么",
+  "死锁",
+  "内存泄漏",
+  "并发",
+  "优化",
+  "重构",
+  "安全",
+  "漏洞",
+  "架构",
+  "崩溃",
+  "故障",
+] as const;
+
+const SIMPLE_SIGNALS = [
+  "what is",
+  "list",
+  "show",
+  "rename",
+  "lint",
+  "format",
+  "thanks",
+  "continue",
+  "search",
+  "find",
+  "什么是",
+  "列出",
+  "显示",
+  "重命名",
+  "格式化",
+  "谢谢",
+  "继续",
+] as const;
+
+export type TaskComplexity = "simple" | "balanced" | "complex";
+
+/** Classifies reasoning budget independently from the selected model lane. */
+export function classifyTaskComplexity(input: {
+  query: string;
+  repairTurn?: boolean;
+  hasWrittenFiles?: boolean;
+}): TaskComplexity {
+  if (input.repairTurn || input.hasWrittenFiles) return "complex";
+  const query = input.query.toLowerCase().trim();
+  const complex = COMPLEX_SIGNALS.some((signal) => query.includes(signal));
+  if (complex) return "complex";
+  if (
+    query.length < 50 ||
+    SIMPLE_SIGNALS.some((signal) => query.includes(signal))
+  ) {
+    return "simple";
+  }
+  return "balanced";
+}
+
+/** Selects an explainable model lane without mutating runtime state. */
+export function routeModel(input: ModelRoutingInput): ModelRoutingDecision {
+  const value = RoutingInputSchema.parse(input);
+  const qualityModel = value.qualityModel || value.defaultModel;
+  const complexity = classifyTaskComplexity(value);
+
+  if (value.fallbackModel) {
+    return decision(
+      value.fallbackModel,
+      "fallback",
+      "provider_fallback",
+      "high",
+    );
+  }
+  if (value.lockedModel) {
+    return decision(value.lockedModel, "locked", "user_locked", "high");
+  }
+  if (value.repairTurn) {
+    return decision(qualityModel, "quality", "verification_repair", "high");
+  }
+
+  const complex = complexity === "complex";
+  const simple = complexity === "simple";
+
+  if (value.activeModel) {
+    if (
+      value.activeModel === value.fastModel &&
+      (complex || value.hasWrittenFiles)
+    ) {
+      return decision(
+        qualityModel,
+        "quality",
+        value.hasWrittenFiles ? "write_escalation" : "complex_request",
+        "high",
+      );
+    }
+    return decision(
+      value.activeModel,
+      laneForModel(value.activeModel, value),
+      "continue_active_lane",
+      "high",
+    );
+  }
+  if (complex) {
+    return decision(qualityModel, "quality", "complex_request", "high");
+  }
+  if (simple && value.fastModel) {
+    return decision(value.fastModel, "fast", "simple_request", "medium");
+  }
+  if (!value.hasWrittenFiles && value.fastModel) {
+    return decision(value.fastModel, "fast", "default_lane", "medium");
+  }
+  return decision(value.defaultModel, "balanced", "default_lane", "medium");
+}
+
+function laneForModel(
+  model: string,
+  input: z.output<typeof RoutingInputSchema>,
+): ModelRoutingDecision["lane"] {
+  if (model === input.fastModel) return "fast";
+  if (model === input.qualityModel) return "quality";
+  return "balanced";
+}
+
+function decision(
+  model: string,
+  lane: ModelRoutingDecision["lane"],
+  reason: ModelRoutingDecision["reason"],
+  confidence: ModelRoutingDecision["confidence"],
+): ModelRoutingDecision {
+  return { model, lane, reason, confidence };
+}

@@ -28,6 +28,7 @@ import {
   type WebUiSettingsPatch,
 } from "./webui/index.js";
 import { WebUiApprovalBroker } from "./webui/WebUiApprovalBroker.js";
+import { ProjectRegistry } from "@orbit-build/session";
 import { RunCoordinator } from "./RunCoordinator.js";
 import {
   BUILTIN_SLASH_COMMANDS,
@@ -40,6 +41,12 @@ import { handleContextCommand } from "./commands/ContextCommandHandler.js";
 import { handleRollbackCommand } from "./commands/RollbackCommandHandler.js";
 import { handleSessionCommand } from "./commands/SessionCommandHandler.js";
 import { ensureSessionTitle } from "./SessionTitles.js";
+import { createProviderFromConfig } from "./ProviderFactory.js";
+import { discoverProviderModels } from "./ModelDiscovery.js";
+import { launchOrbitProject } from "./ProjectLauncher.js";
+import { selectOrbitProjectFolder } from "./ProjectFolderPicker.js";
+import { handleSessionMetadataCommand } from "./commands/SessionMetadataCommandHandler.js";
+import { handleWorkspaceStateCommand } from "./commands/WorkspaceStateCommandHandler.js";
 
 export { getAutocompleteCandidates } from "./AutocompleteCandidates.js";
 export { BUILTIN_SLASH_COMMANDS } from "./SlashCommandCatalog.js";
@@ -157,6 +164,20 @@ export class CommandRouter {
       );
       if (rollbackResult) return rollbackResult;
 
+      const workspaceStateResult = handleWorkspaceStateCommand(
+        command,
+        parts.slice(1).join(" ").trim(),
+        {
+          loop,
+          isZh: config.language === "zh",
+          printOutput: (text) => this.printOutput(text),
+        },
+      );
+      if (workspaceStateResult) {
+        this.tui.syncFromLoop(loop);
+        return workspaceStateResult;
+      }
+
       if (command === "/exit" || command === "/quit") {
         this.printOutput(
           picocolors.yellow("Exiting Orbit Interactive Shell. Goodbye!"),
@@ -169,20 +190,55 @@ export class CommandRouter {
         return { shouldExit: false, processed: true };
       }
 
+      if (
+        handleSessionMetadataCommand(command, parts.slice(1).join(" ").trim(), {
+          loop,
+          isZh: config.language === "zh",
+          printOutput: (text) => this.printOutput(text),
+        })
+      ) {
+        this.tui.syncFromLoop(loop);
+        return { shouldExit: false, processed: true };
+      }
+
       if (command === "/webui") {
         const isZh = config.language === "zh";
         const { port, open } = parseWebUiArgs(parts.slice(1).join(" "));
         try {
+          await this.refreshProviderModels(config.provider.default);
           const handle = await startOrbitWebUi({
             cwd,
             config,
             loop,
             port,
             open,
+            getProjects: () => new ProjectRegistry().list().slice(0, 20),
             submitPrompt: (prompt) => this.submitWebPrompt(prompt),
             cancelPrompt: () => this.cancelWebPrompt(),
             updateSettings: (patch) => this.updateWebUiSettings(patch),
             updateSession: (action) => this.updateWebUiSession(action),
+            openProject: async (action) => {
+              if (action.action === "pick") {
+                const path = await selectOrbitProjectFolder();
+                return path
+                  ? { ok: true, path }
+                  : { ok: true, cancelled: true };
+              }
+              if (action.action === "remove") {
+                const removed = new ProjectRegistry().remove(action.projectId);
+                return {
+                  ok: removed,
+                  message: removed
+                    ? "Project was removed from Orbit. Files were not deleted."
+                    : "Project is no longer registered.",
+                };
+              }
+              const projectPath = launchOrbitProject(action);
+              return {
+                ok: true,
+                message: `Opening Orbit project: ${projectPath}`,
+              };
+            },
             getPendingApproval: () => this.webApprovalBroker.getPending(),
             respondToApproval: (decision) =>
               this.webApprovalBroker.respond(decision),
@@ -272,6 +328,9 @@ export class CommandRouter {
         const activeConfig = loop.getConfig();
         const activeModel =
           loop.getModelOverride() || activeConfig.models.default;
+        const routingMode = loop.getModelOverride() ? "LOCKED" : "AUTO";
+        const memory = loop.getProjectMemory?.();
+        const plan = loop.getTaskPlan?.();
         const budgetLimit = activeConfig.budgetLimit;
         const currentCost = loop.getSessionCost();
         const mode = activeConfig.permissions.mode;
@@ -302,7 +361,14 @@ export class CommandRouter {
               `  🆔  ${picocolors.gray("会话")}      ${picocolors.cyan(loop.getSessionId())}`,
               `  🔌  ${picocolors.gray("提供商")}    ${picocolors.cyan(this.providerInstance.id)}`,
               `  🤖  ${picocolors.gray("当前模型")}  ${picocolors.cyan(activeModel)}`,
+              `  ↯   ${picocolors.gray("模型路由")}  ${picocolors.cyan(routingMode)}`,
               `  🛡️  ${picocolors.gray("权限模式")}  ${picocolors.green(mode.toUpperCase())}`,
+              `  ◫   ${picocolors.gray("计划/记忆")}  ${picocolors.cyan(`${plan?.items.length || 0} / ${memory?.entries.length || 0}`)}`,
+              ...(loop.getGoal()
+                ? [
+                    `  🎯  ${picocolors.gray("聊天目标")}  ${picocolors.cyan(loop.getGoal() || "")}`,
+                  ]
+                : []),
               `  🧠  ${picocolors.gray("上下文")}    ${picocolors.cyan(`~${contextStatus.estimatedHistoryTokens.toLocaleString()}`)} / ${contextStatus.maxContextTokens.toLocaleString()} tokens（${contextPct}% 自动压缩线）`,
               "",
               picocolors.bold("费用与预算"),
@@ -316,7 +382,14 @@ export class CommandRouter {
               `  🆔  ${picocolors.gray("Session ID")}    ${picocolors.cyan(loop.getSessionId())}`,
               `  🔌  ${picocolors.gray("Provider")}      ${picocolors.cyan(this.providerInstance.id)}`,
               `  🤖  ${picocolors.gray("Active Model")}  ${picocolors.cyan(activeModel)}`,
+              `  ↯   ${picocolors.gray("Model Routing")} ${picocolors.cyan(routingMode)}`,
               `  🛡️  ${picocolors.gray("Security Mode")} ${picocolors.green(mode.toUpperCase())}`,
+              `  ◫   ${picocolors.gray("Plan / Memory")} ${picocolors.cyan(`${plan?.items.length || 0} / ${memory?.entries.length || 0}`)}`,
+              ...(loop.getGoal()
+                ? [
+                    `  🎯  ${picocolors.gray("Chat Goal")}     ${picocolors.cyan(loop.getGoal() || "")}`,
+                  ]
+                : []),
               `  🧠  ${picocolors.gray("Context")}       ${picocolors.cyan(`~${contextStatus.estimatedHistoryTokens.toLocaleString()}`)} / ${contextStatus.maxContextTokens.toLocaleString()} tokens (${contextPct}% of auto-compact threshold)`,
               "",
               picocolors.bold("Budget & Cost"),
@@ -355,9 +428,37 @@ export class CommandRouter {
           );
         };
         if (!modelArg) {
+          const providerOptions = Object.keys(activeConfig.providers).map(
+            (providerId) => ({
+              value: providerId,
+              label: `${providerId}${providerId === this.providerInstance.id ? "  ✓" : ""}`,
+            }),
+          );
+          providerOptions.push({
+            value: "cancel",
+            label: isZh ? "取消" : "Cancel",
+          });
+          const selectedProvider = await Prompt.askSelect(
+            isZh
+              ? `当前服务商：${this.providerInstance.id}。请选择模型服务商：`
+              : `Current provider: ${this.providerInstance.id}. Select a model provider:`,
+            providerOptions,
+            {
+              suppressCloseRenderOnSelect: true,
+              renderOnSelectValues: ["cancel"],
+            },
+          );
+          if (!selectedProvider || selectedProvider === "cancel") {
+            return { shouldExit: false, processed: true };
+          }
+          // Discover the selected provider's catalog without mutating runtime
+          // state. Provider and model are committed together after the second
+          // prompt so the TUI never renders an intermediate provider/model pair.
+          await this.refreshProviderModels(selectedProvider);
+          const providerId = selectedProvider;
+          const providerChanged = providerId !== this.providerInstance.id;
           const activeModel =
             loop.getModelOverride() || activeConfig.models.default;
-          const providerId = this.providerInstance.id;
           const modelOptions: Array<{ value: string; label: string }> =
             getProviderModelCandidates(activeConfig, providerId).map(
               (model) => ({
@@ -365,6 +466,13 @@ export class CommandRouter {
                 label: formatModelOptionLabel(model),
               }),
             );
+
+          modelOptions.unshift({
+            value: "auto",
+            label: isZh
+              ? "自动路由（Flash / Pro 按任务选择）"
+              : "Auto routing (Flash / Pro by task)",
+          });
 
           modelOptions.push({
             value: "custom",
@@ -385,7 +493,30 @@ export class CommandRouter {
             return { shouldExit: false, processed: true };
           }
           let finalModel = selectedModel;
-          if (selectedModel === "custom") {
+          if (selectedModel === "auto") {
+            if (providerChanged) {
+              const switched = await this.switchProvider(
+                providerId,
+                "__auto__",
+              );
+              if (!switched.ok) {
+                this.printOutput(picocolors.red(`✖ ${switched.message}`));
+                return { shouldExit: false, processed: true };
+              }
+            } else {
+              loop.clearModelOverride();
+              this.tui.syncFromLoop(loop);
+              this.saveLocalState({ lastModel: "" });
+            }
+            this.printOutput(
+              picocolors.green(
+                isZh
+                  ? "✔ 已启用自动模型路由。"
+                  : "✔ Automatic model routing enabled.",
+              ),
+            );
+            return { shouldExit: false, processed: true };
+          } else if (selectedModel === "custom") {
             const customModel = await Prompt.askText(
               isZh ? "请输入自定义模型名称：" : "Enter a custom model name:",
             );
@@ -393,17 +524,39 @@ export class CommandRouter {
               return { shouldExit: false, processed: true };
             }
             finalModel = customModel;
-            loop.setModelOverride(customModel);
-            announceModel(customModel);
-          } else {
-            loop.setModelOverride(selectedModel);
-            announceModel(selectedModel);
           }
-          this.saveLocalState({ lastModel: finalModel });
+          if (providerChanged) {
+            const switched = await this.switchProvider(providerId, finalModel, {
+              allowUnlistedModel: selectedModel === "custom",
+            });
+            if (!switched.ok) {
+              this.printOutput(picocolors.red(`✖ ${switched.message}`));
+              return { shouldExit: false, processed: true };
+            }
+          } else {
+            loop.setModelOverride(finalModel);
+            this.tui.syncFromLoop(loop);
+            this.saveLocalState({ lastModel: finalModel });
+          }
+          announceModel(finalModel);
           return { shouldExit: false, processed: true };
         }
 
+        if (["auto", "default", "unlock"].includes(modelArg.toLowerCase())) {
+          loop.clearModelOverride();
+          this.tui.syncFromLoop(loop);
+          this.printOutput(
+            picocolors.green(
+              isZh
+                ? "✔ 已启用自动模型路由。"
+                : "✔ Automatic model routing enabled.",
+            ),
+          );
+          this.saveLocalState({ lastModel: "" });
+          return { shouldExit: false, processed: true };
+        }
         loop.setModelOverride(modelArg);
+        this.tui.syncFromLoop(loop);
         announceModel(modelArg);
         this.saveLocalState({ lastModel: modelArg });
         return { shouldExit: false, processed: true };
@@ -815,6 +968,9 @@ export class CommandRouter {
     patch: WebUiSettingsPatch,
   ): Promise<{ ok: boolean; message?: string }> {
     const draft = JSON.parse(JSON.stringify(this.config));
+    if (patch.provider) {
+      draft.provider.default = patch.provider;
+    }
     if (patch.permissionMode) {
       draft.permissions.mode = patch.permissionMode;
     }
@@ -833,9 +989,18 @@ export class CommandRouter {
       return { ok: false, message: parsed.error.message };
     }
 
-    if (patch.model) {
-      this.loop.setModelOverride(patch.model);
-      this.saveLocalState({ lastModel: patch.model });
+    if (patch.provider && patch.provider !== this.providerInstance.id) {
+      const switched = await this.switchProvider(patch.provider, patch.model);
+      if (!switched.ok) return switched;
+    }
+    if (patch.model && !patch.provider) {
+      if (patch.model === "__auto__") {
+        this.loop.clearModelOverride();
+        this.saveLocalState({ lastModel: "" });
+      } else {
+        this.loop.setModelOverride(patch.model);
+        this.saveLocalState({ lastModel: patch.model });
+      }
     }
     if (patch.permissionMode) {
       this.config.permissions.mode = patch.permissionMode;
@@ -852,6 +1017,88 @@ export class CommandRouter {
     }
 
     return { ok: true };
+  }
+
+  private async refreshProviderModels(providerId: string): Promise<void> {
+    const provider = this.config.providers[providerId];
+    if (
+      !provider?.baseUrl ||
+      (provider.type !== "openai" &&
+        provider.type !== "openai-compatible" &&
+        provider.type !== "ollama")
+    ) {
+      return;
+    }
+    try {
+      const discovered = await discoverProviderModels({
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        ...(provider.type === "ollama" ? { providerType: "ollama" } : {}),
+      });
+      provider.baseUrl = discovered.baseUrl;
+      provider.models = discovered.models;
+      provider.modelCapabilities = {
+        ...(provider.modelCapabilities || {}),
+        ...discovered.modelCapabilities,
+      };
+    } catch {
+      // A cached configured catalog remains usable when a provider blocks or
+      // temporarily fails its model-list endpoint.
+    }
+  }
+
+  private async switchProvider(
+    providerId: string,
+    preferredModel?: string,
+    options: { allowUnlistedModel?: boolean } = {},
+  ): Promise<{ ok: boolean; message?: string }> {
+    if (!this.config.providers[providerId]) {
+      return { ok: false, message: `Provider not found: ${providerId}` };
+    }
+    await this.refreshProviderModels(providerId);
+    const previousProvider = this.config.provider.default;
+    this.config.provider.default = providerId;
+    try {
+      const provider = createProviderFromConfig(this.config);
+      await provider.initialize?.();
+      this.providerInstance = provider;
+      this.setProviderInstance(provider);
+      this.loop.setProvider(provider);
+      const models = getProviderModelCandidates(this.config, providerId);
+      const currentModel =
+        this.loop.getModelOverride() || this.config.models.default;
+      const cleanPreferredModel = preferredModel?.trim();
+      const automaticRouting = cleanPreferredModel === "__auto__";
+      const nextModel =
+        cleanPreferredModel &&
+        !automaticRouting &&
+        (options.allowUnlistedModel || models.includes(cleanPreferredModel))
+          ? cleanPreferredModel
+          : models.includes(currentModel)
+            ? currentModel
+            : models.includes(this.config.models.default)
+              ? this.config.models.default
+              : models.find((model) => model.includes("deepseek-v4-flash")) ||
+                models[0];
+      if (nextModel) {
+        if (automaticRouting) {
+          this.loop.clearModelOverride();
+          this.saveLocalState({ lastModel: "" });
+        } else {
+          this.loop.setModelOverride(nextModel);
+          this.saveLocalState({ lastModel: nextModel });
+        }
+      }
+      this.tui.syncFromLoop(this.loop);
+      return { ok: true };
+    } catch (error: unknown) {
+      this.config.provider.default = previousProvider;
+      return {
+        ok: false,
+        message:
+          error instanceof Error ? error.message : "Provider switch failed.",
+      };
+    }
   }
 
   private async updateWebUiSession(
@@ -878,7 +1125,7 @@ export class CommandRouter {
         this.tui.loadHistory([]);
         this.saveLocalState({ lastSessionId: sessionId, lastModel: model });
         this.printOutput(`✔ Started new session: ${sessionId}`);
-      } else {
+      } else if (action.action === "resume") {
         if (!this.loop.resumeSession(action.sessionId)) {
           return {
             ok: false,
@@ -891,6 +1138,38 @@ export class CommandRouter {
           lastModel: this.loop.getModelOverride() || this.config.models.default,
         });
         this.printOutput(`✔ Switched to session: ${action.sessionId}`);
+      } else {
+        const activeSessionId = this.loop.getSessionId();
+        if (activeSessionId === action.sessionId) {
+          return {
+            ok: false,
+            message: "The active session cannot be archived or deleted.",
+          };
+        }
+        if (action.action === "delete") {
+          const exists = this.loop
+            .getSessions()
+            .some((session) => session.id === action.sessionId);
+          if (!exists) {
+            return {
+              ok: false,
+              message: `Session not found: ${action.sessionId}`,
+            };
+          }
+          this.loop.deleteSession(action.sessionId);
+          this.printOutput(`✔ Deleted session: ${action.sessionId}`);
+        } else {
+          const archived = action.action === "archive";
+          if (!this.loop.setSessionArchived(action.sessionId, archived)) {
+            return {
+              ok: false,
+              message: `Session not found: ${action.sessionId}`,
+            };
+          }
+          this.printOutput(
+            `✔ ${archived ? "Archived" : "Restored"} session: ${action.sessionId}`,
+          );
+        }
       }
       this.tui.syncFromLoop(this.loop);
       const cachedCandidates = this.getCandidates();

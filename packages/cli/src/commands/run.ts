@@ -20,6 +20,7 @@ import { ReplController } from "../runtime/ReplController.js";
 import { createProviderFromConfig } from "../runtime/ProviderFactory.js";
 import { redactSecrets } from "@orbit-build/shared";
 import type { ModelProvider } from "@orbit-build/model-providers";
+import { ProjectRegistry } from "@orbit-build/session";
 
 export { previousCodePointIndex, nextCodePointIndex, parseMouseWheelDirection };
 
@@ -39,24 +40,34 @@ function getLocalState(cwd: string): LocalState {
 }
 
 export function shouldUseStoredModel(cliOverrides: unknown): boolean {
+  return getExplicitModelOverride(cliOverrides) === undefined;
+}
+
+/** Return a validated one-shot model override supplied by the CLI. */
+export function getExplicitModelOverride(
+  cliOverrides: unknown,
+): string | undefined {
   if (
     typeof cliOverrides !== "object" ||
     cliOverrides === null ||
     Array.isArray(cliOverrides)
   ) {
-    return true;
+    return undefined;
   }
   const models = (cliOverrides as Record<string, unknown>).models;
   if (typeof models !== "object" || models === null || Array.isArray(models)) {
-    return true;
+    return undefined;
   }
   const selected = (models as Record<string, unknown>).default;
-  return typeof selected !== "string" || selected.trim().length === 0;
+  if (typeof selected !== "string") return undefined;
+  const normalized = selected.trim();
+  return normalized || undefined;
 }
 
 export interface RunAgentOptions {
   nonInteractive?: boolean;
   jsonl?: boolean;
+  resumeSessionId?: string;
   webUi?: {
     port?: number;
     open: boolean;
@@ -72,7 +83,19 @@ export async function runAgent(
 ): Promise<AgentLoopRunOutcome | undefined> {
   const cleanupJsonl = options?.jsonl ? configureJsonlOutput() : () => {};
   try {
+    try {
+      new ProjectRegistry().register(cwd);
+    } catch (error: unknown) {
+      eventBus.emitEvent("project_registry_warning", {
+        message: redactSecrets(
+          error instanceof Error
+            ? error.message
+            : "Unable to update the project registry.",
+        ),
+      });
+    }
     const config = ConfigLoader.loadSync(cwd, cliOverrides);
+    const explicitModelOverride = getExplicitModelOverride(cliOverrides);
 
     if (shouldUseStoredModel(cliOverrides)) {
       const localState = getLocalState(cwd);
@@ -197,18 +220,40 @@ export async function runAgent(
       );
       return await orchestrator.run();
     } else {
-      const loop = new AgentLoop(
-        cwd,
-        config,
-        providerInstance,
-        activeTask,
-        interaction,
-        {
-          disableStatusBar: !!options?.nonInteractive || !!options?.jsonl,
-          nonInteractive: !!options?.nonInteractive,
-        },
-      );
-      return await loop.run();
+      try {
+        const loop = new AgentLoop(
+          cwd,
+          config,
+          providerInstance,
+          activeTask,
+          interaction,
+          {
+            modelOverride: explicitModelOverride,
+            sessionId: options?.resumeSessionId,
+            requireSession: Boolean(options?.resumeSessionId),
+            disableStatusBar: !!options?.nonInteractive || !!options?.jsonl,
+            nonInteractive: !!options?.nonInteractive,
+          },
+        );
+        return await loop.run();
+      } catch (error: unknown) {
+        const message = redactSecrets(
+          error instanceof Error ? error.message : String(error),
+        );
+        const outcome: AgentLoopRunOutcome = {
+          status: "failed",
+          sessionId: options?.resumeSessionId || "",
+          attempts: 0,
+          error: { code: "execution_error", message },
+        };
+        eventBus.emitEvent("agent_completed", {
+          taskId: options?.resumeSessionId || "startup",
+          success: false,
+          result: outcome,
+          error: message,
+        });
+        return outcome;
+      }
     }
   } finally {
     cleanupJsonl();
@@ -227,8 +272,17 @@ export function exitCodeForOutcome(
 
 function configureJsonlOutput(): () => void {
   const originalLog = console.log;
+  let sequence = 0;
   const onEvent = (event: unknown) => {
-    originalLog(JSON.stringify(sanitizeJsonlEvent(event)));
+    const sanitized = sanitizeJsonlEvent(event);
+    originalLog(
+      JSON.stringify({
+        schemaVersion: 1,
+        sequence: ++sequence,
+        timestamp: new Date().toISOString(),
+        ...(isRecord(sanitized) ? sanitized : { type: "unknown", payload: {} }),
+      }),
+    );
   };
   console.log = (...args: unknown[]) => {
     console.error(...args);

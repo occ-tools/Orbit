@@ -14,6 +14,8 @@ only small process-level commands whose state cannot yet be cleanly isolated.
 | `ContextCommandHandler.ts`         | `/add`, `/drop`, `/compact`, and `/clear` context/history operations. |
 | `RollbackCommandHandler.ts`        | Safe Git/checkpoint `/rollback` selection and execution.              |
 | `SessionCommandHandler.ts`         | `/chat` list, create, resume, delete, and picker flows.               |
+| `SessionMetadataCommandHandler.ts` | `/goal` and `/rename` durable chat metadata.                          |
+| `WorkspaceStateCommandHandler.ts`  | `/memory`, `/plan`, and `/metrics` project/session state.             |
 
 Each implementation has a colocated Vitest file. Dependencies that touch
 prompts, Git, or process state should be injected through a narrow adapter so

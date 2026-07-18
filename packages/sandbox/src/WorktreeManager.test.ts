@@ -82,6 +82,41 @@ describe("WorktreeManager Tests", () => {
     );
   });
 
+  it("preserves a dirty baseline and applies only the agent delta", () => {
+    initializeRepository(cwd);
+    fs.writeFileSync(path.join(cwd, "README.md"), "user draft", "utf8");
+    fs.writeFileSync(path.join(cwd, "notes.txt"), "untracked context", "utf8");
+    fs.writeFileSync(path.join(cwd, ".env"), "SECRET=hidden", "utf8");
+    const manager = new WorktreeManager(cwd);
+
+    const session = manager.createWorktree("dirty-baseline", {
+      snapshotWorkingTree: true,
+    });
+    expect(fs.readFileSync(path.join(session.path, "README.md"), "utf8")).toBe(
+      "user draft",
+    );
+    expect(fs.readFileSync(path.join(session.path, "notes.txt"), "utf8")).toBe(
+      "untracked context",
+    );
+    expect(fs.existsSync(path.join(session.path, ".env"))).toBe(false);
+    fs.writeFileSync(
+      path.join(session.path, "agent.txt"),
+      "agent delta",
+      "utf8",
+    );
+
+    expect(manager.mergeAndCleanup(session).success).toBe(true);
+    expect(fs.readFileSync(path.join(cwd, "README.md"), "utf8")).toBe(
+      "user draft",
+    );
+    expect(fs.readFileSync(path.join(cwd, "notes.txt"), "utf8")).toBe(
+      "untracked context",
+    );
+    expect(fs.readFileSync(path.join(cwd, "agent.txt"), "utf8")).toBe(
+      "agent delta",
+    );
+  });
+
   it("preserves the worktree when committing changes fails", () => {
     initializeRepository(cwd);
     const manager = new WorktreeManager(cwd);

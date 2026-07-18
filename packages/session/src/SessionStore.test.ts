@@ -60,6 +60,111 @@ describe("SessionStore file logging", () => {
     expect(store.listSessions().length).toBe(0);
   });
 
+  it("persists recoverable task plans and derives local metrics", () => {
+    const store = new SessionStore(tempDir);
+    const session = store.createSession("deepseek", "deepseek-v4-flash");
+    const now = new Date().toISOString();
+    store.saveTaskPlan(session.id, {
+      sessionId: session.id,
+      items: [
+        {
+          id: "step_inspect",
+          text: "Inspect the project",
+          status: "in_progress",
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      updatedAt: now,
+    });
+    expect(store.getTaskPlan(session.id)?.items[0].text).toBe(
+      "Inspect the project",
+    );
+
+    store.appendEvent(session.id, "tool_execution", { status: "failed" });
+    store.appendEvent(session.id, "file_modified", { path: "src/a.ts" });
+    expect(store.getMetrics(session.id)).toMatchObject({
+      toolRuns: 1,
+      toolFailures: 1,
+      filesChanged: 1,
+    });
+  });
+
+  it("exports a redacted trace and a crash-recovery journal", () => {
+    const store = new SessionStore(tempDir);
+    const session = store.createSession("deepseek", "deepseek-v4-pro");
+    const now = new Date().toISOString();
+    store.saveRunJournal(session.id, {
+      schemaVersion: 1,
+      sessionId: session.id,
+      state: "running",
+      phase: `editing ${join(tempDir, "src", "main.ts")}`,
+      attempt: 2,
+      activeToolCallId: "tc-edit",
+      startedAt: now,
+      updatedAt: now,
+      recoveryCount: 0,
+    });
+    store.recordToolCall({
+      id: "tc-edit",
+      sessionId: session.id,
+      toolName: "write_file",
+      inputJson: JSON.stringify({
+        path: join(tempDir, "src", "main.ts"),
+        apiKey: "sk-test-secret-value",
+      }),
+      risk: "write",
+      permissionDecision: "allow",
+      status: "success",
+    });
+    store.recordFileChange({
+      sessionId: session.id,
+      path: join(tempDir, "src", "main.ts"),
+      diff: `--- ${join(tempDir, "src", "main.ts")}\n+token=sk-test-secret-value`,
+    });
+    store.saveHistory(session.id, [
+      {
+        id: "msg-secret",
+        role: "user",
+        createdAt: now,
+        content: [
+          {
+            type: "text",
+            text: `Inspect ${tempDir}; api_key=sk-test-secret-value`,
+          },
+        ],
+      },
+    ]);
+
+    const trace = store.exportTrace(session.id, { includeHistory: true });
+    const serialized = JSON.stringify(trace);
+    expect(trace.workspace.path).toBe("<workspace>");
+    expect(trace.fileChanges[0].path).toBe("src/main.ts");
+    expect(trace.journal).toMatchObject({
+      state: "running",
+      attempt: 2,
+      activeToolCallId: "tc-edit",
+    });
+    expect(serialized).not.toContain(tempDir);
+    expect(serialized).not.toContain("sk-test-secret-value");
+    expect(serialized).toContain("[REDACTED]");
+  });
+
+  it("persists and clears an archived session timestamp", () => {
+    const store = new SessionStore(tempDir);
+    const session = store.createSession("deepseek", "v4-pro");
+    const archivedAt = "2026-07-17T10:00:00.000Z";
+
+    store.updateSession({ ...session, archivedAt });
+    expect(store.getSession(session.id)?.archivedAt).toBe(archivedAt);
+
+    const archived = store.getSession(session.id);
+    expect(archived).toBeDefined();
+    if (!archived) throw new Error("Expected archived session to exist.");
+    store.updateSession({ ...archived, archivedAt: undefined });
+    expect(store.getSession(session.id)?.archivedAt).toBeUndefined();
+  });
+
   it("validates and round-trips persisted model history", () => {
     const store = new SessionStore(tempDir);
     const session = store.createSession("deepseek", "deepseek-v4-flash");
@@ -105,6 +210,37 @@ describe("SessionStore file logging", () => {
         (file) => file.endsWith(".tmp"),
       ),
     ).toEqual([]);
+  });
+
+  it("recovers session metadata and history from the last known-good backup", () => {
+    const store = new SessionStore(tempDir);
+    const session = store.createSession("deepseek", "deepseek-v4-flash");
+    const firstHistory = [
+      {
+        id: "msg-first",
+        role: "user" as const,
+        createdAt: "2026-07-13T00:00:00.000Z",
+        content: [{ type: "text" as const, text: "recover me" }],
+      },
+    ];
+    store.saveHistory(session.id, firstHistory);
+    store.saveHistory(session.id, [
+      ...firstHistory,
+      {
+        id: "msg-second",
+        role: "assistant" as const,
+        createdAt: "2026-07-13T00:00:01.000Z",
+        content: [{ type: "text" as const, text: "latest" }],
+      },
+    ]);
+    store.updateSession({ ...session, title: "Backed up" });
+
+    const directory = join(tempDir, ".orbit", "sessions", session.id);
+    writeFileSync(join(directory, "history.json"), "{broken", "utf8");
+    writeFileSync(join(directory, "session.json"), "{broken", "utf8");
+
+    expect(store.getHistory(session.id)).toEqual(firstHistory);
+    expect(store.getSession(session.id)).toEqual(session);
   });
 
   it("ignores malformed history files at the external boundary", () => {

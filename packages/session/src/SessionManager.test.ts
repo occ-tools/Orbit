@@ -31,6 +31,93 @@ describe("SessionManager audit persistence", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it("persists the chat goal and title across resume", () => {
+    const manager = new SessionManager(tempDir);
+    const session = manager.startNewSession("deepseek", "deepseek-v4-flash");
+
+    manager.setGoal("Prepare the commercial release");
+    manager.setTitle("Release readiness");
+
+    const resumed = new SessionManager(tempDir);
+    expect(resumed.resumeSession(session.id)).toMatchObject({
+      goal: "Prepare the commercial release",
+      title: "Release readiness",
+    });
+  });
+
+  it("marks an unfinished run as interrupted when the session resumes", () => {
+    const manager = new SessionManager(tempDir);
+    const session = manager.startNewSession("deepseek", "deepseek-v4-pro");
+    manager.setRunState("awaiting_approval", "tool:bash", {
+      attempt: 3,
+      activeToolCallId: "tc-shell",
+    });
+
+    const resumed = new SessionManager(tempDir);
+    resumed.resumeSession(session.id);
+
+    expect(resumed.getRunJournal()).toMatchObject({
+      state: "interrupted",
+      attempt: 3,
+      recoveryCount: 1,
+      activeToolCallId: "tc-shell",
+    });
+    expect(resumed.getRunJournal()?.phase).toContain("tool:bash");
+  });
+
+  it("keeps each chat task plan isolated and recoverable", () => {
+    const manager = new SessionManager(tempDir);
+    const first = manager.startNewSession("deepseek", "deepseek-v4-flash");
+    const now = new Date().toISOString();
+    manager.saveTaskPlan([
+      {
+        id: "step_verify",
+        text: "Verify the release",
+        status: "in_progress",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    const second = manager.startNewSession("deepseek", "deepseek-v4-flash");
+    expect(manager.getTaskPlan()).toBeUndefined();
+
+    const resumed = new SessionManager(tempDir);
+    resumed.resumeSession(first.id);
+    expect(resumed.getTaskPlan()?.items[0]).toMatchObject({
+      id: "step_verify",
+      status: "in_progress",
+    });
+    resumed.resumeSession(second.id);
+    expect(resumed.getTaskPlan()).toBeUndefined();
+  });
+
+  it("updates runtime metadata without replacing the session history", () => {
+    const manager = new SessionManager(tempDir);
+    const session = manager.startNewSession("tokendance", "deepseek-v4-pro");
+    const history = [
+      {
+        id: "msg-1",
+        role: "user",
+        createdAt: new Date().toISOString(),
+        content: [{ type: "text", text: "keep this context" }],
+      },
+    ];
+    manager.saveHistory(history);
+
+    manager.setRuntime("ollama", "qwen2.5-coder:7b");
+
+    expect(manager.getActiveSession()).toMatchObject({
+      id: session.id,
+      provider: "ollama",
+      model: "qwen2.5-coder:7b",
+    });
+    expect(manager.getHistory()).toEqual(history);
+    expect(manager.getSessionStore().getSession(session.id)).toMatchObject({
+      provider: "ollama",
+      model: "qwen2.5-coder:7b",
+    });
+  });
+
   it("redacts structured, nested, and free-form credentials", () => {
     const manager = new SessionManager(tempDir);
     const session = manager.startNewSession("deepseek", "deepseek-v4-flash");

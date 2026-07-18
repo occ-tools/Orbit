@@ -2,6 +2,31 @@ import { z } from "zod";
 
 export const ORBIT_CONFIG_SCHEMA_VERSION = 1 as const;
 
+const ModelKindSchema = z.enum([
+  "chat",
+  "embedding",
+  "image",
+  "video",
+  "audio",
+  "search",
+  "rerank",
+  "unknown",
+]);
+
+const ModelCapabilitiesConfigSchema = z.object({
+  streaming: z.boolean().optional(),
+  toolCalls: z.boolean().optional(),
+  jsonMode: z.boolean().optional(),
+  thinking: z.boolean().optional(),
+  vision: z.boolean().optional(),
+  promptCaching: z.boolean().optional(),
+  maxContextTokens: z.number().int().positive().max(10_000_000).optional(),
+  maxOutputTokens: z.number().int().positive().max(10_000_000).optional(),
+  kind: ModelKindSchema.optional(),
+  inputModalities: z.array(z.string().min(1).max(64)).max(16).optional(),
+  outputModalities: z.array(z.string().min(1).max(64)).max(16).optional(),
+});
+
 export const ProviderConfigSchema = z.object({
   type: z.enum([
     "openai",
@@ -40,37 +65,8 @@ export const ProviderConfigSchema = z.object({
   maxRetries: z.number().int().min(0).max(5).optional(),
   disablePreheat: z.boolean().optional(),
   extraBody: z.record(z.unknown()).optional(),
-  capabilities: z
-    .object({
-      streaming: z.boolean().optional(),
-      toolCalls: z.boolean().optional(),
-      jsonMode: z.boolean().optional(),
-      thinking: z.boolean().optional(),
-      vision: z.boolean().optional(),
-      promptCaching: z.boolean().optional(),
-      maxContextTokens: z.number().int().positive().max(10_000_000).optional(),
-      maxOutputTokens: z.number().int().positive().max(10_000_000).optional(),
-    })
-    .optional(),
-  modelCapabilities: z
-    .record(
-      z.object({
-        streaming: z.boolean().optional(),
-        toolCalls: z.boolean().optional(),
-        jsonMode: z.boolean().optional(),
-        thinking: z.boolean().optional(),
-        vision: z.boolean().optional(),
-        promptCaching: z.boolean().optional(),
-        maxContextTokens: z
-          .number()
-          .int()
-          .positive()
-          .max(10_000_000)
-          .optional(),
-        maxOutputTokens: z.number().int().positive().max(10_000_000).optional(),
-      }),
-    )
-    .optional(),
+  capabilities: ModelCapabilitiesConfigSchema.optional(),
+  modelCapabilities: z.record(ModelCapabilitiesConfigSchema).optional(),
 });
 
 export const McpServerConfigSchema = z.object({
@@ -178,6 +174,7 @@ export const ConfigSchema = z.object({
       autoCompact: z.boolean().default(true),
       compactThreshold: z.number().finite().min(0.1).max(1).default(0.75),
       autoRepair: z.boolean().default(false),
+      maxRepairAttempts: z.number().int().min(0).max(10).default(3),
       testCommands: z.array(z.string()).default([]),
     })
     .default({}),

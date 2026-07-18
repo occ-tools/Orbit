@@ -7,11 +7,13 @@ import { WEB_UI_FOUNDATION_STYLES } from "./styles/WebUiFoundationStyles.js";
 import { WEB_UI_INSPECTOR_STYLES } from "./styles/WebUiInspectorStyles.js";
 import { WEB_UI_PALETTE_STYLES } from "./styles/WebUiPaletteStyles.js";
 import { WEB_UI_RESPONSIVE_STYLES } from "./styles/WebUiResponsiveStyles.js";
+import { WEB_UI_SELECT_STYLES } from "./styles/WebUiSelectStyles.js";
 import { WEB_UI_SHELL_STYLES } from "./styles/WebUiShellStyles.js";
 
 const WEB_UI_STYLE_SECTIONS = [
   WEB_UI_FOUNDATION_STYLES,
   WEB_UI_SHELL_STYLES,
+  WEB_UI_SELECT_STYLES,
   WEB_UI_CONVERSATION_STYLES,
   WEB_UI_COMPOSER_STYLES,
   WEB_UI_APPROVAL_STYLES,

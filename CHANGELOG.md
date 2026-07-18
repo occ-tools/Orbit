@@ -4,6 +4,40 @@ All notable user-facing changes are recorded here. Orbit is pre-1.0; minor
 versions may still include configuration or API migrations, which must be
 called out explicitly.
 
+## 0.1.5 - 2026-07-18
+
+### Added
+
+- Project-scoped chat management with persisted chat metadata, recent-project
+  recovery, archive/delete controls, and native Windows folder selection.
+- Saved provider profiles, explicit OpenAI-compatible base URLs, authenticated
+  model discovery, and live local Ollama model scanning.
+- Durable `/goal`, `/plan`, and opt-in secret-redacted `/memory` workflows, plus
+  local metrics, evaluation, and trace commands for production diagnosis.
+- Capability-aware model metadata, automatic context-window budgeting, and a
+  task router that keeps DeepSeek V4 Flash/Pro as the optimized primary path.
+
+### Changed
+
+- Reworked the Web UI into a responsive project-and-chat workspace with compact
+  model/provider selectors, synchronized model state, improved navigation, and
+  consistent Orbit line-art branding.
+- Made model switching atomic across the TUI, Web UI, provider runtime, session
+  history, and context compaction so a mid-chat switch preserves continuity.
+- Hardened session audit serialization, project memory, worktree cleanup,
+  verification contracts, file editing, benchmark gates, and secret redaction.
+
+### Fixed
+
+- Prevented stale model labels and transient selector flashes when switching
+  providers or models, including local Ollama models.
+- Restored the terminal screen cleanly on orderly Ctrl+C exit without leaving
+  the Orbit TUI or duplicate shell prompts behind.
+- Corrected Web UI reconnect, project-card alignment, select-menu clipping,
+  assistant-avatar alignment, and responsive sidebar behavior.
+
+No configuration migration is required from 0.1.4.
+
 ## 0.1.4 - 2026-07-17
 
 ### Added

@@ -64,6 +64,23 @@ describe("VerificationContractManager Tests", () => {
     expect(res.error).toContain("testCommand");
   });
 
+  it("exposes a bounded contract-specific repair budget", () => {
+    fs.writeFileSync(
+      path.join(cwd, ".orbit", "verification.json"),
+      JSON.stringify({ maxRepairAttempts: 5 }),
+      "utf8",
+    );
+    const manager = new VerificationContractManager(
+      cwd,
+      "test-session",
+      cpManager,
+      true,
+    );
+    manager.initialize();
+
+    expect(manager.getMaxRepairAttempts()).toBe(5);
+  });
+
   it("should verify required files presence", async () => {
     fs.writeFileSync(
       path.join(cwd, ".orbit", "verification.json"),

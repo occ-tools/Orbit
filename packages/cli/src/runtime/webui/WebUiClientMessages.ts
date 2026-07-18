@@ -522,12 +522,14 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
     let content;
     let progress = null;
     let progressLabel = null;
+    let modelBadge = null;
     if (role === 'assistant') {
       const avatar = document.createElement('div');
       avatar.className = 'message-avatar';
-      const avatarFace = document.createElement('span');
-      avatarFace.className = 'avatar-face';
-      avatar.append(avatarFace);
+      const avatarTemplate = document.getElementById('orbitAvatarTemplate');
+      if (avatarTemplate && avatarTemplate.content) {
+        avatar.append(avatarTemplate.content.cloneNode(true));
+      }
       content = document.createElement('div');
       content.className = 'message-content';
       const roleLine = document.createElement('div');
@@ -537,7 +539,16 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
       const time = document.createElement('span');
       time.className = 'message-time';
       time.textContent = formatTime(message.createdAt);
-      roleLine.append(name, time);
+      roleLine.append(name);
+      if (message.model) {
+        const model = document.createElement('span');
+        model.className = 'message-model';
+        model.textContent = message.model;
+        model.title = message.model;
+        modelBadge = model;
+        roleLine.append(model);
+      }
+      roleLine.append(time);
       content.append(roleLine);
       if (streaming) {
         progress = document.createElement('div');
@@ -611,7 +622,7 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
       textBody.hidden = true;
       content.append(textBody);
     }
-    return { root, content, textBody, thinkingBody, progress, progressLabel };
+    return { root, content, textBody, thinkingBody, progress, progressLabel, modelBadge };
   }
 
   async function renderMessages() {
@@ -643,6 +654,7 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
       role: 'assistant',
       text: '',
       createdAt: new Date().toISOString(),
+      model: state.status && state.status.activeModel || '',
     }, true);
     elements.messages.append(streaming.root);
     state.streaming = streaming;
@@ -668,6 +680,12 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
     state.streaming.progress.className = 'message-progress is-' + (kind || 'running');
     state.streaming.progressLabel.textContent = label || copy.working;
     scrollToBottom(false);
+  }
+
+  function setStreamingModel(model) {
+    if (!state.streaming || !state.streaming.modelBadge || !model) return;
+    state.streaming.modelBadge.textContent = model;
+    state.streaming.modelBadge.title = model;
   }
 
   function flushStream() {

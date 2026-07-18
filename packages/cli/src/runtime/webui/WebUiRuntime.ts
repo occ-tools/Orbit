@@ -31,6 +31,7 @@ import {
   isNodeError,
   safeWebMessage,
   sanitizeActionResult,
+  sanitizeProjectActionResult,
   webRequestErrorStatus,
 } from "./WebUiSecurity.js";
 import { WEB_UI_STYLES } from "./WebUiStyles.js";
@@ -58,6 +59,7 @@ const ApprovalDecisionSchema = z
   .strict();
 const SettingsPatchSchema = z
   .object({
+    provider: z.string().trim().min(1).max(256).optional(),
     model: z.string().trim().min(1).max(200).optional(),
     permissionMode: z.enum(["strict", "normal", "auto", "plan"]).optional(),
     webSearchEnabled: z.boolean().optional(),
@@ -69,14 +71,36 @@ const SettingsPatchSchema = z
   .strict();
 const SessionActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("new") }).strict(),
+  ...(["resume", "archive", "restore", "delete"] as const).map((action) =>
+    z
+      .object({
+        action: z.literal(action),
+        sessionId: z
+          .string()
+          .trim()
+          .min(1)
+          .max(200)
+          .regex(/^[a-zA-Z0-9_-]+$/),
+      })
+      .strict(),
+  ),
+]);
+const ProjectActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("pick") }).strict(),
   z
     .object({
-      action: z.literal("resume"),
-      sessionId: z
+      action: z.enum(["open", "create"]),
+      path: z.string().trim().min(1).max(4096),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("remove"),
+      projectId: z
         .string()
         .trim()
         .min(1)
-        .max(200)
+        .max(64)
         .regex(/^[a-zA-Z0-9_-]+$/),
     })
     .strict(),
@@ -358,6 +382,10 @@ export class OrbitWebUiRuntime {
       await this.handleSession(req, res, options);
       return;
     }
+    if (req.method === "POST" && url.pathname === "/api/project") {
+      await this.handleProject(req, res, options);
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/cancel") {
       await this.handleCancel(req, res, options);
       return;
@@ -388,6 +416,47 @@ export class OrbitWebUiRuntime {
       );
       sendJson(res, result.ok ? 200 : 409, result);
     } catch (error) {
+      sendJson(res, webRequestErrorStatus(error), {
+        ok: false,
+        message: safeWebMessage(error),
+      });
+    }
+  }
+
+  private async handleProject(
+    req: IncomingMessage,
+    res: ServerResponse,
+    options: WebUiOptions,
+  ): Promise<void> {
+    if (!options.openProject) {
+      sendJson(res, 409, {
+        ok: false,
+        message: "Project launcher is not available.",
+      });
+      return;
+    }
+    if (this.activeTurn) {
+      sendJson(res, 409, {
+        ok: false,
+        message: "Wait for the active task to finish before opening a project.",
+      });
+      return;
+    }
+    try {
+      const action = ProjectActionSchema.parse(await readJsonBody(req));
+      const result = sanitizeProjectActionResult(
+        await options.openProject(action),
+      );
+      sendJson(
+        res,
+        result.ok
+          ? action.action === "remove" || action.action === "pick"
+            ? 200
+            : 202
+          : 400,
+        result,
+      );
+    } catch (error: unknown) {
       sendJson(res, webRequestErrorStatus(error), {
         ok: false,
         message: safeWebMessage(error),

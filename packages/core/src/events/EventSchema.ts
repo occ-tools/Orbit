@@ -13,6 +13,9 @@ export const ModelResponseEventSchema = z.object({
   type: z.literal("model_response"),
   payload: z.object({
     model: z.string(),
+    requestedModel: z.string().optional(),
+    resolvedModel: z.string().optional(),
+    providerRequestId: z.string().optional(),
     text: z.string().optional(),
     reasoning_content: z.string().optional(),
     usage: z
@@ -132,6 +135,16 @@ export const CacheUpdateEventSchema = z.object({
     inputTokens: z.number(),
     hitRate: z.number(),
     degraded: z.boolean(),
+  }),
+});
+
+export const ModelRoutingEventSchema = z.object({
+  type: z.literal("model_routing"),
+  payload: z.object({
+    model: z.string(),
+    lane: z.enum(["locked", "fallback", "fast", "balanced", "quality"]),
+    reason: z.string(),
+    confidence: z.enum(["high", "medium"]),
   }),
 });
 
@@ -272,6 +285,7 @@ export const OrbitEventSchema = z.discriminatedUnion("type", [
   ThinkingDeltaEventSchema,
   CostUpdateEventSchema,
   CacheUpdateEventSchema,
+  ModelRoutingEventSchema,
   ToolProposalEventSchema,
   ToolApprovalEventSchema,
   ToolResultEventSchema,

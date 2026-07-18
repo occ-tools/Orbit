@@ -1,5 +1,5 @@
 const SENSITIVE_KEY_PATTERN =
-  /(?:api[-_]?key|authorization|credential|password|secret|token|cookie)/i;
+  /(?:api[-_]?key|authorization|credential|password|secret|cookie|(?:^|[-_.])token(?:$|[-_.])|(?:access|refresh|bearer|auth)Token)/i;
 const AUTH_HEADER_PATTERN = /(?:^|[-_.])auth(?:$|[-_.])/i;
 
 /** Produces a serializable configuration view with credential-like values removed. */

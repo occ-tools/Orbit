@@ -1,0 +1,97 @@
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  ProjectRegistry,
+  ProjectRegistrySnapshotSchema,
+  parseProjectRegistrySnapshot,
+} from "./ProjectRegistry.js";
+
+const temporaryPaths: string[] = [];
+
+afterEach(() => {
+  for (const path of temporaryPaths.splice(0))
+    rmSync(path, { recursive: true, force: true });
+});
+
+describe("ProjectRegistry", () => {
+  it("registers one stable project identity and tracks its latest session", () => {
+    const root = mkdtempSync(join(tmpdir(), "orbit-project-registry-"));
+    temporaryPaths.push(root);
+    const storage = join(root, "storage");
+    const project = join(root, "project");
+    mkdirSync(project);
+    const registry = new ProjectRegistry(storage);
+
+    const first = registry.register(project, "sess-first");
+    const second = registry.register(project, "sess-second");
+
+    expect(second.id).toBe(first.id);
+    expect(registry.list()).toEqual([
+      expect.objectContaining({
+        id: first.id,
+        lastSessionId: "sess-second",
+        available: true,
+      }),
+    ]);
+    expect(
+      ProjectRegistrySnapshotSchema.parse(
+        JSON.parse(readFileSync(join(storage, "projects.json"), "utf8")),
+      ).projects,
+    ).toHaveLength(1);
+  });
+
+  it("archives, restores, removes, and reports missing projects", () => {
+    const root = mkdtempSync(join(tmpdir(), "orbit-project-registry-"));
+    temporaryPaths.push(root);
+    const project = join(root, "project");
+    mkdirSync(project);
+    const registry = new ProjectRegistry(join(root, "storage"));
+    const record = registry.register(project);
+
+    expect(registry.archive(record.id)).toBe(true);
+    expect(registry.list()).toHaveLength(0);
+    expect(registry.list({ includeArchived: true })[0].archivedAt).toBeTruthy();
+    expect(registry.restore(record.id)).toBe(true);
+    rmSync(project, { recursive: true, force: true });
+    expect(registry.list()[0].available).toBe(false);
+    expect(registry.remove(record.id)).toBe(true);
+    expect(registry.list({ includeArchived: true })).toHaveLength(0);
+  });
+
+  it("recovers from a corrupt primary snapshot using its backup", () => {
+    const root = mkdtempSync(join(tmpdir(), "orbit-project-registry-"));
+    temporaryPaths.push(root);
+    const storage = join(root, "storage");
+    const firstProject = join(root, "first");
+    const secondProject = join(root, "second");
+    mkdirSync(firstProject);
+    mkdirSync(secondProject);
+    const registry = new ProjectRegistry(storage);
+    const first = registry.register(firstProject);
+    registry.register(secondProject);
+    writeFileSync(join(storage, "projects.json"), "{broken", "utf8");
+
+    expect(registry.list()).toEqual([
+      expect.objectContaining({ id: first.id, available: true }),
+    ]);
+  });
+
+  it("migrates the pre-versioned registry without losing project identity", () => {
+    const root = mkdtempSync(join(tmpdir(), "orbit-project-registry-"));
+    temporaryPaths.push(root);
+    const project = join(root, "legacy-project");
+    mkdirSync(project);
+    const current = new ProjectRegistry(join(root, "source")).register(project);
+    const migrated = parseProjectRegistrySnapshot({ projects: [current] });
+
+    expect(migrated).toEqual({ schemaVersion: 1, projects: [current] });
+  });
+});

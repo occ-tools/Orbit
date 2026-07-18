@@ -4,20 +4,20 @@
 
 ## Monorepo 包职责
 
-| 包                         | 职责                                                                   | 常用入口                                                                       |
-| -------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `packages/cli`             | CLI 命令注册、运行时装配、REPL、WebUI、全屏 TUI、LSP 与诊断/基准命令   | `src/index.ts`、`src/commands`、`src/runtime`、`src/tui`                       |
-| `packages/config`          | 默认配置、Zod 配置模型、配置合并、凭据安全存取与配置脱敏               | `src/schema.ts`、`src/ConfigLoader.ts`、`src/Credentials.ts`                   |
-| `packages/core`            | Agent 主循环、规划/执行、模型消息构建、提示词缓存、事件总线、验证契约  | `src/agent`、`src/events`、`src/verification`                                  |
-| `packages/context-engine`  | 项目索引、AST 分块、符号/引用检索、BM25/向量混合搜索、上下文压缩       | `src/ContextPackBuilder.ts`、`src/SymbolIndexer.ts`、`src/Compactor.ts`        |
-| `packages/model-providers` | DeepSeek、OpenAI、Anthropic、Ollama 的请求适配、流式响应与统一模型类型 | `src/registry.ts`、`src/types.ts`、`src/deepseek`                              |
-| `packages/mcp`             | MCP 服务连接、工具发现与工具协议适配                                   | `src/MCPClient.ts`                                                             |
-| `packages/permissions`     | 工具风险分级、权限策略与审批决策                                       | `src/RiskClassifier.ts`、`src/PermissionEngine.ts`                             |
-| `packages/sandbox`         | Git worktree、检查点、回滚与隔离执行                                   | `src/WorktreeManager.ts`、`src/CheckpointManager.ts`、`src/RollbackManager.ts` |
-| `packages/session`         | 会话持久化、恢复、列表管理与审计序列化                                 | `src/SessionManager.ts`、`src/SessionStore.ts`                                 |
-| `packages/shared`          | 无业务归属的基础类型与工具：路径、ID、错误、token、脱敏、截断          | `src/paths.ts`、`src/redaction.ts`、`src/tokens.ts`                            |
-| `packages/tools`           | 内置工具定义、注册，以及文件、Shell、Git、项目、Web 工具实现           | `src/registry.ts`、`src/types.ts`、`src/fs`、`src/shell`                       |
-| `packages/tui`             | 可复用的终端渲染、提示、Diff、状态栏组件                               | `src/Renderer.ts`、`src/Prompt.ts`、`src/DiffView.ts`                          |
+| 包                         | 职责                                                                                | 常用入口                                                                       |
+| -------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `packages/cli`             | CLI 命令注册、运行时装配、REPL、WebUI、全屏 TUI、LSP 与诊断/基准命令                | `src/index.ts`、`src/commands`、`src/runtime`、`src/tui`                       |
+| `packages/config`          | 默认配置、Zod 配置模型、配置合并、凭据安全存取与配置脱敏                            | `src/schema.ts`、`src/ConfigLoader.ts`、`src/Credentials.ts`                   |
+| `packages/core`            | Agent 主循环、规划/执行、模型消息构建、显式项目记忆、提示词缓存、事件总线、验证契约 | `src/agent`、`src/memory`、`src/events`、`src/verification`                    |
+| `packages/context-engine`  | 项目索引、AST 分块、符号/引用检索、BM25/向量混合搜索、上下文压缩                    | `src/ContextPackBuilder.ts`、`src/SymbolIndexer.ts`、`src/Compactor.ts`        |
+| `packages/model-providers` | DeepSeek、OpenAI、Anthropic、Ollama 的请求适配、流式响应与统一模型类型              | `src/registry.ts`、`src/types.ts`、`src/deepseek`                              |
+| `packages/mcp`             | MCP 服务连接、工具发现与工具协议适配                                                | `src/MCPClient.ts`                                                             |
+| `packages/permissions`     | 工具风险分级、权限策略与审批决策                                                    | `src/RiskClassifier.ts`、`src/PermissionEngine.ts`                             |
+| `packages/sandbox`         | Git worktree、检查点、回滚与隔离执行                                                | `src/WorktreeManager.ts`、`src/CheckpointManager.ts`、`src/RollbackManager.ts` |
+| `packages/session`         | 会话持久化、恢复、任务计划、本地指标与审计序列化                                    | `src/SessionManager.ts`、`src/SessionStore.ts`、`src/types.ts`                 |
+| `packages/shared`          | 无业务归属的基础类型与工具：路径、ID、错误、token、脱敏、截断                       | `src/paths.ts`、`src/redaction.ts`、`src/tokens.ts`                            |
+| `packages/tools`           | 内置工具定义、注册，以及文件、Shell、Git、项目、Web 工具实现                        | `src/registry.ts`、`src/types.ts`、`src/fs`、`src/shell`                       |
+| `packages/tui`             | 可复用的终端渲染、提示、Diff、状态栏组件                                            | `src/Renderer.ts`、`src/Prompt.ts`、`src/DiffView.ts`                          |
 
 依赖方向大致是：`shared/config` 提供基础能力，`model-providers/tools/session/...` 提供领域能力，`core` 负责编排，`cli` 负责装配和用户入口。不要为了方便让底层包反向依赖 `core` 或 `cli`。
 
@@ -36,27 +36,28 @@
 
 ## 常见改动定位
 
-| 改动领域                | 先看这些文件                                                                                                        | 通常一起检查                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| WebUI 页面与布局        | `packages/cli/src/runtime/webui/WebUiPage.ts`、`WebUiStyles.ts`、`styles/*`                                         | 桌面/移动端布局、CSS 组合顺序、可访问名称、CSP 是否仍允许资源加载                     |
-| WebUI 交互与流式输出    | `webui/WebUiClient*.ts`、`WebUiRuntime.ts`、`WebUiEventStream.ts`                                                   | SSE 重连/取消、停止实例隔离、客户端片段顺序、并发 turn 状态                           |
-| WebUI 安全与序列化      | `webui/WebUiSecurity.ts`、`WebUiData.ts`、`WebUiHttp.ts`                                                            | 事件 allowlist、敏感信息脱敏、请求上限、内部消息不得进入普通历史                      |
-| `/webui` 生命周期       | `packages/cli/src/runtime/RunCoordinator.ts`、`CommandRouter.ts`、`webui/WebUiServer.ts`                            | 启动/关闭是否幂等、旧实例延迟任务是否隔离、TUI 与 Web 是否争用同一个 runnable         |
-| DeepSeek 协议与流式解析 | `packages/model-providers/src/deepseek/*`                                                                           | `DeepSeekV4.test.ts`、OpenAI/Anthropic 兼容路径、usage/cache 字段                     |
-| DeepSeek 模型路由与诊断 | `packages/cli/src/runtime/ModelCatalog.ts`、`ProviderFactory.ts`、`ProviderDiagnostics.ts`、`ProviderBenchmarks.ts` | `packages/cli/src/commands/doctor.ts`、`bench.ts`、Flash/Pro 与 thinking 模式是否匹配 |
-| DeepSeek 缓存命中       | `packages/core/src/agent/PromptCacheSlab.ts`、`MessageBuilder.ts`                                                   | 稳定前缀是否保持稳定、动态仓库上下文是否位于后部、不要伪造命中率                      |
-| 凭据登录与存储          | `packages/config/src/Credentials.ts`、`ConfigLoader.ts`                                                             | `packages/cli/src/commands/login.ts`、`doctor.ts`、Windows DPAPI 与日志脱敏           |
-| 配置字段                | `packages/config/src/schema.ts`、`defaults.ts`、`ConfigLoader.ts`                                                   | Zod 默认值、环境变量覆盖、`redactConfig.ts`、兼容旧配置                               |
-| AgentLoop 行为          | `packages/core/src/agent/AgentLoop.ts`、`Orchestrator.ts`、`StepRunner.ts`                                          | `Planner.ts`、`MessageBuilder.ts`、`AgentState.ts`、中止与失败结果是否完整传播        |
-| Agent 事件              | `packages/core/src/events/EventSchema.ts`、`EventBus.ts`                                                            | TUI/WebUI 消费方、事件是否可序列化、是否含敏感字段                                    |
-| 运行时斜杠命令          | `packages/cli/src/runtime/commands/*`、`CommandRouter.ts`                                                           | handler 直接测试、路径边界、Git 参数数组、命令未处理/已处理返回值                     |
-| 全屏 TUI                | `packages/cli/src/tui/FullscreenTui.ts`、`TuiPromptSession.ts`、`TuiPromptView.ts`、`TerminalText.ts`               | 构造器无副作用、显式 initialize/dispose、TTY 与非交互降级、Unicode 光标               |
-| 通用终端组件            | `packages/tui/src/Renderer.ts`、`Prompt.ts`、`DiffView.ts`、`StatusBar.ts`                                          | 颜色/符号一致性、长输出分页、无 TTY 时的文本模式                                      |
-| 会话持久化              | `packages/session/src/SessionManager.ts`、`SessionStore.ts`、`auditSerialization.ts`                                | AgentLoop 的会话接线、`CommandRouter.ts` 的 `/chat` 流程、旧数据兼容                  |
-| 工具协议或注册          | `packages/tools/src/types.ts`、`registry.ts`、`index.ts`                                                            | Zod 参数、事件输出、权限分类、工具结果截断/脱敏                                       |
-| 文件/Shell/Git 工具     | `packages/tools/src/fs`、`src/shell`、`src/git`                                                                     | 工作区路径边界、命令注入、退出码、Windows 行为、回滚                                  |
-| 权限与沙箱              | `packages/permissions`、`packages/sandbox`                                                                          | 审批不能被 UI 绕过；worktree/checkpoint 在成功、中止和失败时都要清理                  |
-| RAG 与索引              | `packages/context-engine`                                                                                           | 缓存 key、原子写入、维度/模型变化后的重建、无向量服务时的 BM25 降级                   |
+| 改动领域                | 先看这些文件                                                                                               | 通常一起检查                                                                          |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| WebUI 页面与布局        | `packages/cli/src/runtime/webui/WebUiPage.ts`、`WebUiStyles.ts`、`styles/*`                                | 桌面/移动端布局、CSS 组合顺序、可访问名称、CSP 是否仍允许资源加载                     |
+| WebUI 交互与流式输出    | `webui/WebUiClient*.ts`、`WebUiRuntime.ts`、`WebUiEventStream.ts`                                          | SSE 重连/取消、停止实例隔离、客户端片段顺序、并发 turn 状态                           |
+| WebUI 安全与序列化      | `webui/WebUiSecurity.ts`、`WebUiData.ts`、`WebUiHttp.ts`                                                   | 事件 allowlist、敏感信息脱敏、请求上限、内部消息不得进入普通历史                      |
+| `/webui` 生命周期       | `packages/cli/src/runtime/RunCoordinator.ts`、`CommandRouter.ts`、`webui/WebUiServer.ts`                   | 启动/关闭是否幂等、旧实例延迟任务是否隔离、TUI 与 Web 是否争用同一个 runnable         |
+| DeepSeek 协议与流式解析 | `packages/model-providers/src/deepseek/*`                                                                  | `DeepSeekV4.test.ts`、OpenAI/Anthropic 兼容路径、usage/cache 字段                     |
+| DeepSeek 模型路由与诊断 | `packages/core/src/agent/ModelRouter.ts`、`packages/cli/src/runtime/ModelCatalog.ts`、`ProviderFactory.ts` | `packages/cli/src/commands/doctor.ts`、`bench.ts`、Flash/Pro 与 thinking 模式是否匹配 |
+| DeepSeek 缓存命中       | `packages/core/src/agent/PromptCacheSlab.ts`、`MessageBuilder.ts`                                          | 稳定前缀是否保持稳定、动态仓库上下文是否位于后部、不要伪造命中率                      |
+| 凭据登录与存储          | `packages/config/src/Credentials.ts`、`ConfigLoader.ts`                                                    | `packages/cli/src/commands/login.ts`、`doctor.ts`、Windows DPAPI 与日志脱敏           |
+| 配置字段                | `packages/config/src/schema.ts`、`defaults.ts`、`ConfigLoader.ts`                                          | Zod 默认值、环境变量覆盖、`redactConfig.ts`、兼容旧配置                               |
+| AgentLoop 行为          | `packages/core/src/agent/AgentLoop.ts`、`Orchestrator.ts`、`StepRunner.ts`                                 | `Planner.ts`、`MessageBuilder.ts`、`AgentState.ts`、中止与失败结果是否完整传播        |
+| Agent 事件              | `packages/core/src/events/EventSchema.ts`、`EventBus.ts`                                                   | TUI/WebUI 消费方、事件是否可序列化、是否含敏感字段                                    |
+| 运行时斜杠命令          | `packages/cli/src/runtime/commands/*`、`CommandRouter.ts`                                                  | handler 直接测试、路径边界、Git 参数数组、命令未处理/已处理返回值                     |
+| 全屏 TUI                | `packages/cli/src/tui/FullscreenTui.ts`、`TuiPromptSession.ts`、`TuiPromptView.ts`、`TerminalText.ts`      | 构造器无副作用、显式 initialize/dispose、TTY 与非交互降级、Unicode 光标               |
+| 通用终端组件            | `packages/tui/src/Renderer.ts`、`Prompt.ts`、`DiffView.ts`、`StatusBar.ts`                                 | 颜色/符号一致性、长输出分页、无 TTY 时的文本模式                                      |
+| 会话持久化              | `packages/session/src/SessionManager.ts`、`SessionStore.ts`、`auditSerialization.ts`                       | AgentLoop 的会话接线、`CommandRouter.ts` 的 `/chat` 流程、旧数据兼容                  |
+| 项目记忆与任务计划      | `packages/core/src/memory/ProjectMemoryStore.ts`、`packages/session/src/types.ts`                          | `Planner.ts`、`WorkspaceStateCommandHandler.ts`、WebUI 状态快照                       |
+| 工具协议或注册          | `packages/tools/src/types.ts`、`registry.ts`、`index.ts`                                                   | Zod 参数、事件输出、权限分类、工具结果截断/脱敏                                       |
+| 文件/Shell/Git 工具     | `packages/tools/src/fs`、`src/shell`、`src/git`                                                            | 工作区路径边界、命令注入、退出码、Windows 行为、回滚                                  |
+| 权限与沙箱              | `packages/permissions`、`packages/sandbox`                                                                 | 审批不能被 UI 绕过；worktree/checkpoint 在成功、中止和失败时都要清理                  |
+| RAG 与索引              | `packages/context-engine`                                                                                  | 缓存 key、原子写入、维度/模型变化后的重建、无向量服务时的 BM25 降级                   |
 
 ## 验证命令
 

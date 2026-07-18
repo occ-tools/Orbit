@@ -2,6 +2,7 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import { BUILTIN_SLASH_COMMANDS, CommandRouter } from "./CommandRouter.js";
 import { Prompt } from "@orbit-build/tui";
 import type { AgentLoopRunOutcome } from "@orbit-build/core";
+import { ConfigSchema } from "@orbit-build/config";
 
 describe("CommandRouter Unit Tests", () => {
   afterEach(() => {
@@ -105,6 +106,71 @@ describe("CommandRouter Unit Tests", () => {
       lastSessionId: "session-new",
       lastModel: "gpt-4",
     });
+  });
+
+  it("archives, restores, and deletes inactive Web UI sessions", async () => {
+    const setSessionArchived = vi.fn(() => true);
+    const deleteSession = vi.fn();
+    const loop = {
+      ...mockLoop,
+      getSessionId: vi.fn(() => "session-active"),
+      getSessions: vi.fn(() => [{ id: "session-other" }]),
+      setSessionArchived,
+      deleteSession,
+    };
+    const tui = {
+      ...mockTui,
+      hasActiveRunnable: vi.fn(() => false),
+      loadHistory: vi.fn(),
+    };
+    const router = new CommandRouter(
+      process.cwd(),
+      mockConfig,
+      mockProvider,
+      vi.fn(),
+      loop as any,
+      tui as any,
+      true,
+      () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+      vi.fn(),
+      () => localState,
+      vi.fn(),
+      mockInteraction as any,
+      false,
+    );
+    const updateSession = (
+      router as unknown as {
+        updateWebUiSession(action: {
+          action: "archive" | "restore" | "delete";
+          sessionId: string;
+        }): Promise<{ ok: boolean }>;
+      }
+    ).updateWebUiSession.bind(router);
+
+    await expect(
+      updateSession({ action: "archive", sessionId: "session-other" }),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      updateSession({ action: "restore", sessionId: "session-other" }),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      updateSession({ action: "delete", sessionId: "session-other" }),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      updateSession({ action: "archive", sessionId: "session-active" }),
+    ).resolves.toMatchObject({ ok: false });
+
+    expect(setSessionArchived).toHaveBeenNthCalledWith(
+      1,
+      "session-other",
+      true,
+    );
+    expect(setSessionArchived).toHaveBeenNthCalledWith(
+      2,
+      "session-other",
+      false,
+    );
+    expect(deleteSession).toHaveBeenCalledWith("session-other");
   });
 
   it("serializes terminal turns while a Web UI turn owns the agent loop", async () => {
@@ -251,6 +317,227 @@ describe("CommandRouter Unit Tests", () => {
     expect(result).toEqual({ ok: true });
     expect(tui.abortActiveRunnable).toHaveBeenCalledWith("immediate");
     release?.();
+  });
+
+  it.each([
+    ["glm-5", "glm-5"],
+    ["happyhorse-1.0-r2v", "deepseek-v4-flash"],
+  ])(
+    "selects a safe Web UI model when switching provider (%s -> %s)",
+    async (requestedModel, expectedModel) => {
+      const config = ConfigSchema.parse({
+        provider: { default: "deepseek-openai" },
+        providers: {
+          "deepseek-openai": {
+            type: "openai-compatible",
+            apiKey: "test-key",
+            disablePreheat: true,
+            models: ["deepseek-v4-flash"],
+          },
+          tokendance: {
+            type: "openai-compatible",
+            apiKey: "test-key",
+            disablePreheat: true,
+            models: ["deepseek-v4-flash", "glm-5", "happyhorse-1.0-r2v"],
+          },
+        },
+        models: {
+          default: "deepseek-v4-flash",
+        },
+      });
+      const setModelOverride = vi.fn();
+      const loop = {
+        ...mockLoop,
+        getConfig: () => config,
+        getModelOverride: () => "deepseek-v4-flash",
+        setProvider: vi.fn(),
+        setModelOverride,
+      };
+      const router = new CommandRouter(
+        "/dummy/cwd",
+        config,
+        { ...mockProvider, id: "deepseek-openai" },
+        vi.fn(),
+        loop as any,
+        mockTui as any,
+        true,
+        () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+        vi.fn(),
+        () => localState,
+        vi.fn(),
+        mockInteraction as any,
+        false,
+      );
+      const updateSettings = (
+        router as unknown as {
+          updateWebUiSettings(patch: {
+            provider?: string;
+            model?: string;
+          }): Promise<{ ok: boolean }>;
+        }
+      ).updateWebUiSettings.bind(router);
+
+      await expect(
+        updateSettings({
+          provider: "tokendance",
+          model: requestedModel,
+        }),
+      ).resolves.toEqual({ ok: true });
+
+      expect(config.provider.default).toBe("tokendance");
+      expect(setModelOverride).toHaveBeenCalledWith(expectedModel);
+      expect(setModelOverride).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("commits provider and model together after the model prompt", async () => {
+    const config = ConfigSchema.parse({
+      provider: { default: "provider-a" },
+      providers: {
+        "provider-a": {
+          type: "openai-compatible",
+          apiKey: "test-key",
+          disablePreheat: true,
+          models: ["model-a"],
+        },
+        "provider-b": {
+          type: "openai-compatible",
+          apiKey: "test-key",
+          disablePreheat: true,
+          models: ["model-b"],
+        },
+      },
+      models: { default: "model-a" },
+    });
+    let activeModel = "model-a";
+    const loop = {
+      ...mockLoop,
+      getConfig: () => config,
+      getModelOverride: () => activeModel,
+      setModelOverride: vi.fn((model: string) => {
+        activeModel = model;
+      }),
+      clearModelOverride: vi.fn(),
+      setProvider: vi.fn(),
+    };
+    const tui = { ...mockTui, syncFromLoop: vi.fn() };
+    let resolveModel: ((value: string) => void) | undefined;
+    const askSelect = vi
+      .spyOn(Prompt, "askSelect")
+      .mockResolvedValueOnce("provider-b")
+      .mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            resolveModel = resolve;
+          }),
+      );
+    const router = new CommandRouter(
+      process.cwd(),
+      config,
+      { ...mockProvider, id: "provider-a" },
+      vi.fn(),
+      loop as any,
+      tui as any,
+      true,
+      () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+      vi.fn(),
+      () => localState,
+      vi.fn(),
+      mockInteraction as any,
+      false,
+    );
+
+    const switching = router.route("/model");
+    await vi.waitFor(() => expect(askSelect).toHaveBeenCalledTimes(2));
+    expect(config.provider.default).toBe("provider-a");
+    expect(loop.setProvider).not.toHaveBeenCalled();
+
+    resolveModel?.("model-b");
+    await expect(switching).resolves.toMatchObject({ processed: true });
+    expect(config.provider.default).toBe("provider-b");
+    expect(loop.setProvider).toHaveBeenCalledOnce();
+    expect(loop.setModelOverride).toHaveBeenCalledWith("model-b");
+    expect(tui.syncFromLoop).toHaveBeenCalledOnce();
+  });
+
+  it("updates the TUI immediately after a direct model command", async () => {
+    const setModelOverride = vi.fn();
+    const loop = {
+      ...mockLoop,
+      getConfig: () => ({ ...mockConfig, providers: {} }),
+      setModelOverride,
+    };
+    const tui = { ...mockTui, syncFromLoop: vi.fn() };
+    const router = new CommandRouter(
+      process.cwd(),
+      { ...mockConfig, providers: {} },
+      mockProvider,
+      vi.fn(),
+      loop as any,
+      tui as any,
+      true,
+      () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+      vi.fn(),
+      () => localState,
+      vi.fn(),
+      mockInteraction as any,
+      false,
+    );
+
+    await router.route("/model model-next");
+
+    expect(setModelOverride).toHaveBeenCalledWith("model-next");
+    expect(tui.syncFromLoop).toHaveBeenCalledWith(loop);
+  });
+
+  it("unlocks automatic routing from the Web UI model selector", async () => {
+    const config = ConfigSchema.parse({
+      provider: { default: "deepseek-openai" },
+      providers: {
+        "deepseek-openai": {
+          type: "openai-compatible",
+          apiKey: "test-key",
+          disablePreheat: true,
+          models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+        },
+      },
+      models: { default: "deepseek-v4-flash" },
+    });
+    const clearModelOverride = vi.fn();
+    const loop = {
+      ...mockLoop,
+      getConfig: () => config,
+      clearModelOverride,
+      setModelOverride: vi.fn(),
+    };
+    const router = new CommandRouter(
+      process.cwd(),
+      config,
+      { ...mockProvider, id: "deepseek-openai" },
+      vi.fn(),
+      loop as any,
+      mockTui as any,
+      false,
+      () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+      vi.fn(),
+      () => localState,
+      vi.fn(),
+      mockInteraction as any,
+      false,
+    );
+    const updateSettings = (
+      router as unknown as {
+        updateWebUiSettings(patch: {
+          model?: string;
+        }): Promise<{ ok: boolean }>;
+      }
+    ).updateWebUiSettings.bind(router);
+
+    await expect(updateSettings({ model: "__auto__" })).resolves.toEqual({
+      ok: true,
+    });
+    expect(clearModelOverride).toHaveBeenCalledOnce();
+    expect(loop.setModelOverride).not.toHaveBeenCalled();
   });
 
   it("should output help message when /help is executed", async () => {

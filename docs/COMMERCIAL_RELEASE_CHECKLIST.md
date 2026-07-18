@@ -20,6 +20,12 @@ REPL/LSP smoke testing, package allowlists, and artifact-size limits. GitHub
 Actions repeats the contract on Node.js 20, 22, and 24 and on Windows, Linux,
 and macOS.
 
+Publishing is intentionally separate from CI. A GitHub release whose tag
+exactly matches `v<package version>` triggers the protected `npm-production`
+environment, rebuilds and verifies the repository, archives the tarball and its
+SHA-256 checksum, and publishes that exact artifact with npm provenance. Keep
+the environment approval rule and `NPM_TOKEN` restricted to release owners.
+
 ## Credentialed provider smoke tests
 
 CI must not receive production customer credentials. Before release, use a
@@ -30,11 +36,13 @@ orbit doctor --probe --deepseek --strict
 orbit bench --model deepseek-v4-flash --thinking disabled --repeat 3 --max-tokens 256
 orbit bench --model deepseek-v4-pro --thinking high --repeat 3 --max-tokens 4096
 orbit bench --model deepseek-v4-flash --thinking disabled --cache-profile --repeat 3
+orbit bench --model deepseek-v4-flash --thinking disabled --repeat 5 --max-first-delta-ms 2500 --max-first-text-ms 5000 --min-throughput 20 --max-error-rate 0
 ```
 
 Cache hit rate and latency are observations, not release guarantees. A release
 should fail only against an explicitly approved threshold and controlled test
-profile.
+profile. Record the runner, region, provider account tier, model ID, and sample
+count alongside any approved benchmark gate so later releases remain comparable.
 
 ## Manual product smoke tests
 

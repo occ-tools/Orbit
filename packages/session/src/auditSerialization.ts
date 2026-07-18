@@ -25,10 +25,10 @@ function isSensitiveKey(key: string): boolean {
 
 /** Redacts credential-shaped values while preserving ordinary audit text. */
 export function redactAuditText(text: string): string {
-  return redactSecrets(text).replace(
-    CREDENTIAL_ASSIGNMENT_PATTERN,
-    "$1[REDACTED]",
-  );
+  return redactSecrets(text)
+    .replace(CREDENTIAL_ASSIGNMENT_PATTERN, "$1[REDACTED]")
+    .replace(/\bsk-[a-zA-Z0-9_-]{12,}\b/g, "[REDACTED]")
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]");
 }
 
 function sanitizeString(value: string): string {

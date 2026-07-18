@@ -1,6 +1,7 @@
 type ProviderConfigLike = {
   type?: string;
   models?: string[];
+  modelCapabilities?: Record<string, { kind?: string } | undefined>;
 };
 
 type ConfigLike = {
@@ -35,6 +36,84 @@ function uniqueModels(models: string[]): string[] {
   return Array.from(new Set(models.map((m) => m.trim()).filter(Boolean)));
 }
 
+const NON_CHAT_MODEL_KINDS = new Set([
+  "embedding",
+  "image",
+  "video",
+  "audio",
+  "search",
+  "rerank",
+]);
+
+type NonChatModelKind =
+  | "embedding"
+  | "image"
+  | "video"
+  | "audio"
+  | "search"
+  | "rerank";
+
+/**
+ * Apply narrow provider-catalog fallbacks when an OpenAI-compatible endpoint
+ * returns only opaque IDs. These rules are intentionally provider-specific:
+ * generic gateways keep unknown models available until metadata says otherwise.
+ */
+export function inferProviderCatalogKind(
+  providerId: string | undefined,
+  model: string,
+): NonChatModelKind | undefined {
+  if (providerId?.trim().toLowerCase() !== "tokendance") return undefined;
+
+  const id = model.trim().toLowerCase();
+  if (/(?:^|[-_.\/])(?:embedding|embed)(?:$|[-_.\/])/.test(id)) {
+    return "embedding";
+  }
+  if (/(?:^|[-_.\/])rerank(?:$|[-_.\/])/.test(id)) return "rerank";
+  if (
+    /^(?:happyhorse|seedance|kling)(?:$|[-_.\/])/.test(id) ||
+    /(?:^|[-_.\/])(?:text-to-video|image-to-video)(?:$|[-_.\/])/.test(id)
+  ) {
+    return "video";
+  }
+  if (
+    /(?:^|[-_.\/])(?:tts|speech|voiceclone|voice-design|voicedesign)(?:$|[-_.\/])/.test(
+      id,
+    )
+  ) {
+    return "audio";
+  }
+  if (
+    /^(?:seedream)(?:$|[-_.\/])/.test(id) ||
+    /(?:^|[-_.\/])(?:text-to-image|image-generation)(?:$|[-_.\/])/.test(id)
+  ) {
+    return "image";
+  }
+  if (
+    /^(?:bocha-web-search|web-search|web-reader|unifuncs-web-search|unifuncs-web-reader)(?:$|[-_.\/])/.test(
+      id,
+    )
+  ) {
+    return "search";
+  }
+  return undefined;
+}
+
+/** Keep unknown models available, but never route a known non-chat endpoint. */
+export function isChatModelCandidate(
+  config: ConfigLike | undefined,
+  providerId: string | undefined,
+  model: string,
+): boolean {
+  const kind = providerId
+    ? config?.providers?.[providerId]?.modelCapabilities?.[model]?.kind
+    : undefined;
+  const resolvedKind =
+    kind && kind !== "unknown"
+      ? kind
+      : inferProviderCatalogKind(providerId, model);
+  return !resolvedKind || !NON_CHAT_MODEL_KINDS.has(resolvedKind);
+}
+
 export function getProviderModelCandidates(
   config: ConfigLike | undefined,
   providerId = config?.provider?.default,
@@ -43,7 +122,9 @@ export function getProviderModelCandidates(
     ? config?.providers?.[providerId]
     : undefined;
   const configuredModels = Array.isArray(providerConfig?.models)
-    ? uniqueModels(providerConfig.models)
+    ? uniqueModels(providerConfig.models).filter((model) =>
+        isChatModelCandidate(config, providerId, model),
+      )
     : [];
   if (configuredModels.length > 0) {
     return configuredModels;
@@ -110,10 +191,10 @@ export function formatModelOptionLabel(model: string): string {
   if (migration) {
     return `${model} (deprecated -> ${migration.model}; thinking ${migration.thinking})`;
   }
-  if (lower.includes("deepseek-v4-flash") || lower.includes("flash")) {
+  if (lower.includes("deepseek-v4-flash")) {
     return `${model} (high concurrency / low latency; thinking available)`;
   }
-  if (lower.includes("deepseek-v4-pro") || lower.includes("pro")) {
+  if (lower.includes("deepseek-v4-pro")) {
     return `${model} (quality / pro; thinking available)`;
   }
   if (lower.includes("gpt-5.5") || lower.includes("gpt-5.4")) {

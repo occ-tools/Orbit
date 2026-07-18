@@ -14,9 +14,8 @@ export const WEB_UI_CONVERSATION_STYLES = String.raw`
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 42% -16%, color-mix(in srgb, var(--accent) 11%, transparent), transparent 38%),
-    radial-gradient(circle at 92% 12%, color-mix(in srgb, var(--brand-coral) 4%, transparent), transparent 28%),
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-raised) 22%, transparent), transparent 34%);
+    radial-gradient(circle at 42% -16%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 34%),
+    radial-gradient(circle at 92% 12%, color-mix(in srgb, var(--brand-coral) 2%, transparent), transparent 24%);
   pointer-events: none;
 }
 
@@ -72,52 +71,22 @@ export const WEB_UI_CONVERSATION_STYLES = String.raw`
 
 .message-avatar {
   position: relative;
-  width: 31px;
-  height: 31px;
+  width: 32px;
+  height: 24px;
   display: grid;
   place-items: center;
-  margin-top: 2px;
+  align-self: start;
+  margin-top: 0;
   color: var(--accent-strong);
-  background: color-mix(in srgb, var(--surface-raised) 62%, var(--accent-soft));
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
-  border-radius: 10px;
-  box-shadow: var(--shadow-sm), 0 8px 18px var(--accent-glow);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
-.message-avatar .avatar-face {
-  position: relative;
-  width: 16px;
-  height: 13px;
-  margin-top: 2px;
-  border: 1.4px solid currentColor;
-  border-radius: 6px 6px 7px 7px;
-}
-
-.message-avatar .avatar-face::before {
-  content: "•  •";
-  position: absolute;
-  left: 1.5px;
-  top: -6px;
-  width: 11px;
-  height: 14px;
-  color: currentColor;
-  border-top: 4px solid currentColor;
-  clip-path: polygon(0 0, 34% 42%, 66% 42%, 100% 0, 100% 100%, 0 100%);
-  font: 700 8px/20px var(--font-mono);
-  letter-spacing: 1px;
-  white-space: nowrap;
-}
-
-.message-avatar .avatar-face::after {
-  content: "";
-  position: absolute;
-  right: -5px;
-  top: -5px;
-  width: 4px;
-  height: 4px;
-  background: var(--brand-coral);
-  border: 1.5px solid var(--accent-soft);
-  border-radius: 50%;
+.message-avatar .message-mark {
+  width: 22px;
+  height: 22px;
 }
 
 .message-content {
@@ -139,6 +108,22 @@ export const WEB_UI_CONVERSATION_STYLES = String.raw`
   color: var(--faint);
   font-size: 10px;
   font-weight: 450;
+}
+
+.message-model {
+  max-width: min(38vw, 260px);
+  min-width: 0;
+  padding: 2px 6px;
+  overflow: hidden;
+  color: var(--ink-muted);
+  background: color-mix(in srgb, var(--surface-raised) 78%, var(--accent-soft));
+  border: 1px solid color-mix(in srgb, var(--accent) 13%, var(--border));
+  border-radius: 7px;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .message.user .message-content {

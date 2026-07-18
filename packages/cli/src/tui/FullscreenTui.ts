@@ -501,7 +501,11 @@ export class FullscreenTui {
 
     const mouseMode =
       this.config?.tui?.mouse !== false ? "\x1b[?1000h\x1b[?1006h" : "";
-    process.stdout.write(`\x1b[?1049h${mouseMode}\x1b[?25l`);
+    // Save the main-buffer cursor before entering the alternate screen. Some
+    // Windows/ConPTY combinations accept alternate-screen drawing but do not
+    // restore its contents reliably. The saved cursor gives stop() a precise
+    // fallback boundary that preserves the command used to launch Orbit.
+    process.stdout.write(`\x1b7\x1b[?1049h${mouseMode}\x1b[?25l`);
     process.stdout.on("resize", this.onResize);
 
     if (this.config?.tui?.mouse !== false) {
@@ -553,7 +557,12 @@ export class FullscreenTui {
     if (!this.isActive) return;
     this.isActive = false;
     process.stdout.off("resize", this.onResize);
-    process.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?1049l\x1b[?25h");
+    // Leave the alternate screen, restore the launch cursor, and erase only
+    // content written after it. This keeps the user's earlier terminal history
+    // and `orbit` invocation even when alternate-buffer restoration is broken.
+    process.stdout.write(
+      "\x1b[?1006l\x1b[?1000l\x1b[?1049l\x1b8\x1b[0J\x1b[?25h",
+    );
     this.hasWrittenStdoutSinceStop = false;
     if (this.renderTimeout) {
       clearTimeout(this.renderTimeout);
@@ -1324,9 +1333,12 @@ export class FullscreenTui {
             } else {
               if (this.ctrlCPressedOnce) {
                 if (this.ctrlCTimeout) clearTimeout(this.ctrlCTimeout);
+                this.ctrlCTimeout = null;
+                this.ctrlCPressedOnce = false;
                 cleanup();
-                this.stop();
-                process.exit(0);
+                process.stdout.write("\x1b[?25l");
+                this.resolveInput = null;
+                resolve(null);
               } else {
                 this.ctrlCPressedOnce = true;
                 if (this.ctrlCTimeout) clearTimeout(this.ctrlCTimeout);

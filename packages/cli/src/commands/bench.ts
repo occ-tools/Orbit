@@ -23,6 +23,10 @@ const BenchOptionsSchema = z.object({
   maxTokens: z.union([z.number(), z.string()]).optional(),
   cacheProfile: z.boolean().optional(),
   minCacheHit: z.union([z.number(), z.string()]).optional(),
+  maxFirstDeltaMs: z.union([z.number(), z.string()]).optional(),
+  maxFirstTextMs: z.union([z.number(), z.string()]).optional(),
+  minThroughput: z.union([z.number(), z.string()]).optional(),
+  maxErrorRate: z.union([z.number(), z.string()]).optional(),
   thinking: z.string().optional(),
   json: z.boolean().optional(),
 });
@@ -322,6 +326,108 @@ function clampCacheHitThreshold(value: unknown): number | undefined {
   return parsed > 1 ? parsed / 100 : parsed;
 }
 
+function parsePositiveThreshold(
+  value: unknown,
+  label: string,
+): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive number.`);
+  }
+  return parsed;
+}
+
+function parseRateThreshold(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+    throw new Error(
+      "Maximum error rate must be a ratio from 0 to 1 or a percentage from 0 to 100.",
+    );
+  }
+  return parsed > 1 ? parsed / 100 : parsed;
+}
+
+function percentile(values: number[], ratio: number): number | undefined {
+  if (values.length === 0) return undefined;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil(sorted.length * ratio) - 1),
+  );
+  return sorted[index];
+}
+
+export interface BenchmarkThresholds {
+  maxFirstDeltaMs?: number;
+  maxFirstTextMs?: number;
+  minThroughput?: number;
+  maxErrorRate?: number;
+}
+
+/** Evaluate stable aggregate thresholds without making one noisy sample authoritative. */
+export function evaluateBenchmarkThresholds(
+  results: ProviderBenchmarkResult[],
+  thresholds: BenchmarkThresholds,
+): string[] {
+  if (results.length === 0) return ["no benchmark samples were recorded"];
+  const successful = results.filter((result) => !result.error);
+  const failures: string[] = [];
+  const errorRate = (results.length - successful.length) / results.length;
+  if (
+    thresholds.maxErrorRate !== undefined &&
+    errorRate > thresholds.maxErrorRate
+  ) {
+    failures.push(
+      `error rate ${Math.round(errorRate * 100)}% > ${Math.round(thresholds.maxErrorRate * 100)}%`,
+    );
+  }
+  const firstDeltaP90 = percentile(
+    successful.flatMap((result) =>
+      typeof result.firstDeltaMs === "number" ? [result.firstDeltaMs] : [],
+    ),
+    0.9,
+  );
+  if (
+    thresholds.maxFirstDeltaMs !== undefined &&
+    (firstDeltaP90 === undefined || firstDeltaP90 > thresholds.maxFirstDeltaMs)
+  ) {
+    failures.push(
+      `p90 first model delta ${firstDeltaP90 === undefined ? "unavailable" : `${Math.round(firstDeltaP90)}ms`} > ${Math.round(thresholds.maxFirstDeltaMs)}ms`,
+    );
+  }
+  const firstTextP90 = percentile(
+    successful.flatMap((result) =>
+      typeof result.firstTextMs === "number" ? [result.firstTextMs] : [],
+    ),
+    0.9,
+  );
+  if (
+    thresholds.maxFirstTextMs !== undefined &&
+    (firstTextP90 === undefined || firstTextP90 > thresholds.maxFirstTextMs)
+  ) {
+    failures.push(
+      `p90 first answer ${firstTextP90 === undefined ? "unavailable" : `${Math.round(firstTextP90)}ms`} > ${Math.round(thresholds.maxFirstTextMs)}ms`,
+    );
+  }
+  const throughputP50 = percentile(
+    successful
+      .map((result) => result.throughputTokensPerSec)
+      .filter((value) => value > 0),
+    0.5,
+  );
+  if (
+    thresholds.minThroughput !== undefined &&
+    (throughputP50 === undefined || throughputP50 < thresholds.minThroughput)
+  ) {
+    failures.push(
+      `p50 decode throughput ${throughputP50 === undefined ? "unavailable" : `${throughputP50.toFixed(1)} tok/s`} < ${thresholds.minThroughput.toFixed(1)} tok/s`,
+    );
+  }
+  return failures;
+}
+
 export async function runBench(
   cwd: string,
   options: BenchOptions = {},
@@ -353,6 +459,21 @@ export async function runBench(
     ? Math.max(3, clampRepeat(options.repeat))
     : clampRepeat(options.repeat);
   const minCacheHit = clampCacheHitThreshold(options.minCacheHit);
+  const benchmarkThresholds: BenchmarkThresholds = {
+    maxFirstDeltaMs: parsePositiveThreshold(
+      options.maxFirstDeltaMs,
+      "Maximum first model delta",
+    ),
+    maxFirstTextMs: parsePositiveThreshold(
+      options.maxFirstTextMs,
+      "Maximum first answer latency",
+    ),
+    minThroughput: parsePositiveThreshold(
+      options.minThroughput,
+      "Minimum decode throughput",
+    ),
+    maxErrorRate: parseRateThreshold(options.maxErrorRate),
+  };
   const results: ProviderBenchmarkResult[] = [];
   const cacheProfileGroups = new Map<string, ProviderBenchmarkResult[]>();
   const workspaceIdentity = resolve(cwd).replace(/\\/g, "/");
@@ -459,5 +580,18 @@ export async function runBench(
         ),
       );
     }
+  }
+
+  const thresholdFailures = evaluateBenchmarkThresholds(
+    results,
+    benchmarkThresholds,
+  );
+  if (thresholdFailures.length > 0) {
+    process.exitCode = 1;
+    console.error(
+      picocolors.red(
+        `Benchmark threshold failed: ${thresholdFailures.join("; ")}.`,
+      ),
+    );
   }
 }

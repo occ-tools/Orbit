@@ -1,6 +1,11 @@
 import { Command } from "commander";
 import { describe, expect, it } from "vitest";
-import { buildCacheProfilePrompt, parseBenchOptions } from "./bench.js";
+import {
+  buildCacheProfilePrompt,
+  evaluateBenchmarkThresholds,
+  parseBenchOptions,
+} from "./bench.js";
+import type { ProviderBenchmarkResult } from "../runtime/ProviderBenchmarks.js";
 
 describe("bench CLI options", () => {
   it("preserves model and provider options inherited from the root command", () => {
@@ -52,5 +57,66 @@ describe("bench cache profile prompt", () => {
     expect(buildCacheProfilePrompt("run-a")).not.toBe(
       buildCacheProfilePrompt("run-b"),
     );
+  });
+});
+
+describe("bench performance thresholds", () => {
+  const sample = (
+    overrides: Partial<ProviderBenchmarkResult> = {},
+  ): ProviderBenchmarkResult => ({
+    providerId: "tokendance",
+    model: "deepseek-v4-flash",
+    checkedAt: "2026-07-18T00:00:00.000Z",
+    promptHash: "prompt",
+    promptChars: 20,
+    maxTokens: 64,
+    firstDeltaMs: 800,
+    firstTextMs: 1_100,
+    totalMs: 2_000,
+    outputTokens: 40,
+    textChars: 100,
+    throughputTokensPerSec: 33,
+    cacheReadTokens: 0,
+    cacheInputTokens: 20,
+    cacheHitRate: 0,
+    ...overrides,
+  });
+
+  it("passes aggregate latency and throughput budgets", () => {
+    expect(
+      evaluateBenchmarkThresholds([sample(), sample()], {
+        maxFirstDeltaMs: 1_000,
+        maxFirstTextMs: 1_500,
+        minThroughput: 30,
+        maxErrorRate: 0,
+      }),
+    ).toEqual([]);
+  });
+
+  it("reports noisy latency, throughput, and provider failures", () => {
+    const failures = evaluateBenchmarkThresholds(
+      [
+        sample(),
+        sample({
+          firstDeltaMs: 2_500,
+          firstTextMs: 3_000,
+          throughputTokensPerSec: 8,
+        }),
+        sample({ error: "gateway unavailable" }),
+      ],
+      {
+        maxFirstDeltaMs: 2_000,
+        maxFirstTextMs: 2_500,
+        minThroughput: 20,
+        maxErrorRate: 0.2,
+      },
+    );
+
+    expect(failures).toEqual([
+      "error rate 33% > 20%",
+      "p90 first model delta 2500ms > 2000ms",
+      "p90 first answer 3000ms > 2500ms",
+      "p50 decode throughput 8.0 tok/s < 20.0 tok/s",
+    ]);
   });
 });

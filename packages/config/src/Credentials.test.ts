@@ -39,6 +39,7 @@ describe("CredentialsManager tests", () => {
 
     manager.storeSecret(testKey, "replacement-secret");
     expect(manager.getSecret(testKey)).toBe("replacement-secret");
+    expect(manager.hasSecret(testKey)).toBe(true);
 
     // Verify it is saved in secrets.json and not in plaintext
     expect(existsSync(secretsPath)).toBe(true);
@@ -48,6 +49,10 @@ describe("CredentialsManager tests", () => {
 
     // Verify missing keys return null
     expect(manager.getSecret("NON_EXISTENT_KEY")).toBeNull();
+    expect(manager.deleteSecret("NON_EXISTENT_KEY")).toBe(false);
+    expect(manager.deleteSecret(testKey)).toBe(true);
+    expect(manager.hasSecret(testKey)).toBe(false);
+    expect(manager.getSecret(testKey)).toBeNull();
   });
 
   it("does not touch the real user home", () => {

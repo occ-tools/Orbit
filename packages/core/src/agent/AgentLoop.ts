@@ -14,7 +14,13 @@ import {
   SymbolIndexer,
   ContextPack,
 } from "@orbit-build/context-engine";
-import { SessionManager, Session } from "@orbit-build/session";
+import {
+  SessionManager,
+  Session,
+  type SessionMetrics,
+  type TaskPlan,
+  type TaskPlanItem,
+} from "@orbit-build/session";
 import { toolRegistry, type ToolResult } from "@orbit-build/tools";
 import { StatusBar, Prompt, Renderer } from "@orbit-build/tui";
 import { AgentState, createInitialState } from "./AgentState.js";
@@ -26,11 +32,17 @@ import {
 import { PromptCacheSlab, PromptCacheSlabBuilder } from "./PromptCacheSlab.js";
 import { StepRunner } from "./StepRunner.js";
 import { Planner } from "./Planner.js";
+import { classifyTaskComplexity, routeModel } from "./ModelRouter.js";
+import {
+  ProjectMemoryStore,
+  type ProjectMemory,
+  type ProjectMemoryEntry,
+} from "../memory/ProjectMemoryStore.js";
 import { eventBus } from "../events/EventBus.js";
 import picocolors from "picocolors";
 import path from "path";
 import fs from "fs";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { exec, execFile } from "child_process";
 import { promisify } from "util";
 const execPromise = promisify(exec);
@@ -170,6 +182,7 @@ export class AgentLoop {
   } | null = null;
   private verificationStatus: "not_run" | "passed" | "failed" = "not_run";
   private userId: string;
+  private readonly projectMemoryStore: ProjectMemoryStore;
 
   constructor(
     private cwd: string,
@@ -183,10 +196,12 @@ export class AgentLoop {
       allowedTools?: string[];
       disableStatusBar?: boolean;
       sessionId?: string;
+      requireSession?: boolean;
       nonInteractive?: boolean;
     },
   ) {
     this.statusBar = new StatusBar(!!this.options?.disableStatusBar);
+    this.projectMemoryStore = new ProjectMemoryStore(cwd);
     this.sessionManager = new SessionManager(
       cwd,
       config.session.store === "jsonl"
@@ -205,6 +220,9 @@ export class AgentLoop {
     let session;
     if (options?.sessionId) {
       session = this.sessionManager.resumeSession(options.sessionId);
+      if (!session && options.requireSession) {
+        throw new Error(`Orbit session not found: ${options.sessionId}`);
+      }
     }
     if (!session) {
       session = this.sessionManager.startNewSession(
@@ -216,6 +234,10 @@ export class AgentLoop {
       this.totalInputTokens = session.totalInputTokens || 0;
       this.totalOutputTokens = session.totalOutputTokens || 0;
       this.totalCacheReadTokens = session.totalCacheReadTokens || 0;
+    }
+    const runtimeModel = options?.modelOverride || config.models.default;
+    if (session.provider !== provider.id || session.model !== runtimeModel) {
+      this.sessionManager.setRuntime(provider.id, runtimeModel);
     }
 
     this.state = createInitialState(
@@ -456,6 +478,9 @@ export class AgentLoop {
     this.terminalFailure = null;
     this.verificationStatus = "not_run";
     this.sessionManager.setStatus("active");
+    this.sessionManager.setRunState("running", "initializing", {
+      attempt: this.state.attemptCount,
+    });
     this.verificationManager.initialize();
     this.sessionManager.saveHistory(this.state.history);
     void this.provider.initialize?.().catch(() => {});
@@ -577,6 +602,9 @@ export class AgentLoop {
         }
 
         this.state.attemptCount++;
+        this.sessionManager.setRunState("running", "model_request", {
+          attempt: this.state.attemptCount,
+        });
         eventBus.emitEvent("loop_start", {
           attempt: this.state.attemptCount,
         });
@@ -662,100 +690,6 @@ export class AgentLoop {
             .join("\n") || this.state.task
         ).toLowerCase();
 
-        // Heuristic task classification: High complexity vs Trivial
-        const highComplexityKeywords = [
-          "debug",
-          "investigate",
-          "root cause",
-          "why does",
-          "race condition",
-          "architecture",
-          "refactor",
-          "migrate",
-          "design",
-          "tradeoff",
-          "optimize",
-          "security",
-          "vulnerability",
-          "concurrency",
-          "deadlock",
-          "memory leak",
-          "reason",
-          "think",
-          "explain why",
-          "diagnose",
-          "trace",
-          "why does",
-          "what's wrong",
-          "compare",
-          "evaluate",
-          "assess",
-          "decide",
-          "choose",
-          "推理",
-          "分析",
-          "诊断",
-          "调试",
-          "设计",
-          "评估",
-          "原因",
-          "为什么",
-          "调查",
-          "死锁",
-          "内存泄漏",
-          "并发",
-          "优化",
-          "重构",
-          "安全",
-          "漏洞",
-          "架构",
-          "异常",
-          "报错",
-          "崩溃",
-          "故障",
-        ];
-
-        const trivialKeywords = [
-          "what is",
-          "list",
-          "show",
-          "echo",
-          "print",
-          "rename",
-          "lint",
-          "format",
-          "ty",
-          "thanks",
-          "yes",
-          "no",
-          "ok",
-          "continue",
-          "search",
-          "find",
-          "什么是",
-          "列出",
-          "显示",
-          "输出",
-          "打印",
-          "重命名",
-          "格式化",
-          "谢谢",
-          "继续",
-          "是",
-          "否",
-          "好的",
-        ];
-
-        const isComplexTask =
-          isRepairTurn ||
-          highComplexityKeywords.some((kw) => userQueryText.includes(kw));
-
-        const isSimpleTask =
-          !isRepairTurn &&
-          (trivialKeywords.some((kw) => userQueryText.includes(kw)) ||
-            userQueryText.length < 50) &&
-          !highComplexityKeywords.some((kw) => userQueryText.includes(kw));
-
         // Check if the user request has tool execution or is complex
         const currentTurnStartIndex = currentUserMessage
           ? this.state.history.lastIndexOf(currentUserMessage)
@@ -773,39 +707,29 @@ export class AgentLoop {
               ),
           );
 
-        const qualityModel =
-          this.config.models.coder || this.config.models.default;
-
-        if (this.fallbackModelForRun) {
-          nextModel = this.fallbackModelForRun;
-        } else if (this.options?.modelOverride) {
-          nextModel = this.options.modelOverride;
-        } else {
-          if (!this.activeModelForRun) {
-            if (isComplexTask) {
-              nextModel = qualityModel;
-            } else if (isSimpleTask && this.config.models.fast) {
-              nextModel = this.config.models.fast;
-            } else {
-              if (!hasWrittenFiles && this.config.models.fast) {
-                nextModel = this.config.models.fast;
-              } else {
-                nextModel = this.config.models.default;
-              }
-            }
-            this.activeModelForRun = nextModel;
-          } else {
-            if (
-              this.activeModelForRun === this.config.models.fast &&
-              qualityModel
-            ) {
-              if (isComplexTask || hasWrittenFiles) {
-                this.activeModelForRun = qualityModel;
-              }
-            }
-            nextModel = this.activeModelForRun;
-          }
+        const routingDecision = routeModel({
+          query: userQueryText,
+          defaultModel: this.config.models.default,
+          fastModel: this.config.models.fast,
+          qualityModel: this.config.models.coder || this.config.models.default,
+          lockedModel: this.options?.modelOverride,
+          fallbackModel: this.fallbackModelForRun || undefined,
+          activeModel: this.activeModelForRun || undefined,
+          repairTurn: isRepairTurn,
+          hasWrittenFiles,
+        });
+        const isComplexTask =
+          classifyTaskComplexity({
+            query: userQueryText,
+            repairTurn: isRepairTurn,
+            hasWrittenFiles,
+          }) === "complex";
+        nextModel = routingDecision.model;
+        if (!this.options?.modelOverride && !this.fallbackModelForRun) {
+          this.activeModelForRun = nextModel;
         }
+        eventBus.emitEvent("model_routing", routingDecision);
+        this.sessionManager.logEvent("model_routing", routingDecision);
 
         const activeModel = nextModel;
         if (!this.cachedContextPack) {
@@ -882,9 +806,20 @@ export class AgentLoop {
         // Turn context (RAG, repo map, file excerpts) is persisted immediately
         // before the current user request so older conversation prefixes remain
         // byte-stable across future turns.
+        const projectMemory = this.projectMemoryStore.read();
+        const taskPlan = this.sessionManager.getTaskPlan();
         const baseSystemPrompt =
           this.options?.systemPromptOverride ||
-          Planner.makeSystemPrompt(activeModel, this.config.language);
+          Planner.makeSystemPrompt(
+            activeModel,
+            this.config.language,
+            this.provider.id,
+            this.sessionManager.getActiveSession()?.goal,
+            projectMemory.enabled
+              ? projectMemory.entries.map((entry) => entry.text)
+              : [],
+            taskPlan?.items.map((item) => `[${item.status}] ${item.text}`),
+          );
         const toolsPrompt = capabilities.toolCalls
           ? generateNativeToolsPrompt(toolDefs)
           : generateXMLToolsPrompt(toolDefs);
@@ -986,12 +921,23 @@ export class AgentLoop {
         let thinkingText = "";
         let thinkingSignature = "";
         let finalUsage: TokenUsage | undefined;
+        let resolvedModel: string | undefined;
+        let providerRequestId: string | undefined;
         const toolCallsToExecute: OrbitToolCall[] = [];
 
         try {
           for await (const event of stream) {
             this.statusBar.stop();
-            if (event.type === "text_delta") {
+            if (event.type === "response_metadata") {
+              resolvedModel = event.resolvedModel;
+              providerRequestId = event.providerRequestId;
+              this.sessionManager.logEvent("provider_response_identity", {
+                provider: this.provider.id,
+                requestedModel: event.requestedModel,
+                resolvedModel: event.resolvedModel || null,
+                providerRequestId: event.providerRequestId || null,
+              });
+            } else if (event.type === "text_delta") {
               responseText += event.text;
               eventBus.emitEvent("model_delta", { text: event.text });
             } else if (event.type === "thinking_delta") {
@@ -1108,6 +1054,9 @@ export class AgentLoop {
 
         eventBus.emitEvent("model_response", {
           model: activeModel,
+          requestedModel: activeModel,
+          resolvedModel,
+          providerRequestId,
           text: responseText || undefined,
           reasoning_content: thinkingText || undefined,
           usage: finalUsage
@@ -1177,7 +1126,12 @@ export class AgentLoop {
           role: "assistant",
           createdAt: new Date().toISOString(),
           content: assistantBlocks,
-          metadata: { model: activeModel },
+          metadata: {
+            model: activeModel,
+            requestedModel: activeModel,
+            resolvedModel: resolvedModel || activeModel,
+            ...(providerRequestId ? { providerRequestId } : {}),
+          },
         };
         this.state.history.push(assistantMsg);
         this.sessionManager.saveHistory(this.state.history);
@@ -1208,6 +1162,9 @@ export class AgentLoop {
 
           if (hasEdits) {
             if (this.verificationManager.hasContract()) {
+              this.sessionManager.setRunState("verifying", "verification", {
+                attempt: this.state.attemptCount,
+              });
               this.interaction.showText(
                 "\n● Verification: Running contract verification checks...",
               );
@@ -1217,6 +1174,8 @@ export class AgentLoop {
                 ? "passed"
                 : "failed";
               if (!verifyResult.success) {
+                const maxRepairAttempts =
+                  this.verificationManager.getMaxRepairAttempts();
                 const repairAttempts = this.state.history.filter(
                   (m) =>
                     m.role === "user" &&
@@ -1227,7 +1186,10 @@ export class AgentLoop {
                     ),
                 ).length;
 
-                if (repairAttempts >= 3 || !this.config.context.autoRepair) {
+                if (
+                  repairAttempts >= maxRepairAttempts ||
+                  !this.config.context.autoRepair
+                ) {
                   this.interaction.showText(
                     picocolors.red(
                       `\n✖ Verification Failed: Workspace violates contract. Rolling back all changes for safety...`,
@@ -1247,7 +1209,7 @@ export class AgentLoop {
 
                 this.interaction.showText(
                   picocolors.red(
-                    `✖ Verification failed! Entering auto-repair loop (Attempt ${repairAttempts + 1}/3)...`,
+                    `✖ Verification failed! Entering auto-repair loop (Attempt ${repairAttempts + 1}/${maxRepairAttempts})...`,
                   ),
                 );
 
@@ -1287,6 +1249,8 @@ export class AgentLoop {
                 this.verificationStatus = result.ok ? "passed" : "failed";
 
                 if (!result.ok) {
+                  const maxRepairAttempts =
+                    this.config.context.maxRepairAttempts;
                   const repairAttempts = this.state.history.filter(
                     (m) =>
                       m.role === "user" &&
@@ -1297,10 +1261,10 @@ export class AgentLoop {
                       ),
                   ).length;
 
-                  if (repairAttempts >= 3) {
+                  if (repairAttempts >= maxRepairAttempts) {
                     this.interaction.showText(
                       picocolors.red(
-                        `\n✖ Auto-Repair: Max attempts (3) reached. Codebase is unstable. Rolling back all changes for safety...`,
+                        `\n✖ Auto-Repair: Max attempts (${maxRepairAttempts}) reached. Codebase is unstable. Rolling back all changes for safety...`,
                       ),
                     );
                     await this.rollbackLastCheckpoint();
@@ -1318,7 +1282,7 @@ export class AgentLoop {
 
                   this.interaction.showText(
                     picocolors.red(
-                      `✖ Tests failed! Entering auto-repair loop (Attempt ${repairAttempts + 1}/3)...`,
+                      `✖ Tests failed! Entering auto-repair loop (Attempt ${repairAttempts + 1}/${maxRepairAttempts})...`,
                     ),
                   );
                   const rawLog = result.error || result.display || "";
@@ -1532,6 +1496,14 @@ ${errLog}`;
           }
 
           if (decision.action === "ask") {
+            this.sessionManager.setRunState(
+              "awaiting_approval",
+              `tool:${tc.name}`,
+              {
+                attempt: this.state.attemptCount,
+                activeToolCallId: tc.id,
+              },
+            );
             let approved = false;
             let currentArgs = tc.arguments;
             if (this.interaction.askToolApproval) {
@@ -1688,6 +1660,11 @@ ${errLog}`;
                 : "Auto-approved by policy",
             });
           }
+
+          this.sessionManager.setRunState("running", `tool:${tc.name}`, {
+            attempt: this.state.attemptCount,
+            activeToolCallId: tc.id,
+          });
 
           let beforeContent: string | null = null;
           let targetPath: string | undefined;
@@ -2562,6 +2539,28 @@ ${errLog}`;
             }
           }
 
+          if (
+            finalResult.ok &&
+            targetPath &&
+            absoluteTargetPath &&
+            isFileMutationTool(tc.name)
+          ) {
+            try {
+              const afterContent = fs.readFileSync(absoluteTargetPath, "utf8");
+              this.sessionManager.recordFileModification(
+                path.relative(this.cwd, absoluteTargetPath).replace(/\\/g, "/"),
+                buildAuditDiff(targetPath, beforeContent, afterContent),
+                beforeContent === null ? undefined : sha256(beforeContent),
+                sha256(afterContent),
+              );
+            } catch (error: unknown) {
+              this.sessionManager.logEvent("file_audit_failed", {
+                path: targetPath,
+                message: safeAgentLoopErrorMessage(error),
+              });
+            }
+          }
+
           const status = finalResult.ok
             ? ("success" as const)
             : ("failed" as const);
@@ -2659,7 +2658,9 @@ ${errLog}`;
           : this.verificationStatus === "failed"
             ? "failed"
             : "not run";
-      this.interaction.showText(`  Verification: ${verificationSummary}.`);
+      this.interaction.showText(
+        `  Verification contract: ${verificationSummary}.`,
+      );
       this.interaction.showText(
         `  Session Cost: $${this.sessionCost.toFixed(4)}`,
       );
@@ -2775,6 +2776,11 @@ ${errLog}`;
 
   private finalizeOutcome(outcome: AgentLoopRunOutcome): void {
     try {
+      this.sessionManager.setRunState(
+        outcome.status,
+        outcome.status === "completed" ? "finished" : "terminated",
+        { attempt: this.state.attemptCount },
+      );
       this.sessionManager.setStatus(
         outcome.status === "completed"
           ? "completed"
@@ -2895,6 +2901,113 @@ ${errLog}`;
     return this.state.sessionId;
   }
 
+  public getGoal(): string | undefined {
+    return this.sessionManager.getActiveSession()?.goal;
+  }
+
+  public setGoal(goal?: string): void {
+    this.sessionManager.setGoal(goal);
+    this.cachedContextPack = null;
+  }
+
+  public getProjectMemory(): ProjectMemory {
+    return this.projectMemoryStore.read();
+  }
+
+  public addProjectMemory(text: string): ProjectMemoryEntry {
+    const entry = this.projectMemoryStore.add(text);
+    this.cachedContextPack = null;
+    return entry;
+  }
+
+  public removeProjectMemory(id: string): boolean {
+    const removed = this.projectMemoryStore.remove(id);
+    if (removed) this.cachedContextPack = null;
+    return removed;
+  }
+
+  public clearProjectMemory(): void {
+    this.projectMemoryStore.clear();
+    this.cachedContextPack = null;
+  }
+
+  public setProjectMemoryEnabled(enabled: boolean): ProjectMemory {
+    const memory = this.projectMemoryStore.setEnabled(enabled);
+    this.cachedContextPack = null;
+    return memory;
+  }
+
+  public getTaskPlan(): TaskPlan | undefined {
+    return this.sessionManager.getTaskPlan();
+  }
+
+  public addTaskPlanItem(text: string): TaskPlan | undefined {
+    const now = new Date().toISOString();
+    const plan = this.sessionManager.getTaskPlan();
+    const item: TaskPlanItem = {
+      id: `step_${randomUUID()}`,
+      text: text.trim(),
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const saved = this.sessionManager.saveTaskPlan(
+      [...(plan?.items || []), item],
+      plan?.goal,
+    );
+    this.cachedContextPack = null;
+    return saved;
+  }
+
+  public updateTaskPlanItem(
+    id: string,
+    status: TaskPlanItem["status"],
+  ): TaskPlan | undefined {
+    const plan = this.sessionManager.getTaskPlan();
+    if (!plan || !plan.items.some((item) => item.id === id)) return undefined;
+    const now = new Date().toISOString();
+    const items = plan.items.map((item) => ({
+      ...item,
+      status:
+        status === "in_progress" && item.id !== id
+          ? item.status === "in_progress"
+            ? ("pending" as const)
+            : item.status
+          : item.id === id
+            ? status
+            : item.status,
+      updatedAt: item.id === id ? now : item.updatedAt,
+    }));
+    const saved = this.sessionManager.saveTaskPlan(items, plan.goal);
+    this.cachedContextPack = null;
+    return saved;
+  }
+
+  public removeTaskPlanItem(id: string): boolean {
+    const plan = this.sessionManager.getTaskPlan();
+    if (!plan || !plan.items.some((item) => item.id === id)) return false;
+    this.sessionManager.saveTaskPlan(
+      plan.items.filter((item) => item.id !== id),
+      plan.goal,
+    );
+    this.cachedContextPack = null;
+    return true;
+  }
+
+  public clearTaskPlan(): void {
+    const plan = this.sessionManager.getTaskPlan();
+    this.sessionManager.saveTaskPlan([], plan?.goal);
+    this.cachedContextPack = null;
+  }
+
+  public getSessionMetrics(): SessionMetrics | undefined {
+    return this.sessionManager.getMetrics();
+  }
+
+  public setSessionTitle(title: string): void {
+    this.sessionManager.setTitle(title);
+  }
+
   public getHistory(): OrbitMessage[] {
     return this.state.history;
   }
@@ -3003,6 +3116,17 @@ ${errLog}`;
     this.sessionManager.getSessionStore().deleteSession(sessionId);
   }
 
+  public setSessionArchived(sessionId: string, archived: boolean): boolean {
+    const store = this.sessionManager.getSessionStore();
+    const session = store.getSession(sessionId);
+    if (!session) return false;
+    store.updateSession({
+      ...session,
+      archivedAt: archived ? new Date().toISOString() : undefined,
+    });
+    return true;
+  }
+
   public getSessionCost(): number {
     return this.sessionCost;
   }
@@ -3027,15 +3151,43 @@ ${errLog}`;
     return this.provider;
   }
 
+  /** Replace the provider used by subsequent turns while preserving history. */
+  public setProvider(provider: ModelProvider): void {
+    this.provider = provider;
+    this.activeModelForRun = null;
+    this.fallbackModelForRun = null;
+    this.cachedContextPack = null;
+    this.sessionManager.setRuntime(
+      provider.id,
+      this.options?.modelOverride || this.config.models.default,
+    );
+  }
+
   public setModelOverride(model: string): void {
     if (!this.options) {
       this.options = {};
     }
     this.options.modelOverride = model;
+    this.activeModelForRun = null;
+    this.fallbackModelForRun = null;
+    this.cachedContextPack = null;
+    this.sessionManager.setRuntime(this.provider.id, model);
   }
 
   public getModelOverride(): string | undefined {
     return this.options?.modelOverride;
+  }
+
+  /** Return model selection to Orbit's explainable fast/quality routing. */
+  public clearModelOverride(): void {
+    if (this.options) delete this.options.modelOverride;
+    this.activeModelForRun = null;
+    this.fallbackModelForRun = null;
+    this.cachedContextPack = null;
+    this.sessionManager.setRuntime(
+      this.provider.id,
+      this.config.models.default,
+    );
   }
 
   public async rollbackLastCheckpoint(): Promise<void> {
@@ -3460,6 +3612,40 @@ ${errLog}`;
       // visible agent turn, which is normally the best cache warmer itself.
     }
   }
+}
+
+function isFileMutationTool(toolName: string): boolean {
+  return [
+    "write_file",
+    "edit_file",
+    "replace_file_content",
+    "multi_replace_file_content",
+  ].includes(toolName);
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function buildAuditDiff(
+  filePath: string,
+  before: string | null,
+  after: string,
+): string {
+  const maxChars = 40_000;
+  const bounded = (value: string): string =>
+    value.length <= maxChars
+      ? value
+      : `${value.slice(0, maxChars)}\n... [truncated by Orbit audit]`;
+  const beforeText = bounded(before || "")
+    .split("\n")
+    .map((line) => `-${line}`)
+    .join("\n");
+  const afterText = bounded(after)
+    .split("\n")
+    .map((line) => `+${line}`)
+    .join("\n");
+  return `--- a/${filePath}\n+++ b/${filePath}\n@@ Orbit recorded before/after @@\n${beforeText}\n${afterText}`;
 }
 
 function generateXMLToolsPrompt(tools: any[]): string {

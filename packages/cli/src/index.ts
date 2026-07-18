@@ -9,7 +9,11 @@ import { parseBenchOptions, runBench } from "./commands/bench.js";
 import { exitCodeForOutcome, runAgent } from "./commands/run.js";
 import { runLSPServer } from "./commands/LSPServer.js";
 import { runLogin } from "./commands/login.js";
+import { runTraceExport } from "./commands/trace.js";
+import { runEval } from "./commands/eval.js";
 import { readCliVersion } from "./runtime/CliVersion.js";
+import { existsSync, realpathSync, statSync } from "fs";
+import { resolve } from "path";
 
 const program = new Command();
 
@@ -66,9 +70,25 @@ program
 
 program
   .command("login")
-  .description("interactively configure API keys for models")
-  .action(async () => {
-    await runLogin();
+  .description("manage secure provider logins and model catalogs")
+  .option("--list", "list saved provider logins")
+  .option("--delete <provider>", "delete a saved provider login")
+  .option("--service <provider>", "configure a provider profile")
+  .option("--name <name>", "set the provider display name")
+  .option(
+    "--base-url <url>",
+    "set the exact API base URL (include /v1 when required)",
+  )
+  .option("--no-activate", "save without making this provider active")
+  .action(async (options) => {
+    await runLogin({
+      list: !!options.list,
+      deleteProvider: options.delete,
+      provider: options.service,
+      name: options.name,
+      baseUrl: options.baseUrl,
+      activate: options.activate,
+    });
   });
 
 program
@@ -119,6 +139,22 @@ program
     "--min-cache-hit <ratio>",
     "fail when repeated-sample average cache hit is below ratio, e.g. 0.75 or 75",
   )
+  .option(
+    "--max-first-delta-ms <ms>",
+    "fail when p90 first model delta exceeds this latency",
+  )
+  .option(
+    "--max-first-text-ms <ms>",
+    "fail when p90 first answer exceeds this latency",
+  )
+  .option(
+    "--min-throughput <tokensPerSecond>",
+    "fail when p50 decode throughput is below this rate",
+  )
+  .option(
+    "--max-error-rate <ratio>",
+    "fail when sample error rate exceeds a ratio or percentage",
+  )
   .option("--json", "print benchmark samples as JSON")
   .action(async (_localOptions, command) => {
     // Commander stores options shared with the parent command (notably
@@ -136,8 +172,49 @@ program
       cacheProfile: !!options.cacheProfile,
       thinking: options.thinking,
       minCacheHit: options.minCacheHit,
+      maxFirstDeltaMs: options.maxFirstDeltaMs,
+      maxFirstTextMs: options.maxFirstTextMs,
+      minThroughput: options.minThroughput,
+      maxErrorRate: options.maxErrorRate,
       json: !!options.json,
     });
+  });
+
+program
+  .command("eval")
+  .description("run a task-level coding acceptance suite in isolated worktrees")
+  .argument("<suite>", "YAML or JSON acceptance suite inside the workspace")
+  .option("--provider <provider>", "provider override for every task")
+  .option("--model <model>", "model override for every task")
+  .option("--task <id>", "run one task from the suite")
+  .option(
+    "--allow-commands",
+    "run the suite's reviewed verification commands inside worktrees",
+  )
+  .option("--json", "print the versioned evaluation report as JSON")
+  .action(async (suite, localOptions, command) => {
+    const options = command.optsWithGlobals();
+    await runEval(process.cwd(), suite, {
+      provider: localOptions.provider || options.provider,
+      model: localOptions.model || options.model,
+      task: localOptions.task,
+      allowCommands: !!localOptions.allowCommands,
+      json: !!localOptions.json,
+    });
+  });
+
+program
+  .command("trace")
+  .description("export a redacted, versioned session audit trace")
+  .argument("<session>", "session id to export")
+  .option("--full", "include redacted conversation history")
+  .option("--out <path>", "write inside the workspace instead of stdout")
+  .action((session, options) => {
+    const output = runTraceExport(process.cwd(), session, {
+      full: !!options.full,
+      out: options.out,
+    });
+    if (output) console.log(`Trace exported to ${output}`);
   });
 
 program
@@ -151,6 +228,7 @@ program
   .command("webui")
   .description("start Orbit as a browser-first local coding workspace")
   .option("--port <port>", "preferred loopback port (default: 6047)")
+  .option("--cwd <path>", "open a specific project directory")
   .option("--no-open", "start without opening the default browser")
   .action(async (localOptions, command) => {
     const options = command.optsWithGlobals();
@@ -172,7 +250,17 @@ program
     if (options.yes) {
       overrides.permissions = { mode: "auto" };
     }
-    const outcome = await runAgent(process.cwd(), undefined, overrides, false, {
+    const requestedCwd = resolve(localOptions.cwd || process.cwd());
+    if (!existsSync(requestedCwd) || !statSync(requestedCwd).isDirectory()) {
+      throw new Error(
+        `Web UI project directory does not exist: ${requestedCwd}`,
+      );
+    }
+    // Windows can hand us an 8.3 short path (for example through %TEMP%).
+    // libuv's recursive watcher expects the watched root and event paths to
+    // use the same canonical spelling, otherwise the process can abort.
+    const cwd = realpathSync.native(requestedCwd);
+    const outcome = await runAgent(cwd, undefined, overrides, false, {
       webUi: { port, open: localOptions.open !== false },
     });
     applyOutcomeExitCode(outcome);
@@ -184,11 +272,12 @@ program
   .argument("<prompt>", "the task prompt to execute")
   .option("--provider <provider>", "specify model provider")
   .option("--model <model>", "specify model name")
+  .option("--resume <session>", "resume a persisted Orbit session")
   .option("--jsonl", "output event logs in JSONL format")
-  .action(async (prompt, _localOptions, command) => {
+  .action(async (prompt, localOptions, command) => {
     // Commander may store options shared with the root command on the parent
     // even when they appear after `exec`; always consume the merged view.
-    const options = command.optsWithGlobals();
+    const options = { ...command.optsWithGlobals(), ...localOptions };
     const cwd = process.cwd();
     const overrides: Record<string, unknown> = {};
     if (options.provider) {
@@ -200,6 +289,7 @@ program
     const outcome = await runAgent(cwd, prompt, overrides, false, {
       nonInteractive: true,
       jsonl: !!options.jsonl,
+      resumeSessionId: options.resume,
     });
     applyOutcomeExitCode(outcome);
   });

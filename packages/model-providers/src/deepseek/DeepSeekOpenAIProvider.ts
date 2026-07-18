@@ -62,6 +62,8 @@ const OpenAIToolCallSchema = z
 
 const OpenAIChatResponseSchema = z
   .object({
+    id: z.string().optional(),
+    model: z.string().optional(),
     choices: z
       .array(
         z
@@ -85,6 +87,8 @@ const OpenAIChatResponseSchema = z
 
 const OpenAIChatChunkSchema = z
   .object({
+    id: z.string().optional(),
+    model: z.string().optional(),
     choices: z
       .array(
         z
@@ -919,6 +923,13 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
         }
       }
       yield {
+        type: "response_metadata",
+        requestedModel: input.model,
+        resolvedModel: data.model,
+        providerRequestId:
+          data.id || response.headers?.get?.("x-request-id") || undefined,
+      };
+      yield {
         type: "usage",
         usage: {
           inputTokens: data.usage?.prompt_tokens ?? 0,
@@ -978,6 +989,7 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
     let reasoningTokens = 0;
     let finishReason: string | null = null;
     let streamComplete = false;
+    let metadataEmitted = false;
 
     let streamTimeoutId: NodeJS.Timeout | undefined;
     const streamTimeoutMs = this.options.streamTimeoutMs ?? 60000;
@@ -1024,6 +1036,18 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
             }
             try {
               const parsed = OpenAIChatChunkSchema.parse(JSON.parse(rawData));
+              if (!metadataEmitted) {
+                metadataEmitted = true;
+                yield {
+                  type: "response_metadata",
+                  requestedModel: input.model,
+                  resolvedModel: parsed.model,
+                  providerRequestId:
+                    parsed.id ||
+                    response.headers?.get?.("x-request-id") ||
+                    undefined,
+                };
+              }
               if (parsed.error) {
                 throw new Error(
                   `DeepSeek API error: ${sanitizeProviderErrorText(parsed.error.message, [key])}`,

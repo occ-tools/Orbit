@@ -57,7 +57,7 @@ export function createProviderFromConfig(config: OrbitConfig): ModelProvider {
     );
   }
   if (pConfig.type === "ollama") {
-    return new OllamaProvider(pConfig.baseUrl);
+    return new OllamaProvider(pConfig.baseUrl, providerOptions);
   }
 
   throw new Error(`Unsupported provider type "${pConfig.type}".`);

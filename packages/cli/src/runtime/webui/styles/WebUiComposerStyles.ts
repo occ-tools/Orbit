@@ -2,6 +2,7 @@
 export const WEB_UI_COMPOSER_STYLES = String.raw`
 .composer-dock {
   position: relative;
+  box-sizing: border-box;
   width: min(var(--composer-width), calc(100% - 32px));
   margin: 0 auto;
   padding: 0 16px calc(12px + env(safe-area-inset-bottom));
@@ -24,7 +25,7 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
 
 .empty-composer-slot .composer {
   border-radius: 16px;
-  box-shadow: 0 22px 58px rgba(27, 48, 44, 0.1), 0 2px 7px rgba(27, 48, 44, 0.045);
+  box-shadow: none;
 }
 
 .empty-composer-slot .composer-dock::before {
@@ -39,8 +40,8 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
   content: "";
   position: absolute;
   z-index: -1;
-  left: -10vw;
-  right: -10vw;
+  left: 0;
+  right: 0;
   bottom: 0;
   height: 148px;
   background: linear-gradient(to bottom, transparent, var(--canvas) 38%);
@@ -73,14 +74,15 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
   background: color-mix(in srgb, var(--surface-raised) 96%, transparent);
   border: 1px solid var(--border-strong);
   border-radius: 18px;
-  box-shadow: var(--shadow-md);
-  backdrop-filter: blur(20px) saturate(125%);
-  transition: border-color 160ms ease, box-shadow 160ms ease;
+  box-shadow: none;
+  backdrop-filter: none;
+  transition: border-color 160ms ease, background 160ms ease;
 }
 
 .composer:focus-within {
   border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
-  box-shadow: 0 20px 56px rgba(24, 46, 42, 0.13), 0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent);
+  background: var(--surface-raised);
+  box-shadow: none;
 }
 
 #prompt {
@@ -130,7 +132,7 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
 }
 
 .composer-chip,
-.composer-select {
+.composer-select-trigger {
   height: 29px;
   flex: 0 0 auto;
   color: var(--muted);
@@ -166,7 +168,8 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
 
 .composer-chip:hover,
 .composer-chip[aria-pressed="true"],
-.composer-select:hover {
+.composer-select-trigger:hover,
+.composer-select-control.is-open .composer-select-trigger {
   color: var(--ink-strong);
   background: var(--surface-subtle);
   border-color: var(--border);
@@ -178,9 +181,8 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
   border-color: color-mix(in srgb, var(--accent) 20%, var(--border));
 }
 
-.composer-select {
-  padding: 0 6px;
-  outline: 0;
+.composer-select-control {
+  flex: 0 0 auto;
 }
 
 .send-button {
@@ -232,7 +234,7 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
 
 .app-shell.is-disconnected .composer {
   border-color: color-mix(in srgb, var(--danger) 22%, var(--border));
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
 }
 
 .jump-bottom {

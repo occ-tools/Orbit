@@ -6,6 +6,7 @@ import {
   isAuthorizedWebEventRequest,
   safeWebMessage,
   sanitizeBaseUrl,
+  sanitizeProjectActionResult,
   sanitizeWebEventPayload,
   summarizeWebToolValue,
   webRequestErrorStatus,
@@ -66,12 +67,43 @@ describe("WebUiSecurity", () => {
     });
   });
 
+  it("exposes only bounded explainable model-routing fields", () => {
+    expect(
+      sanitizeWebEventPayload("model_routing", {
+        model: "deepseek-v4-pro",
+        lane: "quality",
+        reason: "complex_request",
+        confidence: "high",
+        secret: "do-not-forward",
+      }),
+    ).toEqual({
+      model: "deepseek-v4-pro",
+      lane: "quality",
+      reason: "complex_request",
+      confidence: "high",
+    });
+  });
+
   it("removes URL credentials, queries, and fragments", () => {
     expect(
       sanitizeBaseUrl(
         "https://user:password@example.com/v1?api_key=private#secret",
       ),
     ).toBe("https://example.com/v1");
+  });
+
+  it("preserves only bounded fields from a native project picker", () => {
+    expect(
+      sanitizeProjectActionResult({
+        ok: true,
+        path: "C:/work/project",
+        cancelled: false,
+      }),
+    ).toEqual({ ok: true, path: "C:/work/project" });
+    expect(sanitizeProjectActionResult({ ok: true, cancelled: true })).toEqual({
+      ok: true,
+      cancelled: true,
+    });
   });
 
   it("summarizes only safe tool fields and redacts plain errors", () => {

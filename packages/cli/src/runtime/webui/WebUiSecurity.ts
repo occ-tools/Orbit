@@ -28,6 +28,17 @@ export function sanitizeWebEventPayload(
       };
     case "model_request":
       return { model: safeWebText(payload.model, 200) };
+    case "model_routing":
+      return {
+        model: safeWebText(payload.model, 200),
+        lane: ["locked", "fallback", "fast", "balanced", "quality"].includes(
+          String(payload.lane),
+        )
+          ? String(payload.lane)
+          : "balanced",
+        reason: safeWebText(payload.reason, 100),
+        confidence: payload.confidence === "high" ? "high" : "medium",
+      };
     case "model_response":
       return {
         model: safeWebText(payload.model, 200),
@@ -217,6 +228,21 @@ export function sanitizeActionResult(result: {
   return result.message
     ? { ok: result.ok, message: safeWebMessage(result.message) }
     : { ok: result.ok };
+}
+
+/** Sanitize a project action while preserving a locally selected path. */
+export function sanitizeProjectActionResult(result: {
+  ok: boolean;
+  message?: string;
+  path?: string;
+  cancelled?: boolean;
+}): { ok: boolean; message?: string; path?: string; cancelled?: boolean } {
+  return {
+    ok: result.ok,
+    ...(result.message ? { message: safeWebMessage(result.message) } : {}),
+    ...(result.path ? { path: safeWebText(result.path, 4096) } : {}),
+    ...(result.cancelled ? { cancelled: true } : {}),
+  };
 }
 
 /** Remove credentials and query data from a provider base URL. */

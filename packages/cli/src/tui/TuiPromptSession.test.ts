@@ -78,4 +78,25 @@ describe("TuiPromptSession", () => {
     expect(stdin.isRaw).toBe(false);
     expect(stdin.pause).toHaveBeenCalledOnce();
   });
+
+  it("hands a successful selection to the next prompt without a base render", async () => {
+    const stdin = new FakeStdin();
+    const render = vi.fn();
+    const session = new TuiPromptSession(
+      render,
+      stdin as unknown as NodeJS.ReadStream,
+    );
+    const result = session.show({
+      type: "select",
+      message: "Provider",
+      options: [{ value: "provider-b", label: "Provider B" }],
+      suppressCloseRenderOnSelect: true,
+    });
+    render.mockClear();
+
+    stdin.emit("keypress", "", { name: "enter" });
+
+    await expect(result).resolves.toBe("provider-b");
+    expect(render).not.toHaveBeenCalled();
+  });
 });

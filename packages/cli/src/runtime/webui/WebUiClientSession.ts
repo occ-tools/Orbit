@@ -1,5 +1,11 @@
+import { BUILTIN_SLASH_COMMANDS } from "../SlashCommandCatalog.js";
+
+const WEB_UI_CONTROL_COMMANDS = JSON.stringify(BUILTIN_SLASH_COMMANDS);
+
 /** Runtime status, settings mutations, turn lifecycle, and server-sent events. */
-export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissionMode(value) {
+export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  const controlCommands = ${WEB_UI_CONTROL_COMMANDS};
+
+  function formatPermissionMode(value) {
     return {
       strict: copy.modeStrict,
       normal: copy.modeNormal,
@@ -15,14 +21,32 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
       ? metric(context.estimatedHistoryTokens) + ' / ' + metric(context.maxContextTokens)
       : '—';
     const rows = [
-      [copy.models, data.activeModel || '—'],
+      [copy.models, (data.modelRouting === 'auto' ? 'Auto · ' : '') + (data.activeModel || '—')],
       [copy.mode, formatPermissionMode(data.permissions && data.permissions.mode || '') || '—'],
+      ...(data.session && data.session.goal ? [[copy.goal, data.session.goal]] : []),
+      [language === 'zh' ? '项目记忆' : 'Project memory', String(data.memory && data.memory.count || 0) + (data.memory && data.memory.enabled === false ? (language === 'zh' ? ' · 已暂停' : ' · paused') : '')],
+      [language === 'zh' ? '任务计划' : 'Task plan', String(data.plan && data.plan.completed || 0) + ' / ' + String(data.plan && data.plan.count || 0)],
       [copy.messages, metric(data.session && data.session.historyMessages)],
       [copy.tokens, metric(data.session && data.session.inputTokens) + ' / ' + metric(data.session && data.session.outputTokens)],
       [copy.contextWindow, contextUsage],
       [copy.cache, metric(data.session && data.session.cacheReadTokens)],
       [copy.cost, '$' + Number(data.session && data.session.cost || 0).toFixed(4)],
     ];
+    const metrics = data.session && data.session.metrics;
+    if (metrics) {
+      rows.push([
+        language === 'zh' ? '工具可靠性' : 'Tool reliability',
+        String(metrics.toolRuns - metrics.toolFailures) + ' / ' + String(metrics.toolRuns),
+      ]);
+      rows.push([
+        language === 'zh' ? '文件修改 / 压缩' : 'File changes / compactions',
+        String(metrics.filesChanged) + ' / ' + String(metrics.compactions),
+      ]);
+      rows.push([
+        language === 'zh' ? '路由（快速 / 质量）' : 'Routes (fast / quality)',
+        String(Number(metrics.fastRoutes || 0)) + ' / ' + String(Number(metrics.qualityRoutes || 0)),
+      ]);
+    }
     elements.runtime.replaceChildren();
     for (const row of rows) {
       const wrapper = document.createElement('div');
@@ -47,6 +71,51 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
     const meterDetail = estimated.toLocaleString() + ' / ' + meterLimit.toLocaleString() + ' tokens';
     elements.contextMeter.title = meterDetail;
     elements.contextMeter.setAttribute('aria-label', copy.contextWindow + ': ' + meterDetail);
+    renderWorkspaceState(data);
+  }
+
+  function renderWorkspaceState(data) {
+    const plan = data.plan || {};
+    const memory = data.memory || {};
+    const render = (container, items, emptyText, kind) => {
+      container.replaceChildren();
+      if (!items.length) {
+        const empty = document.createElement('p');
+        empty.className = 'review-empty';
+        empty.textContent = emptyText;
+        container.append(empty);
+        return;
+      }
+      for (const item of items) {
+        const row = document.createElement('div');
+        row.className = 'review-row' + (item.status ? ' is-' + item.status : '');
+        const marker = document.createElement('span');
+        marker.className = 'review-marker';
+        marker.textContent = item.status === 'completed' ? '✓' : item.status === 'in_progress' ? '●' : '○';
+        const text = document.createElement('span');
+        text.className = 'review-text';
+        text.textContent = item.text || '';
+        text.title = item.text || '';
+        row.append(marker, text);
+        if (kind === 'memory') {
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.className = 'review-action';
+          remove.dataset.memoryRemove = item.id;
+          remove.textContent = '×';
+          remove.title = language === 'zh' ? '删除记忆' : 'Remove memory';
+          remove.setAttribute('aria-label', remove.title);
+          row.append(remove);
+        }
+        container.append(row);
+      }
+    };
+    const planItems = Array.isArray(plan.items) ? plan.items : [];
+    const memoryItems = Array.isArray(memory.entries) ? memory.entries : [];
+    elements.planCount.textContent = String(planItems.length);
+    elements.memoryCount.textContent = String(memoryItems.length) + (memory.enabled === false ? (language === 'zh' ? ' · 已暂停' : ' · paused') : '');
+    render(elements.planReview, planItems, language === 'zh' ? '当前对话暂无计划步骤。' : 'No plan steps for this chat.', 'plan');
+    render(elements.memoryReview, memoryItems, language === 'zh' ? '暂无显式项目记忆。' : 'No explicit project memory.', 'memory');
   }
 
   function workspaceName(path) {
@@ -54,8 +123,23 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
     return parts[parts.length - 1] || 'Orbit';
   }
 
+  function syncProviderOptions(data) {
+    const provider = data.provider || {};
+    const current = provider.id || '';
+    elements.providerSelect.replaceChildren();
+    for (const option of provider.options || []) {
+      const node = document.createElement('option');
+      node.value = option.id;
+      node.textContent = option.label + (option.modelCount ? ' · ' + option.modelCount : '');
+      node.title = option.baseUrl || option.id;
+      elements.providerSelect.append(node);
+    }
+    elements.providerSelect.value = current;
+    syncSelectControl(elements.providerSelect);
+  }
+
   function syncModelOptions(data) {
-    const current = data.activeModel || '';
+    const current = data.modelSelection || data.activeModel || '';
     elements.modelSelect.replaceChildren();
     for (const option of data.modelOptions || []) {
       const node = document.createElement('option');
@@ -70,6 +154,7 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
       elements.modelSelect.prepend(custom);
     }
     elements.modelSelect.value = current;
+    syncSelectControl(elements.modelSelect);
   }
 
   function relativeSessionTime(value) {
@@ -85,33 +170,141 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
     return language === 'zh' ? days + ' 天' : days + 'd';
   }
 
+  function appendSessionActionIcon(button, action) {
+    const namespace = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(namespace, 'svg');
+    svg.setAttribute('class', 'ui-icon');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(namespace, 'path');
+    path.setAttribute('d', {
+      archive: 'M5.5 8.5h13v10h-13zM4.5 5h15v3.5h-15zM9.5 12h5',
+      restore: 'M8 8H4V4M4.5 8a8 8 0 1 1-.2 7',
+      delete: 'M8 7v11M12 7v11M16 7v11M5 5h14M9 5V3h6v2M6.5 5l1 16h9l1-16',
+    }[action] || 'M6 12h12');
+    svg.append(path);
+    button.append(svg);
+  }
+
   function renderSessionNavigation(sessionData) {
+    state.sessionData = sessionData || {};
     const sessions = Array.isArray(sessionData && sessionData.recent)
       ? sessionData.recent
       : [];
+    const archivedSessions = Array.isArray(sessionData && sessionData.archived)
+      ? sessionData.archived
+      : [];
     const active = sessions.find((session) => session.active);
     const activeTitle = active && active.title || copy.untitledTask;
-    elements.activeTaskTitle.textContent = activeTitle;
-    elements.activeTaskTitle.title = activeTitle;
     byId('workspaceName').textContent = activeTitle;
     byId('workspaceName').title = activeTitle;
-    elements.recentSessions.replaceChildren();
-    for (const session of sessions.filter((candidate) => !candidate.active)) {
+    const query = state.sessionQuery.trim().toLocaleLowerCase();
+    const matchingSessions = query
+      ? sessions.filter((session) => [session.title, session.model]
+          .filter(Boolean)
+          .some((value) => String(value).toLocaleLowerCase().includes(query)))
+      : sessions;
+    const visibleSessions = matchingSessions.slice(0, state.sessionLimit);
+    const renderList = (container, items, archived) => {
+      container.replaceChildren();
+      for (const session of items) {
+        const isActive = Boolean(session.active);
+        const row = document.createElement('div');
+        row.className = 'session-row'
+          + (archived ? ' is-archived' : '')
+          + (isActive ? ' is-active' : '');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'recent-session';
+        button.dataset.sessionId = session.id;
+        button.setAttribute('aria-label', copy.recentSession + ': ' + (session.title || copy.untitledTask));
+        if (isActive) button.setAttribute('aria-current', 'page');
+        const title = document.createElement('span');
+        title.className = 'recent-session-title';
+        title.textContent = session.title || copy.untitledTask;
+        const meta = document.createElement('span');
+        meta.className = 'recent-session-meta';
+        meta.textContent = [relativeSessionTime(session.updatedAt), session.model].filter(Boolean).join(' · ');
+        button.append(title, meta);
+        row.append(button);
+        if (!isActive) {
+          const actions = document.createElement('span');
+          actions.className = 'session-actions';
+          const secondaryAction = document.createElement('button');
+          secondaryAction.type = 'button';
+          secondaryAction.className = 'session-action';
+          secondaryAction.dataset.sessionAction = archived ? 'restore' : 'archive';
+          secondaryAction.dataset.sessionId = session.id;
+          appendSessionActionIcon(secondaryAction, archived ? 'restore' : 'archive');
+          secondaryAction.title = archived ? copy.restoreSession : copy.archiveSession;
+          secondaryAction.setAttribute('aria-label', secondaryAction.title);
+          const deleteAction = document.createElement('button');
+          deleteAction.type = 'button';
+          deleteAction.className = 'session-action is-danger';
+          deleteAction.dataset.sessionAction = 'delete';
+          deleteAction.dataset.sessionId = session.id;
+          appendSessionActionIcon(deleteAction, 'delete');
+          deleteAction.title = copy.deleteSession;
+          deleteAction.setAttribute('aria-label', copy.deleteSession);
+          actions.append(secondaryAction, deleteAction);
+          row.append(actions);
+        }
+        container.append(row);
+      }
+    };
+    renderList(elements.recentSessions, visibleSessions, false);
+    renderList(elements.archivedSessions, archivedSessions, true);
+    elements.sessionSearchField.hidden = sessions.length < 12;
+    elements.sessionShowMore.hidden = visibleSessions.length >= matchingSessions.length;
+    elements.recentEmpty.textContent = query ? copy.noMatchingChats : copy.noRecentTasks;
+    elements.recentEmpty.hidden = matchingSessions.length > 0;
+    elements.archivedEmpty.hidden = elements.archivedSessions.childElementCount > 0;
+    elements.archiveCount.textContent = String(archivedSessions.length);
+    elements.archiveToggle.classList.toggle('has-items', archivedSessions.length > 0);
+    const sessionCount = Number(sessionData && sessionData.count || sessions.length + archivedSessions.length);
+    elements.projectChatCount.textContent = String(sessionCount);
+    elements.projectChatCount.setAttribute('aria-label', String(sessionCount));
+  }
+
+  function renderProjectNavigation(projects, currentWorkspace) {
+    elements.projectList.replaceChildren();
+    const normalizePath = (value) => String(value || '').replace(/\\/g, '/').toLocaleLowerCase();
+    const current = normalizePath(currentWorkspace);
+    const recentProjects = (Array.isArray(projects) ? projects : [])
+      .filter((item) => item.available === true && normalizePath(item.path) !== current)
+      .slice(0, 6);
+    for (const project of recentProjects) {
+      const row = document.createElement('div');
+      row.className = 'registered-project';
       const button = document.createElement('button');
       button.type = 'button';
-      button.className = 'recent-session';
-      button.dataset.sessionId = session.id;
-      button.setAttribute('aria-label', copy.recentSession + ': ' + (session.title || copy.untitledTask));
-      const title = document.createElement('span');
-      title.className = 'recent-session-title';
-      title.textContent = session.title || copy.untitledTask;
-      const meta = document.createElement('span');
-      meta.className = 'recent-session-meta';
-      meta.textContent = [relativeSessionTime(session.updatedAt), session.model].filter(Boolean).join(' · ');
-      button.append(title, meta);
-      elements.recentSessions.append(button);
+      button.className = 'registered-project-open';
+      button.dataset.projectPath = project.path || '';
+      button.setAttribute('aria-label', 'Open project: ' + (project.name || 'Orbit'));
+      const icon = document.createElement('span');
+      icon.className = 'registered-project-icon project-folder-icon';
+      icon.innerHTML = '<svg class="ui-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.5 6.5h6l2 2h9v10h-17z"/></svg>';
+      const copyNode = document.createElement('span');
+      copyNode.className = 'project-copy';
+      const name = document.createElement('strong');
+      name.textContent = project.name || workspaceName(project.path);
+      const path = document.createElement('small');
+      path.textContent = project.path || '';
+      copyNode.append(name, path);
+      button.append(icon, copyNode);
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'registered-project-remove';
+      remove.dataset.projectAction = 'remove';
+      remove.dataset.projectId = project.id || '';
+      remove.title = copy.removeProject;
+      remove.setAttribute('aria-label', copy.removeProject + ': ' + (project.name || 'Orbit'));
+      remove.textContent = '×';
+      row.append(button, remove);
+      elements.projectList.append(row);
     }
-    elements.recentSection.hidden = elements.recentSessions.childElementCount === 0;
+    elements.recentProjectsShell.hidden = elements.projectList.childElementCount === 0;
   }
 
   async function updateSession(action) {
@@ -119,23 +312,39 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
     state.busy = true;
     elements.newTaskButton.disabled = true;
     elements.recentSessions.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+    elements.archivedSessions.querySelectorAll('button').forEach((button) => { button.disabled = true; });
     try {
       await api('/api/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(action),
       });
-      clearActivity();
-      await Promise.all([renderMessages(), loadStatus()]);
-      showToast(action.action === 'new' ? copy.sessionCreated : copy.sessionSwitched, 'success');
-      closeSidebar();
-      elements.prompt.focus();
+      const navigates = action.action === 'new' || action.action === 'resume';
+      if (navigates) {
+        clearActivity();
+        await Promise.all([renderMessages(), loadStatus()]);
+      } else {
+        await loadStatus();
+      }
+      const notice = {
+        new: copy.sessionCreated,
+        resume: copy.sessionSwitched,
+        archive: copy.sessionArchived,
+        restore: copy.sessionRestored,
+        delete: copy.sessionDeleted,
+      }[action.action] || copy.sessionSwitched;
+      showToast(notice, 'success');
+      if (navigates) {
+        closeSidebar();
+        elements.prompt.focus();
+      }
     } catch (error) {
       showToast(error.message || String(error), 'error');
     } finally {
       state.busy = false;
       elements.newTaskButton.disabled = false;
       elements.recentSessions.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+      elements.archivedSessions.querySelectorAll('button').forEach((button) => { button.disabled = false; });
     }
   }
 
@@ -147,10 +356,13 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
     byId('workspacePath').textContent = data.workspace || '';
     byId('sidebarWorkspace').textContent = name;
     byId('sidebarWorkspace').title = data.workspace || '';
-    byId('sidebarSession').textContent = data.session && data.session.activeId || 'local';
+    byId('sidebarSession').textContent = data.workspace || 'local';
+    byId('sidebarSession').title = data.workspace || '';
+    renderProjectNavigation(data.projects || [], data.workspace);
     renderSessionNavigation(data.session || {});
     elements.runtimeUpdated.textContent = formatTime(data.updatedAt);
     fillRuntime(data);
+    syncProviderOptions(data);
     syncModelOptions(data);
     const contextCount = Number(data.context && data.context.relevantFiles || 0);
     elements.contextChipCount.textContent = String(contextCount);
@@ -165,6 +377,7 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
 
     const mode = data.permissions && data.permissions.mode || 'normal';
     elements.permissionSelect.value = mode;
+    syncSelectControl(elements.permissionSelect);
     elements.permissionSegments.querySelectorAll('[data-mode]').forEach((button) => {
       const active = button.dataset.mode === mode;
       button.classList.toggle('is-active', active);
@@ -172,6 +385,7 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
     });
     const webSearch = data.tools && data.tools.webSearch || {};
     elements.searchProvider.value = webSearch.provider || 'auto';
+    syncSelectControl(elements.searchProvider);
     elements.searchMax.value = webSearch.maxResults || 8;
     syncSearchSettings(Boolean(webSearch.enabled));
     elements.cache.textContent = data.cacheDiagnostics || '—';
@@ -199,6 +413,7 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
     elements.searchDependencies.classList.toggle('is-disabled', !enabled);
     elements.searchDependencies.setAttribute('aria-disabled', disabled ? 'true' : 'false');
     elements.searchProvider.disabled = disabled;
+    syncSelectControl(elements.searchProvider);
     elements.searchMax.disabled = disabled;
   }
 
@@ -257,7 +472,7 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
   }
 
   async function applySettings(patch, quiet) {
-    try {
+    const request = (async () => {
       await api('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -265,21 +480,23 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
       });
       await loadStatus();
       if (!quiet) showToast(copy.settingsSaved, 'success');
+    })();
+    state.settingsPromise = request;
+    try {
+      await request;
     } catch (error) {
       await loadStatus().catch(() => {});
       showToast(error.message || String(error), 'error');
       throw error;
+    } finally {
+      if (state.settingsPromise === request) state.settingsPromise = null;
     }
   }
 
   function isControlCommand(value) {
     if (value.startsWith('!')) return true;
     const name = value.split(/\s+/, 1)[0].toLowerCase();
-    return [
-      '/help', '/status', '/doctor', '/config', '/model', '/chat', '/commit',
-      '/exit', '/quit', '/rollback', '/compact', '/clear', '/add', '/drop',
-      '/mode', '/copy', '/run', '/update', '/webui',
-    ].includes(name);
+    return controlCommands.includes(name);
   }
 
   async function submitTurn(prompt, options) {
@@ -289,6 +506,17 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
       showToast(copy.waitForConnection, 'warning');
       elements.prompt.focus();
       return;
+    }
+    if (state.settingsPromise) {
+      setBusy(true, copy.settingsSaving);
+      try {
+        await state.settingsPromise;
+      } catch {
+        setBusy(false, '');
+        elements.prompt.focus();
+        return;
+      }
+      setBusy(false, '');
     }
     closeContextPicker({ skipRestore: true });
     const turnId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
@@ -387,7 +615,11 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
       addActivity(copy.thinking, '', 'thinking');
       setStreamingProgress(copy.thinking, 'running');
       scheduleStreamFlush();
+    } else if (event.type === 'model_routing') {
+      const lane = payload.lane || 'balanced';
+      addActivity((payload.model || copy.models) + ' · ' + lane + ' · ' + (payload.reason || ''), '', 'routing');
     } else if (event.type === 'model_request') {
+      setStreamingModel(payload.model || '');
       addActivity((payload.model || copy.models) + ' · ' + copy.running, '', 'model');
       setStreamingProgress((payload.model || copy.models) + ' · ' + copy.running, 'running');
       setBusy(true, copy.thinking);
@@ -447,8 +679,11 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
     const activeModel = state.status && state.status.activeModel || copy.models;
     const resultKind = aborted ? 'warning' : failed ? 'error' : 'success';
     const resultLabel = aborted ? copy.stopped : failed ? copy.error : copy.done;
-    if (state.controlTurnId && state.controlTurnId === state.activeTurnId) {
-      addActivity((state.controlPrompt || 'Command') + ' · ' + resultLabel, resultKind, 'control');
+    const completedControlCommand =
+      state.controlTurnId && state.controlTurnId === state.activeTurnId;
+    const completedControlPrompt = state.controlPrompt || 'Command';
+    if (completedControlCommand) {
+      addActivity(completedControlPrompt + ' · ' + resultLabel, resultKind, 'control');
     } else if (state.externalTurn) {
       addActivity(copy.terminalTurn + ' · ' + resultLabel, resultKind, 'external');
     } else {
@@ -464,7 +699,14 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  function formatPermissi
     state.controlPrompt = '';
     state.externalTurn = false;
     state.currentThinkingRow = null;
+    // Activity keys only coalesce updates within one turn. Keeping them
+    // across turns rewrites old model/verification rows with new timestamps
+    // and makes the audit trail claim an earlier turn used the new model.
+    state.toolRows.clear();
     if (event.message && failed) showToast(event.message, 'error');
+    else if (completedControlCommand && !aborted) {
+      showToast(completedControlPrompt + ' · ' + copy.done, 'success');
+    }
     await Promise.all([renderMessages(), loadStatus()]).catch((error) => {
       showToast(error.message || String(error), 'error');
     });

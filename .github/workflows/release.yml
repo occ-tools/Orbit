@@ -1,0 +1,62 @@
+name: Publish npm release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: orbit-npm-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Verify and publish @orbit-build/cli
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: npm-production
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - name: Match the release tag to the package version
+        shell: bash
+        run: |
+          version="$(node -p "require('./packages/cli/package.json').version")"
+          test "${{ github.event.release.tag_name }}" = "v${version}"
+      - run: pnpm verify:release
+      - name: Pack the verified artifact
+        id: pack
+        shell: bash
+        run: |
+          version="$(node -p "require('./packages/cli/package.json').version")"
+          filename="orbit-build-cli-${version}.tgz"
+          npm pack ./packages/cli --silent
+          test -f "${filename}"
+          sha256sum "${filename}" > "${filename}.sha256"
+          echo "filename=${filename}" >> "${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: orbit-cli-${{ github.event.release.tag_name }}
+          path: |
+            ${{ steps.pack.outputs.filename }}
+            ${{ steps.pack.outputs.filename }}.sha256
+          if-no-files-found: error
+          retention-days: 90
+      - name: Publish the exact verified tarball with provenance
+        run: npm publish "${{ steps.pack.outputs.filename }}" --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

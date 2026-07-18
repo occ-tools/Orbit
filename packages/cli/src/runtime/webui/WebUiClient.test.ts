@@ -7,12 +7,15 @@ import { WEB_UI_CLIENT_CONTEXT_SCRIPT } from "./WebUiClientContext.js";
 import { WEB_UI_CLIENT_FOUNDATION_SCRIPT } from "./WebUiClientFoundation.js";
 import { WEB_UI_CLIENT_MESSAGES_SCRIPT } from "./WebUiClientMessages.js";
 import { WEB_UI_CLIENT_PALETTE_SCRIPT } from "./WebUiClientPalette.js";
+import { WEB_UI_CLIENT_SELECT_SCRIPT } from "./WebUiClientSelect.js";
 import { WEB_UI_CLIENT_SESSION_SCRIPT } from "./WebUiClientSession.js";
+import { BUILTIN_SLASH_COMMANDS } from "../SlashCommandCatalog.js";
 
 describe("WEB_UI_CLIENT_SCRIPT", () => {
   it("assembles every responsibility fragment in dependency order", () => {
     const fragments = [
       WEB_UI_CLIENT_FOUNDATION_SCRIPT,
+      WEB_UI_CLIENT_SELECT_SCRIPT,
       WEB_UI_CLIENT_APPROVAL_SCRIPT,
       WEB_UI_CLIENT_CONTEXT_SCRIPT,
       WEB_UI_CLIENT_MESSAGES_SCRIPT,
@@ -48,7 +51,14 @@ describe("WEB_UI_CLIENT_SCRIPT", () => {
       "event.type === 'ui_turn_completed'",
     );
     expect(WEB_UI_CLIENT_SCRIPT).toContain("isControlCommand(value)");
+    for (const command of BUILTIN_SLASH_COMMANDS) {
+      expect(WEB_UI_CLIENT_SCRIPT).toContain(`\"${command}\"`);
+    }
     expect(WEB_UI_CLIENT_SCRIPT).toContain("message-progress");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("message-model");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("setStreamingModel(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("orbitAvatarTemplate");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("cloneNode(true)");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("code-lines");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("is-addition");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("expand-code");
@@ -82,6 +92,17 @@ describe("WEB_UI_CLIENT_SCRIPT", () => {
     expect(WEB_UI_CLIENT_SCRIPT).toContain("function writeLocalStorage(");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("systemThemeQuery.matches");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("orbit.webui.sidebar");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("orbit.webui.project");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "function renderProjectNavigation(projects, currentWorkspace)",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("button.dataset.projectPath");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("elements.projectList");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain('data-project-action="remove"');
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("confirmRemoveProject");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("item.available === true");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("action: 'pick'");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("pickAndOpenProject");
     expect(WEB_UI_CLIENT_SCRIPT).toContain(
       "function setDesktopSidebarCollapsed(collapsed)",
     );
@@ -91,6 +112,14 @@ describe("WEB_UI_CLIENT_SCRIPT", () => {
     expect(WEB_UI_CLIENT_SCRIPT).toContain(
       "copy.recentSession + ': ' + (session.title || copy.untitledTask)",
     );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "button.setAttribute('aria-current', 'page')",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("if (!isActive)");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("data-session-action");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("openSessionDeleteDialog");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("pendingSessionDeleteId");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("elements.archivedSessions");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("formatPermissionMode(");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("item.dataset.message === text");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("response.status === 401");
@@ -120,6 +149,19 @@ describe("WEB_UI_CLIENT_SCRIPT", () => {
     expect(WEB_UI_CLIENT_SCRIPT).toContain("handleInspectorTabKeydown");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("elements.activityTab.tabIndex");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("syncSearchSettings(Boolean(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function initializeSelectControl(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("elements.providerSelect");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("syncProviderOptions(data)");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("settingsPromise");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("await state.settingsPromise");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "applySettings({ provider: elements.providerSelect.value }",
+    );
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function positionSelectMenu(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("className = 'select-search'");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("No matching models");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("document.body.append(menu)");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("closeOpenSelectControls(true)");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("aria-activedescendant");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("'command-result-' + index");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("event.key === 'End'");

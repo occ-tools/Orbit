@@ -34,6 +34,12 @@ export const DEFAULT_CONFIG: OrbitConfig = {
       apiKeyEnv: "DEEPSEEK_API_KEY",
       models: ["deepseek-v4-flash", "deepseek-v4-pro"],
     },
+    tokendance: {
+      type: "openai-compatible",
+      baseUrl: "https://tokendance.space/gateway/v1",
+      apiKeyEnv: "TOKENDANCE_API_KEY",
+      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+    },
     openai: {
       type: "openai",
       baseUrl: "https://api.openai.com/v1",
@@ -101,6 +107,7 @@ export const DEFAULT_CONFIG: OrbitConfig = {
     autoCompact: true,
     compactThreshold: 0.75,
     autoRepair: false,
+    maxRepairAttempts: 3,
     testCommands: [],
   },
   agent: {

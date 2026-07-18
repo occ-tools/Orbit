@@ -3,6 +3,35 @@ import type { OrbitConfig } from "@orbit-build/config";
 /** Read-only AgentLoop surface exposed to the local Web UI. */
 export interface WebUiLoopSnapshot {
   getSessionId?: () => string;
+  getGoal?: () => string | undefined;
+  getProjectMemory?: () => {
+    enabled: boolean;
+    entries: Array<{ id: string; text: string }>;
+  };
+  getTaskPlan?: () =>
+    | {
+        items: Array<{
+          id: string;
+          text: string;
+          status: "pending" | "in_progress" | "completed";
+        }>;
+      }
+    | undefined;
+  getSessionMetrics?: () =>
+    | {
+        eventCount: number;
+        toolRuns: number;
+        toolFailures: number;
+        deniedTools: number;
+        filesChanged: number;
+        modelSwitches: number;
+        routingDecisions: number;
+        fastRoutes: number;
+        qualityRoutes: number;
+        compactions: number;
+        resumedCount: number;
+      }
+    | undefined;
   getSessions?: () => unknown[];
   getRelevantFiles?: () => Array<{
     path: string;
@@ -15,6 +44,7 @@ export interface WebUiLoopSnapshot {
   getTotalCacheReadTokens?: () => number;
   getTotalOutputTokens?: () => number;
   getModelOverride?: () => string | undefined;
+  clearModelOverride?: () => void;
   getContextWindowStatus?: () => {
     model: string;
     maxContextTokens: number;
@@ -26,6 +56,7 @@ export interface WebUiLoopSnapshot {
 
 /** Settings that may be changed from the local Web UI. */
 export interface WebUiSettingsPatch {
+  provider?: string;
   model?: string;
   permissionMode?: "strict" | "normal" | "auto" | "plan";
   webSearchEnabled?: boolean;
@@ -36,7 +67,24 @@ export interface WebUiSettingsPatch {
 /** A session navigation request made by the local Web UI. */
 export type WebUiSessionAction =
   | { action: "new" }
-  | { action: "resume"; sessionId: string };
+  | {
+      action: "resume" | "archive" | "restore" | "delete";
+      sessionId: string;
+    };
+
+/** Open/create a project, or remove its registry entry without deleting files. */
+export type WebUiProjectAction =
+  | { action: "pick" }
+  | { action: "open" | "create"; path: string }
+  | { action: "remove"; projectId: string };
+
+/** Result of a project action, including a path selected by the OS picker. */
+export interface WebUiProjectActionResult {
+  ok: boolean;
+  message?: string;
+  path?: string;
+  cancelled?: boolean;
+}
 
 /** A bounded approval request that may be rendered by the local Web UI. */
 export interface WebUiApprovalSnapshot {
@@ -62,6 +110,13 @@ export interface WebUiOptions {
   loop?: WebUiLoopSnapshot;
   port?: number;
   open?: boolean;
+  getProjects?: () => Array<{
+    id: string;
+    path: string;
+    name: string;
+    lastOpenedAt: string;
+    available: boolean;
+  }>;
   submitPrompt?: (prompt: string) => Promise<{ ok: boolean; message?: string }>;
   cancelPrompt?: () =>
     | { ok: boolean; message?: string }
@@ -72,6 +127,9 @@ export interface WebUiOptions {
   updateSession?: (
     action: WebUiSessionAction,
   ) => Promise<{ ok: boolean; message?: string }>;
+  openProject?: (
+    action: WebUiProjectAction,
+  ) => Promise<WebUiProjectActionResult>;
   getPendingApproval?: () => WebUiApprovalSnapshot | undefined;
   respondToApproval?: (
     decision: WebUiApprovalDecision,

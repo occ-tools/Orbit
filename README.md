@@ -160,9 +160,12 @@ orbit bench --model deepseek-v4-pro --thinking high --repeat 3 --max-tokens 4096
 
 # Maximum Pro reasoning effort
 orbit bench --model deepseek-v4-pro --thinking max --repeat 3 --max-tokens 8192
+
+# Optional release gate; tune these budgets against a controlled runner and account
+orbit bench --model deepseek-v4-flash --thinking disabled --repeat 5 --max-first-delta-ms 2500 --max-first-text-ms 5000 --min-throughput 20 --max-error-rate 0
 ```
 
-Benchmark samples accept `--repeat` values from 1 to 20. `--max-tokens` accepts 1 to 16,384; mode-aware defaults are 256 for disabled thinking, 4,096 for high, and 8,192 for max. Cache profiles run at least three samples and default to disabled thinking unless `--thinking` is supplied.
+Benchmark samples accept `--repeat` values from 1 to 20. `--max-tokens` accepts 1 to 16,384; mode-aware defaults are 256 for disabled thinking, 4,096 for high, and 8,192 for max. Cache profiles run at least three samples and default to disabled thinking unless `--thinking` is supplied. Optional gates evaluate p90 first-model-delta latency, p90 first-answer latency, p50 decode throughput, and the sample error ratio. Omit them during exploratory runs; approve environment-specific budgets before using them as release blockers.
 
 ### Legacy alias migration
 
@@ -188,6 +191,27 @@ Compile and load the VS Code extension located under [editors/vscode](editors/vs
 Configure your editor's LSP client to spawn `orbit lsp` as a completion language server. The server expects JSON-RPC input on `stdin` and writes JSON-RPC outputs to `stdout`.
 
 ## ⌨️ Custom Slash Commands
+
+### Built-in continuity controls
+
+Orbit keeps long-running project work explicit and reviewable:
+
+```text
+/goal <objective>       Set the durable objective for the current chat
+/plan add <step>        Add a recoverable chat-specific plan step
+/plan start|done <n>    Update a step by its displayed number
+/memory add <text>      Save an explicit, secret-redacted project preference
+/memory list            Review project memory before it reaches the model
+/memory remove <n>      Delete one memory entry; use clear/on/off as needed
+/metrics                Show local tool, routing, file, and compaction metrics
+/model auto             Let Orbit route DeepSeek V4 Flash/Pro by task
+```
+
+Project memory is opt-in: Orbit never converts conversation or external web
+content into durable memory automatically. Plans live with their chat session,
+so switching projects or chats does not mix unrelated work.
+
+### Custom commands
 
 Create reusable prompt workflows as Markdown files:
 

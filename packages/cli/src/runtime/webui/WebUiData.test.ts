@@ -87,6 +87,7 @@ describe("WebUiData", () => {
         {
           id: "visible",
           role: "assistant",
+          metadata: { model: "deepseek-v4-pro" },
           content: [
             { type: "thinking", text: "checking" },
             { type: "text", text: "done" },
@@ -104,6 +105,7 @@ describe("WebUiData", () => {
         id: "visible",
         role: "assistant",
         createdAt: undefined,
+        model: "deepseek-v4-pro",
         text: "done",
         blocks: [
           { type: "thinking", text: "checking" },
@@ -207,6 +209,42 @@ describe("WebUiData", () => {
     ).toHaveLength(1);
   });
 
+  it("exposes provider choices with catalog sizes but never credentials", () => {
+    const config = ConfigSchema.parse({
+      provider: { default: "tokendance" },
+      providers: {
+        tokendance: {
+          type: "openai-compatible",
+          baseUrl: "https://tokendance.space/gateway/v1",
+          apiKey: "must-not-reach-the-browser",
+          models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+        },
+        ollama: {
+          type: "ollama",
+          baseUrl: "http://127.0.0.1:11434",
+          models: ["qwen3"],
+        },
+      },
+    });
+    const status = collectWebUiStatus(
+      {
+        cwd: "D:/repo",
+        config,
+        loop: { getModelOverride: () => "deepseek-v4-pro" },
+      },
+      undefined,
+    );
+
+    expect(status.provider).toMatchObject({
+      id: "tokendance",
+      options: expect.arrayContaining([
+        expect.objectContaining({ id: "tokendance", modelCount: 2 }),
+        expect.objectContaining({ id: "ollama", modelCount: 1 }),
+      ]),
+    });
+    expect(JSON.stringify(status)).not.toContain("must-not-reach-the-browser");
+  });
+
   it("reports model-aware context usage without exposing prompt data", () => {
     const config = ConfigSchema.parse({
       provider: { default: "deepseek-openai" },
@@ -238,7 +276,46 @@ describe("WebUiData", () => {
     });
   });
 
-  it("returns a bounded, active-first recent-session navigation model", () => {
+  it("exposes a bounded credential-safe project registry", () => {
+    const config = ConfigSchema.parse({});
+    const status = collectWebUiStatus(
+      {
+        cwd: "D:/repo",
+        config,
+        getProjects: () => [
+          {
+            id: "project-1",
+            path: "D:/work/Bearer private-project-token",
+            name: "Bearer private-project-token",
+            lastOpenedAt: "2026-07-18T10:00:00.000Z",
+            available: true,
+          },
+          ...Array.from({ length: 30 }, (_, index) => ({
+            id: `project-${index + 2}`,
+            path: `D:/work/project-${index + 2}`,
+            name: `Project ${index + 2}`,
+            lastOpenedAt: "2026-07-18T09:00:00.000Z",
+            available: false,
+          })),
+        ],
+      },
+      undefined,
+    );
+
+    expect(status.projects).toHaveLength(20);
+    expect(status.projects[0]).toEqual({
+      id: "project-1",
+      path: "D:/work/Bearer ***REDACTED***",
+      name: "Bearer ***REDACTED***",
+      lastOpenedAt: "2026-07-18T10:00:00.000Z",
+      available: true,
+    });
+    expect(JSON.stringify(status.projects)).not.toContain(
+      "private-project-token",
+    );
+  });
+
+  it("returns every project chat with the active chat first", () => {
     const config = ConfigSchema.parse({
       provider: { default: "deepseek-openai" },
       providers: { "deepseek-openai": { type: "openai-compatible" } },
@@ -250,11 +327,24 @@ describe("WebUiData", () => {
         loop: {
           getSessionId: () => "sess-active",
           getSessions: () => [
+            ...Array.from({ length: 40 }, (_, index) => ({
+              id: `sess-history-${index}`,
+              title: `Historical chat ${index}`,
+              model: "deepseek-v4-flash",
+              updatedAt: `2026-07-${String(14 - Math.floor(index / 24)).padStart(2, "0")}T${String(index % 24).padStart(2, "0")}:00:00.000Z`,
+            })),
             {
               id: "sess-older",
               title: "Older task",
               model: "deepseek-v4-flash",
               updatedAt: "2026-07-15T12:00:00.000Z",
+            },
+            {
+              id: "sess-archived",
+              title: "Archived task",
+              model: "deepseek-v4-flash",
+              updatedAt: "2026-07-15T13:00:00.000Z",
+              archivedAt: "2026-07-15T14:00:00.000Z",
             },
             {
               id: "sess-active",
@@ -268,13 +358,27 @@ describe("WebUiData", () => {
       undefined,
     );
 
-    expect(status.session.recent).toEqual([
+    expect(status.session.recent).toHaveLength(42);
+    expect(status.session.recent[0]).toEqual(
       expect.objectContaining({
         id: "sess-active",
         active: true,
         title: "Fix Bearer ***REDACTED***",
       }),
-      expect.objectContaining({ id: "sess-older", active: false }),
+    );
+    expect(status.session.recent.map((session) => session.id)).toEqual(
+      expect.arrayContaining([
+        "sess-older",
+        "sess-history-0",
+        "sess-history-39",
+      ]),
+    );
+    expect(status.session.archived).toEqual([
+      expect.objectContaining({
+        id: "sess-archived",
+        active: false,
+        archived: true,
+      }),
     ]);
   });
 });

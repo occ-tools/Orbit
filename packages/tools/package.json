@@ -1,6 +1,6 @@
 {
   "name": "@orbit-build/tools",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,7 +13,8 @@
     "@orbit-build/permissions": "workspace:*",
     "zod": "^3.23.8",
     "fast-glob": "^3.3.2",
-    "execa": "^8.0.1"
+    "execa": "^8.0.1",
+    "typescript": "^5.4.5"
   },
   "exports": {
     ".": {

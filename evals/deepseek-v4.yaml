@@ -1,0 +1,41 @@
+schemaVersion: 1
+name: DeepSeek V4 verified coding baseline
+description: Small deterministic tasks for comparing Flash, Pro, and compatible gateways.
+tasks:
+  - id: repair-invoice-rounding
+    prompt: >-
+      Work only in evals/fixtures/invoice-rounding. Read SPEC.md, diagnose the
+      implementation, and fix calculateInvoiceTotal. Do not edit verify.mjs or
+      the specification. Keep the public function signature unchanged.
+    mode: single
+    verification:
+      - name: invoice verifier
+        command: node evals/fixtures/invoice-rounding/verify.mjs
+        timeoutMs: 30000
+    requiredChangedFiles:
+      - evals/fixtures/invoice-rounding/invoice.mjs
+    forbiddenChangedFiles:
+      - evals/fixtures/invoice-rounding/SPEC.md
+      - evals/fixtures/invoice-rounding/verify.mjs
+      - package.json
+      - pnpm-lock.yaml
+    maxChangedFiles: 1
+
+  - id: implement-config-merge
+    prompt: >-
+      Work only in evals/fixtures/config-merge. Read SPEC.md and implement the
+      missing mergeConfig function in merge.mjs. Preserve immutability and the
+      documented array semantics. Do not edit verify.mjs or SPEC.md.
+    mode: single
+    verification:
+      - name: config merge verifier
+        command: node evals/fixtures/config-merge/verify.mjs
+        timeoutMs: 30000
+    requiredChangedFiles:
+      - evals/fixtures/config-merge/merge.mjs
+    forbiddenChangedFiles:
+      - evals/fixtures/config-merge/SPEC.md
+      - evals/fixtures/config-merge/verify.mjs
+      - package.json
+      - pnpm-lock.yaml
+    maxChangedFiles: 1

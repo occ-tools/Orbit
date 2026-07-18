@@ -70,7 +70,9 @@ export class Orchestrator {
     if (worktrees.isGitRepo()) {
       try {
         const worktreeId = generateId("wt").slice(0, 12);
-        worktree = worktrees.createWorktree(worktreeId);
+        worktree = worktrees.createWorktree(worktreeId, {
+          snapshotWorkingTree: true,
+        });
         if (
           !existsSync(worktree.path) ||
           !statSync(worktree.path).isDirectory()

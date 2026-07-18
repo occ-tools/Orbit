@@ -190,6 +190,68 @@ export const WEB_UI_INSPECTOR_STYLES = String.raw`
   white-space: nowrap;
 }
 
+.review-list {
+  display: grid;
+  gap: 5px;
+}
+
+.review-empty {
+  margin: 2px 0;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.review-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 7px;
+  color: var(--muted);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.review-row.is-in_progress {
+  color: var(--ink-strong);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.review-row.is-completed .review-text {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+
+.review-marker {
+  color: var(--accent-strong);
+  text-align: center;
+}
+
+.review-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-action {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--faint);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-size: 15px;
+}
+
+.review-action:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
 .text-button {
   padding: 3px 0;
   color: var(--faint);

@@ -125,19 +125,51 @@ export function collectWebUiStatus(
   const providerId = config.provider.default || "unknown";
   const provider = config.providers[providerId] || {};
   const activeModel = getActiveModel(options);
+  const modelOverride = safeCall(() => loop?.getModelOverride?.());
   const contextStatus = safeCall(() => loop?.getContextWindowStatus?.());
+  const projectMemory = safeCall(() => loop?.getProjectMemory?.());
+  const taskPlan = safeCall(() => loop?.getTaskPlan?.());
+  const sessionMetrics = safeCall(() => loop?.getSessionMetrics?.());
   const contextFiles = summarizeWebUiContextFiles(relevantFiles);
-  const recentSessions = normalizeSessions(sessions, sessionId);
+  const normalizedSessions = normalizeSessions(sessions, sessionId);
+  const recentSessions = normalizedSessions.filter(
+    (session) => session.active || !session.archived,
+  );
+  const archivedSessions = normalizedSessions.filter(
+    (session) => !session.active && session.archived,
+  );
+  const projects = (safeCall(() => options.getProjects?.()) || [])
+    .filter((project) => project && typeof project.path === "string")
+    .slice(0, 20)
+    .map((project) => ({
+      id: String(project.id || "").slice(0, 64),
+      path: redactSecrets(project.path).slice(0, 4096),
+      name: redactSecrets(project.name || "Orbit").slice(0, 200),
+      lastOpenedAt:
+        typeof project.lastOpenedAt === "string"
+          ? project.lastOpenedAt.slice(0, 64)
+          : "",
+      available: project.available === true,
+    }));
 
   return {
     workspace: cwd,
+    projects,
     provider: {
       id: providerId,
       type: provider.type || "unknown",
       baseUrl: sanitizeBaseUrl(provider.baseUrl),
+      options: Object.entries(config.providers).map(([id, candidate]) => ({
+        id,
+        label: id,
+        baseUrl: sanitizeBaseUrl(candidate.baseUrl),
+        modelCount: getProviderModelCandidates(config, id).length,
+      })),
     },
     models: config.models,
     activeModel,
+    modelSelection: modelOverride || "__auto__",
+    modelRouting: modelOverride ? "locked" : "auto",
     modelOptions: buildModelOptions(options, activeModel),
     permissions: { mode: config.permissions.mode },
     tools: {
@@ -151,13 +183,38 @@ export function collectWebUiStatus(
     skills: { enabled: config.skills.enabled },
     session: {
       activeId: sessionId,
+      goal: safeCall(() => loop?.getGoal?.()) || "",
       count: Array.isArray(sessions) ? sessions.length : 0,
       recent: recentSessions,
+      archived: archivedSessions,
       historyMessages: Array.isArray(history) ? visibleMessages.length : 0,
       cost: safeCall(() => loop?.getSessionCost?.()) || 0,
       inputTokens: safeCall(() => loop?.getTotalInputTokens?.()) || 0,
       cacheReadTokens: safeCall(() => loop?.getTotalCacheReadTokens?.()) || 0,
       outputTokens: safeCall(() => loop?.getTotalOutputTokens?.()) || 0,
+      metrics: sessionMetrics || null,
+    },
+    memory: {
+      enabled: projectMemory?.enabled !== false,
+      count: projectMemory?.entries?.length || 0,
+      entries: (projectMemory?.entries || []).slice(0, 20).map((entry) => ({
+        id: entry.id,
+        text: redactSecrets(entry.text).slice(0, 2000),
+      })),
+    },
+    plan: {
+      count: taskPlan?.items?.length || 0,
+      completed:
+        taskPlan?.items?.filter((item) => item.status === "completed").length ||
+        0,
+      active:
+        taskPlan?.items?.find((item) => item.status === "in_progress")?.text ||
+        "",
+      items: (taskPlan?.items || []).slice(0, 100).map((item) => ({
+        id: item.id,
+        text: item.text.slice(0, 1000),
+        status: item.status,
+      })),
     },
     context: {
       relevantFiles: contextFiles.total,
@@ -257,13 +314,15 @@ function normalizeSessions(sessions: unknown, activeId: string) {
             ? session.createdAt
             : "",
       active: session.id === activeId,
+      archived: typeof session.archivedAt === "string",
+      archivedAt:
+        typeof session.archivedAt === "string" ? session.archivedAt : "",
     }))
     .filter((session) => session.id)
     .sort((left, right) => {
       if (left.active !== right.active) return left.active ? -1 : 1;
       return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
-    })
-    .slice(0, 8);
+    });
 }
 
 /** Normalize AgentLoop history into the narrow browser message contract. */
@@ -300,7 +359,7 @@ function getActiveModel(options: WebUiOptions): string {
 function buildModelOptions(options: WebUiOptions, activeModel: string) {
   const { config } = options;
   const providerId = config.provider.default;
-  return Array.from(
+  const discovered = Array.from(
     new Set([
       activeModel,
       config.models.default,
@@ -315,10 +374,15 @@ function buildModelOptions(options: WebUiOptions, activeModel: string) {
     .map((model) => model?.trim())
     .filter((model): model is string => Boolean(model))
     .map((model) => ({ id: model, label: formatModelOptionLabel(model) }));
+  const automatic = { id: "__auto__", label: "Auto · Flash / Pro" };
+  return safeCall(() => options.loop?.getModelOverride?.())
+    ? [discovered[0], automatic, ...discovered.slice(1)]
+    : [automatic, ...discovered];
 }
 
 function normalizeMessage(message: unknown, index: number) {
   const record = isRecord(message) ? message : {};
+  const metadata = isRecord(record.metadata) ? record.metadata : {};
   const role =
     record.role === "user" ||
     record.role === "assistant" ||
@@ -331,6 +395,10 @@ function normalizeMessage(message: unknown, index: number) {
     role,
     createdAt:
       typeof record.createdAt === "string" ? record.createdAt : undefined,
+    model:
+      role === "assistant" && typeof metadata.model === "string"
+        ? safeLabel(metadata.model, 96)
+        : undefined,
     text: blocks
       .filter(
         (block): block is { type: "text"; text: string } =>
@@ -435,6 +503,7 @@ function mergeAssistantTurns(messages: ReturnType<typeof normalizeMessage>[]) {
   for (const message of messages) {
     const previous = merged[merged.length - 1];
     if (message.role !== "user" && previous && previous.role !== "user") {
+      if (!previous.model && message.model) previous.model = message.model;
       previous.blocks.push(...message.blocks);
       previous.text = [previous.text, message.text]
         .filter(Boolean)
@@ -444,6 +513,14 @@ function mergeAssistantTurns(messages: ReturnType<typeof normalizeMessage>[]) {
     merged.push({ ...message, blocks: [...message.blocks] });
   }
   return merged;
+}
+
+function safeLabel(value: string, maxLength: number): string {
+  return redactSecrets(stripAnsi(value))
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
 }
 
 function toolDetail(

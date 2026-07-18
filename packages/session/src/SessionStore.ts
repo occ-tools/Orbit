@@ -1,7 +1,9 @@
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import {
   appendFileSync,
+  chmodSync,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -17,14 +19,23 @@ import {
   StoredHistorySchema,
   SessionEventSchema,
   SessionIdSchema,
+  SessionMetricsSchema,
+  RunJournalSchema,
   SessionSchema,
+  SessionTraceBundleSchema,
+  TaskPlanSchema,
   ToolCallRecordSchema,
 } from "./types.js";
 import type {
   FileChangeRecord,
+  JsonValue,
+  RunJournal,
   Session,
   SessionEvent,
+  SessionMetrics,
+  SessionTraceBundle,
   StoredHistoryMessage,
+  TaskPlan,
   ToolCallRecord,
 } from "./types.js";
 import {
@@ -53,12 +64,32 @@ function writeJsonAtomically(filePath: string, value: unknown): void {
       flag: "wx",
       mode: PRIVATE_FILE_MODE,
     });
+    preserveLastKnownGoodFile(filePath);
     replaceFileAtomically(temporaryPath, filePath);
   } finally {
     try {
       rmSync(temporaryPath, { force: true });
     } catch {
       // A cleanup failure must not hide the original write/rename failure.
+    }
+  }
+}
+
+function preserveLastKnownGoodFile(filePath: string): void {
+  if (!existsSync(filePath)) return;
+  const backupPath = `${filePath}.bak`;
+  const temporaryBackupPath = `${backupPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    copyFileSync(filePath, temporaryBackupPath);
+    if (process.platform !== "win32") {
+      chmodSync(temporaryBackupPath, PRIVATE_FILE_MODE);
+    }
+    replaceFileAtomically(temporaryBackupPath, backupPath);
+  } finally {
+    try {
+      rmSync(temporaryBackupPath, { force: true });
+    } catch {
+      // Backup cleanup must not hide the primary persistence result.
     }
   }
 }
@@ -132,6 +163,52 @@ function appendJsonLine(filePath: string, value: unknown): void {
   });
 }
 
+function replaceWorkspacePath(text: string, cwd: string): string {
+  const escaped = cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return redactAuditText(text).replace(
+    new RegExp(escaped, process.platform === "win32" ? "gi" : "g"),
+    "<workspace>",
+  );
+}
+
+function stripWorkspacePaths(value: JsonValue, cwd: string): JsonValue {
+  if (typeof value === "string") return replaceWorkspacePath(value, cwd);
+  if (Array.isArray(value)) {
+    return value.map((item) => stripWorkspacePaths(item, cwd));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        stripWorkspacePaths(item, cwd),
+      ]),
+    );
+  }
+  return value;
+}
+
+function sanitizeTraceJsonText(text: string, cwd: string): string {
+  try {
+    const value = sanitizeAuditValue(JSON.parse(text));
+    return JSON.stringify(stripWorkspacePaths(value, cwd));
+  } catch {
+    return replaceWorkspacePath(text, cwd);
+  }
+}
+
+function normalizeTracePath(filePath: string, cwd: string): string {
+  const absolute = resolve(cwd, filePath);
+  const relativePath = relative(cwd, absolute);
+  if (
+    relativePath &&
+    !relativePath.startsWith("..") &&
+    !isAbsolute(relativePath)
+  ) {
+    return relativePath.split(sep).join("/");
+  }
+  return replaceWorkspacePath(filePath, cwd);
+}
+
 export class SessionStore {
   private readonly cwd: string;
   private readonly sessionRootPath: string;
@@ -186,15 +263,18 @@ export class SessionStore {
       return undefined;
     }
     if (!existsSync(sessionFile)) return undefined;
-    try {
-      const parsed = SessionSchema.safeParse(
-        JSON.parse(readFileSync(sessionFile, "utf8")),
-      );
-      if (!parsed.success || parsed.data.id !== id) return undefined;
-      return parsed.data;
-    } catch {
-      return undefined;
+    for (const candidate of [sessionFile, `${sessionFile}.bak`]) {
+      if (!existsSync(candidate)) continue;
+      try {
+        const parsed = SessionSchema.safeParse(
+          JSON.parse(readFileSync(candidate, "utf8")),
+        );
+        if (parsed.success && parsed.data.id === id) return parsed.data;
+      } catch {
+        // Fall back to the last known-good metadata copy.
+      }
     }
+    return undefined;
   }
 
   public updateSession(session: Session): void {
@@ -285,6 +365,201 @@ export class SessionStore {
       });
   }
 
+  /** Returns a compact, local-only summary derived from the audit stream. */
+  public getMetrics(sessionId: string): SessionMetrics {
+    const events = this.getEvents(sessionId);
+    const toolEvents = events.filter(
+      (event) => event.type === "tool_execution",
+    );
+    const payloadStatus = (event: SessionEvent): string => {
+      if (
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        !Array.isArray(event.payload) &&
+        typeof event.payload.status === "string"
+      ) {
+        return event.payload.status;
+      }
+      return "";
+    };
+    const payloadLane = (event: SessionEvent): string => {
+      if (
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        !Array.isArray(event.payload) &&
+        typeof event.payload.lane === "string"
+      ) {
+        return event.payload.lane;
+      }
+      return "";
+    };
+    const routingEvents = events.filter(
+      (event) => event.type === "model_routing",
+    );
+    return SessionMetricsSchema.parse({
+      sessionId,
+      eventCount: events.length,
+      toolRuns: toolEvents.length,
+      toolFailures: toolEvents.filter(
+        (event) => payloadStatus(event) === "failed",
+      ).length,
+      deniedTools: toolEvents.filter(
+        (event) => payloadStatus(event) === "denied",
+      ).length,
+      filesChanged: events.filter((event) => event.type === "file_modified")
+        .length,
+      modelSwitches: events.filter((event) => event.type === "session_runtime")
+        .length,
+      routingDecisions: routingEvents.length,
+      fastRoutes: routingEvents.filter((event) => payloadLane(event) === "fast")
+        .length,
+      qualityRoutes: routingEvents.filter(
+        (event) => payloadLane(event) === "quality",
+      ).length,
+      compactions: events.filter((event) => event.type === "history_compaction")
+        .length,
+      resumedCount: events.filter((event) => event.type === "session_resume")
+        .length,
+    });
+  }
+
+  /** Persist the crash-recovery state for the active agent run. */
+  public saveRunJournal(sessionId: string, journal: RunJournal): RunJournal {
+    const validated = RunJournalSchema.parse({ ...journal, sessionId });
+    writeJsonAtomically(
+      join(this.resolveSessionDirectory(sessionId), "run.json"),
+      validated,
+    );
+    return validated;
+  }
+
+  public getRunJournal(sessionId: string): RunJournal | undefined {
+    let file: string;
+    try {
+      file = join(this.resolveSessionDirectory(sessionId), "run.json");
+    } catch {
+      return undefined;
+    }
+    for (const candidate of [file, `${file}.bak`]) {
+      if (!existsSync(candidate)) continue;
+      try {
+        const parsed = RunJournalSchema.safeParse(
+          JSON.parse(readFileSync(candidate, "utf8")),
+        );
+        if (parsed.success && parsed.data.sessionId === sessionId) {
+          return parsed.data;
+        }
+      } catch {
+        // Fall back to the last known-good run journal.
+      }
+    }
+    return undefined;
+  }
+
+  /** Build a bounded, secret-redacted trace without exposing the local workspace path. */
+  public exportTrace(
+    sessionId: string,
+    options: { includeHistory?: boolean } = {},
+  ): SessionTraceBundle {
+    const session = this.getSession(sessionId);
+    if (!session) throw new Error(`Orbit session not found: ${sessionId}`);
+    const plan = this.getTaskPlan(sessionId);
+    const journal = this.getRunJournal(sessionId);
+    const toolCalls = this.readToolCalls(sessionId).map((record) => ({
+      ...record,
+      inputJson: sanitizeTraceJsonText(record.inputJson, this.cwd),
+      outputJson:
+        record.outputJson === undefined
+          ? undefined
+          : sanitizeTraceJsonText(record.outputJson, this.cwd),
+    }));
+    const fileChanges = this.readFileChanges(sessionId).map((record) => ({
+      ...record,
+      path: normalizeTracePath(record.path, this.cwd),
+      diff: replaceWorkspacePath(record.diff, this.cwd),
+    }));
+    const events = this.getEvents(sessionId).map((event) => ({
+      ...event,
+      payload: stripWorkspacePaths(event.payload, this.cwd),
+    }));
+    const history = options.includeHistory
+      ? this.getHistory(sessionId).map((message) =>
+          stripWorkspacePaths(sanitizeAuditValue(message), this.cwd),
+        )
+      : undefined;
+
+    return SessionTraceBundleSchema.parse({
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      workspace: {
+        id: createHash("sha256").update(this.cwd).digest("hex").slice(0, 16),
+        path: "<workspace>",
+      },
+      session: {
+        ...session,
+        cwd: "<workspace>",
+        title: redactAuditText(session.title),
+        goal: session.goal ? redactAuditText(session.goal) : undefined,
+      },
+      journal: journal
+        ? {
+            ...journal,
+            phase: replaceWorkspacePath(journal.phase, this.cwd),
+          }
+        : undefined,
+      plan: plan
+        ? {
+            ...plan,
+            goal: plan.goal ? redactAuditText(plan.goal) : undefined,
+            items: plan.items.map((item) => ({
+              ...item,
+              text: redactAuditText(item.text),
+            })),
+          }
+        : undefined,
+      metrics: this.getMetrics(sessionId),
+      events,
+      toolCalls,
+      fileChanges,
+      history,
+    });
+  }
+
+  public saveTaskPlan(sessionId: string, plan: unknown): TaskPlan {
+    const validated = TaskPlanSchema.parse({
+      ...(typeof plan === "object" && plan !== null ? plan : {}),
+      sessionId,
+    });
+    writeJsonAtomically(
+      join(this.resolveSessionDirectory(sessionId), "plan.json"),
+      validated,
+    );
+    return validated;
+  }
+
+  public getTaskPlan(sessionId: string): TaskPlan | undefined {
+    let file: string;
+    try {
+      file = join(this.resolveSessionDirectory(sessionId), "plan.json");
+    } catch {
+      return undefined;
+    }
+    for (const candidate of [file, `${file}.bak`]) {
+      if (!existsSync(candidate)) continue;
+      try {
+        const parsed = TaskPlanSchema.safeParse(
+          JSON.parse(readFileSync(candidate, "utf8")),
+        );
+        if (parsed.success && parsed.data.sessionId === sessionId) {
+          return parsed.data;
+        }
+      } catch {
+        // Fall back to the last known-good plan copy.
+      }
+    }
+    return undefined;
+  }
+
   public recordToolCall(
     record: Omit<ToolCallRecord, "startedAt">,
   ): ToolCallRecord {
@@ -324,6 +599,51 @@ export class SessionStore {
     return fullRecord;
   }
 
+  private readToolCalls(sessionId: string): ToolCallRecord[] {
+    return this.readValidatedJsonLines(
+      sessionId,
+      "tool_calls.jsonl",
+      ToolCallRecordSchema,
+    );
+  }
+
+  private readFileChanges(sessionId: string): FileChangeRecord[] {
+    return this.readValidatedJsonLines(
+      sessionId,
+      "file_changes.jsonl",
+      FileChangeRecordSchema,
+    );
+  }
+
+  private readValidatedJsonLines<T>(
+    sessionId: string,
+    fileName: string,
+    schema: { safeParse(value: unknown): { success: boolean; data?: T } },
+  ): T[] {
+    let file: string;
+    try {
+      file = join(this.resolveSessionDirectory(sessionId), fileName);
+    } catch {
+      return [];
+    }
+    if (!existsSync(file)) return [];
+    try {
+      return readFileSync(file, "utf8")
+        .split("\n")
+        .filter((line) => line.trim())
+        .flatMap((line) => {
+          try {
+            const parsed = schema.safeParse(JSON.parse(line));
+            return parsed.success && parsed.data ? [parsed.data] : [];
+          } catch {
+            return [];
+          }
+        });
+    } catch {
+      return [];
+    }
+  }
+
   public saveHistory(sessionId: string, history: unknown): void {
     const validated = StoredHistorySchema.parse(history);
     const dir = this.resolveSessionDirectory(sessionId);
@@ -338,15 +658,18 @@ export class SessionStore {
     } catch {
       return [];
     }
-    if (!existsSync(file)) return [];
-    try {
-      const parsed = StoredHistorySchema.safeParse(
-        JSON.parse(readFileSync(file, "utf8")),
-      );
-      return parsed.success ? parsed.data : [];
-    } catch {
-      return [];
+    for (const candidate of [file, `${file}.bak`]) {
+      if (!existsSync(candidate)) continue;
+      try {
+        const parsed = StoredHistorySchema.safeParse(
+          JSON.parse(readFileSync(candidate, "utf8")),
+        );
+        if (parsed.success) return parsed.data;
+      } catch {
+        // Fall back to the last known-good history copy.
+      }
     }
+    return [];
   }
 
   public deleteSession(id: string): void {

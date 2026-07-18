@@ -9,6 +9,8 @@ export type {
   WebUiApprovalSnapshot,
   WebUiHandle,
   WebUiOptions,
+  WebUiProjectAction,
+  WebUiProjectActionResult,
   WebUiSessionAction,
   WebUiSettingsPatch,
 } from "./WebUiContracts.js";

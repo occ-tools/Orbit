@@ -229,40 +229,45 @@ async function verifySyntax(
     }
   }
 
-  if (ext === "js" || ext === "mjs" || ext === "cjs") {
-    try {
-      const vmModule = await import("vm");
-      const vm = vmModule.default || vmModule;
-      new vm.Script(content);
-      return null;
-    } catch (e: any) {
-      return `JavaScript Syntax Error: ${e.message}`;
-    }
-  }
-
-  if (ext === "ts" || ext === "tsx") {
+  if (["js", "jsx", "mjs", "cjs", "ts", "tsx"].includes(ext ?? "")) {
     try {
       const tsModule = await import("typescript");
       const ts = tsModule.default || tsModule;
+      const scriptKind =
+        ext === "tsx"
+          ? ts.ScriptKind.TSX
+          : ext === "jsx"
+            ? ts.ScriptKind.JSX
+            : ext === "ts"
+              ? ts.ScriptKind.TS
+              : ts.ScriptKind.JS;
       const sourceFile = ts.createSourceFile(
         filePath,
         content,
         ts.ScriptTarget.Latest,
         true,
+        scriptKind,
       );
-      const diagnostics = (sourceFile as any).parseDiagnostics || [];
+      const diagnostics =
+        (
+          sourceFile as typeof sourceFile & {
+            parseDiagnostics?: readonly ts.Diagnostic[];
+          }
+        ).parseDiagnostics ?? [];
       if (diagnostics.length > 0) {
-        const errors = diagnostics.map((d: any) => {
-          const { line, character } = sourceFile.getLineAndCharacterOfPosition(
-            d.start,
+        const errors = diagnostics.map((diagnostic) => {
+          const start = diagnostic.start ?? 0;
+          const { line, character } =
+            sourceFile.getLineAndCharacterOfPosition(start);
+          const message = ts.flattenDiagnosticMessageText(
+            diagnostic.messageText,
+            "\n",
           );
-          const message =
-            typeof d.messageText === "string"
-              ? d.messageText
-              : d.messageText.messageText;
           return `Line ${line + 1}, Char ${character + 1}: ${message}`;
         });
-        return `TypeScript Syntax Error:\n${errors.join("\n")}`;
+        const language =
+          ext === "ts" || ext === "tsx" ? "TypeScript" : "JavaScript";
+        return `${language} Syntax Error:\n${errors.join("\n")}`;
       }
       return null;
     } catch {

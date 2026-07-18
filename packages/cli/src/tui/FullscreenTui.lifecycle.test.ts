@@ -66,6 +66,29 @@ describe("FullscreenTui lifecycle", () => {
     await expect(pending).resolves.toBeNull();
   });
 
+  it("restores the launch cursor and clears only the Orbit screen on exit", () => {
+    vi.spyOn(readline, "emitKeypressEvents").mockImplementation(() => {});
+    vi.spyOn(InputHistoryStore.prototype, "load").mockReturnValue([]);
+    const output: string[] = [];
+    process.stdout.write = vi.fn((chunk: string | Uint8Array) => {
+      output.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    const tui = new FullscreenTui("C:/repo", "model", "test-version");
+    vi.spyOn(
+      tui as unknown as { render: () => void },
+      "render",
+    ).mockImplementation(() => undefined);
+
+    tui.start(1);
+    tui.stop();
+
+    const terminalWrites = output.join("");
+    expect(terminalWrites).toContain("\x1b7\x1b[?1049h");
+    expect(terminalWrites).toContain("\x1b[?1049l\x1b8\x1b[0J\x1b[?25h");
+    tui.dispose();
+  });
+
   it("mirrors prompts submitted by another local UI", () => {
     const tui = new FullscreenTui("C:/repo", "model", "test-version");
     vi.spyOn(

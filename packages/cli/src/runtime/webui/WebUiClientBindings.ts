@@ -67,6 +67,11 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
   elements.activityTab.addEventListener('keydown', handleInspectorTabKeydown);
   elements.settingsTab.addEventListener('keydown', handleInspectorTabKeydown);
   byId('clearActivity').addEventListener('click', clearActivity);
+  elements.memoryReview.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-memory-remove]');
+    if (!button || state.busy) return;
+    void submitTurn('/memory remove ' + button.dataset.memoryRemove);
+  });
 
   document.querySelectorAll('[data-suggestion]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -130,10 +135,207 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
     closeContextPicker({ skipRestore: true });
     void updateSession({ action: 'new' });
   });
-  elements.recentSessions.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-session-id]');
-    if (!button || state.busy) return;
+  const closeProjectDialog = (restoreFocus = true) => {
+    if (elements.projectDialog.hidden) return;
+    elements.projectDialog.hidden = true;
+    elements.projectDialog.setAttribute('aria-hidden', 'true');
+    if (restoreFocus && state.projectDialogReturnFocus) state.projectDialogReturnFocus.focus();
+    state.projectDialogReturnFocus = null;
+  };
+  const openManualProjectDialog = () => {
+    if (state.busy) return;
+    state.projectDialogReturnFocus = document.activeElement;
+    elements.projectDialog.hidden = false;
+    elements.projectDialog.setAttribute('aria-hidden', 'false');
+    elements.projectPathInput.focus();
+    elements.projectPathInput.select();
+  };
+  const launchProject = async (action, selectedPath) => {
+    const path = String(selectedPath || elements.projectPathInput.value).trim();
+    if (!path) {
+      showToast(copy.projectPathRequired, 'error');
+      elements.projectPathInput.focus();
+      return;
+    }
+    elements.projectDialogOpen.disabled = true;
+    elements.projectDialogCreate.disabled = true;
+    try {
+      await api('/api/project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, path }),
+      });
+      closeProjectDialog(false);
+      elements.projectPathInput.value = '';
+      showToast(copy.projectOpened, 'success');
+    } catch (error) {
+      showToast(error.message || String(error), 'error');
+    } finally {
+      elements.projectDialogOpen.disabled = false;
+      elements.projectDialogCreate.disabled = false;
+    }
+  };
+  const pickAndOpenProject = async () => {
+    if (state.busy || state.projectPickerPending) return;
+    state.projectPickerPending = true;
+    elements.newProjectButton.disabled = true;
+    try {
+      const result = await api('/api/project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'pick' }),
+      });
+      if (result.cancelled || !result.path) return;
+      await launchProject('open', result.path);
+    } catch (error) {
+      showToast(error.message || String(error), 'warning');
+      openManualProjectDialog();
+    } finally {
+      state.projectPickerPending = false;
+      elements.newProjectButton.disabled = false;
+    }
+  };
+  const openProjectDialog = pickAndOpenProject;
+  elements.newProjectButton.addEventListener('click', () => void pickAndOpenProject());
+  elements.projectDialogBackdrop.addEventListener('click', () => closeProjectDialog());
+  elements.projectDialogCancel.addEventListener('click', () => closeProjectDialog());
+  elements.projectDialogOpen.addEventListener('click', () => void launchProject('open'));
+  elements.projectDialogCreate.addEventListener('click', () => void launchProject('create'));
+  elements.projectList.addEventListener('click', (event) => {
+    const remove = event.target.closest('[data-project-action="remove"]');
+    if (remove && !state.busy) {
+      if (remove.dataset.confirmRemove !== 'true') {
+        remove.dataset.confirmRemove = 'true';
+        remove.title = copy.confirmRemoveProject;
+        remove.setAttribute('aria-label', copy.confirmRemoveProject);
+        window.setTimeout(() => {
+          remove.dataset.confirmRemove = 'false';
+          remove.title = copy.removeProject;
+          remove.setAttribute('aria-label', copy.removeProject);
+        }, 3000);
+        return;
+      }
+      state.busy = true;
+      api('/api/project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'remove', projectId: remove.dataset.projectId || '' }),
+      }).then(async () => {
+        showToast(copy.projectRemoved, 'success');
+        await loadStatus();
+      }).catch((error) => showToast(error.message || String(error), 'error'))
+        .finally(() => { state.busy = false; });
+      return;
+    }
+    const button = event.target.closest('[data-project-path]');
+    if (!button || button.disabled || state.busy) return;
+    state.busy = true;
+    api('/api/project', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'open', path: button.dataset.projectPath || '' }),
+    }).then(() => showToast(copy.projectOpened, 'success'))
+      .catch((error) => showToast(error.message || String(error), 'error'))
+      .finally(() => { state.busy = false; });
+  });
+  elements.projectPathInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void launchProject('open');
+    }
+  });
+  elements.projectDialog.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab') return;
+    const focusable = [elements.projectPathInput, elements.projectDialogCancel, elements.projectDialogOpen, elements.projectDialogCreate];
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  const closeSessionDeleteDialog = (restoreFocus = true) => {
+    if (elements.sessionDeleteDialog.hidden) return;
+    elements.sessionDeleteDialog.hidden = true;
+    elements.sessionDeleteDialog.setAttribute('aria-hidden', 'true');
+    state.pendingSessionDeleteId = null;
+    if (restoreFocus && state.sessionDeleteReturnFocus) state.sessionDeleteReturnFocus.focus();
+    state.sessionDeleteReturnFocus = null;
+  };
+  const openSessionDeleteDialog = (button, sessionId) => {
+    const row = button.closest('.session-row');
+    const title = row && row.querySelector('.recent-session-title');
+    state.pendingSessionDeleteId = sessionId;
+    state.sessionDeleteReturnFocus = button;
+    elements.sessionDeleteName.textContent = title && title.textContent || copy.untitledTask;
+    elements.sessionDeleteDialog.hidden = false;
+    elements.sessionDeleteDialog.setAttribute('aria-hidden', 'false');
+    elements.sessionDeleteConfirm.focus();
+  };
+  const handleSessionListClick = (event) => {
+    const actionButton = event.target.closest('[data-session-action]');
+    if (actionButton) {
+      if (state.busy) return;
+      const action = actionButton.dataset.sessionAction;
+      const sessionId = actionButton.dataset.sessionId;
+      if (!action || !sessionId) return;
+      if (action === 'delete') {
+        openSessionDeleteDialog(actionButton, sessionId);
+        return;
+      }
+      void updateSession({ action, sessionId });
+      return;
+    }
+    const button = event.target.closest('.recent-session[data-session-id]');
+    if (!button || state.busy || button.closest('.is-archived') || button.closest('.is-active')) return;
     void updateSession({ action: 'resume', sessionId: button.dataset.sessionId });
+  };
+  elements.recentSessions.addEventListener('click', handleSessionListClick);
+  elements.archivedSessions.addEventListener('click', handleSessionListClick);
+  elements.sessionSearch.addEventListener('input', () => {
+    state.sessionQuery = elements.sessionSearch.value;
+    state.sessionLimit = 24;
+    renderSessionNavigation(state.sessionData || {});
+  });
+  elements.sessionShowMore.addEventListener('click', () => {
+    state.sessionLimit += 24;
+    renderSessionNavigation(state.sessionData || {});
+  });
+  const setProjectExpanded = (expanded) => {
+    elements.projectToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    elements.projectChatBody.hidden = !expanded;
+    writeLocalStorage('orbit.webui.project', expanded ? 'expanded' : 'collapsed');
+  };
+  elements.projectToggle.addEventListener('click', () => {
+    setProjectExpanded(elements.projectToggle.getAttribute('aria-expanded') !== 'true');
+  });
+  elements.archiveToggle.addEventListener('click', () => {
+    const expanded = elements.archiveToggle.getAttribute('aria-expanded') === 'true';
+    elements.archiveToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+    elements.archivedPanel.hidden = expanded;
+  });
+  elements.sessionDeleteBackdrop.addEventListener('click', () => closeSessionDeleteDialog());
+  elements.sessionDeleteCancel.addEventListener('click', () => closeSessionDeleteDialog());
+  elements.sessionDeleteConfirm.addEventListener('click', () => {
+    const sessionId = state.pendingSessionDeleteId;
+    if (!sessionId || state.busy) return;
+    closeSessionDeleteDialog(false);
+    void updateSession({ action: 'delete', sessionId });
+  });
+  elements.sessionDeleteDialog.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab') return;
+    const first = elements.sessionDeleteCancel;
+    const last = elements.sessionDeleteConfirm;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   });
   elements.commandsButton.addEventListener('click', openCommandPalette);
   elements.commandTrigger.addEventListener('click', openCommandPalette);
@@ -164,6 +366,10 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
       event.preventDefault();
       closeCommandPalette();
     }
+  });
+
+  elements.providerSelect.addEventListener('change', () => {
+    applySettings({ provider: elements.providerSelect.value }, true).catch(() => {});
   });
 
   elements.modelSelect.addEventListener('change', () => {
@@ -204,6 +410,15 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
+      if (!elements.projectDialog.hidden) {
+        closeProjectDialog();
+        return;
+      }
+      if (!elements.sessionDeleteDialog.hidden) {
+        closeSessionDeleteDialog();
+        return;
+      }
+      if (closeOpenSelectControls(true)) return;
       if (!elements.contextPicker.hidden) {
         closeContextPicker();
         return;
@@ -253,6 +468,7 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
       'sidebar-collapsed',
       readLocalStorage('orbit.webui.sidebar', 'expanded') === 'collapsed',
     );
+    setProjectExpanded(readLocalStorage('orbit.webui.project', 'expanded') !== 'collapsed');
     syncSidebarInteractivity();
     const draft = readLocalStorage('orbit.webui.draft', '');
     if (draft) {

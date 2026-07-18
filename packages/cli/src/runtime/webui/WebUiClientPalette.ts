@@ -14,6 +14,9 @@ export const WEB_UI_CLIENT_PALETTE_SCRIPT = String.raw`  let paletteActions = []
   function buildPaletteActions() {
     const actions = [
       { icon: '+', label: language === 'zh' ? '新建任务' : 'New task', detail: 'Ctrl N', keywords: 'new session task', idle: true, run: () => updateSession({ action: 'new' }) },
+      { icon: '▣', label: language === 'zh' ? '新建或打开项目' : 'New or open project', detail: language === 'zh' ? '选择项目文件夹' : 'Choose a project folder', keywords: 'new open create project workspace folder', idle: true, run: openProjectDialog },
+      { icon: '◎', label: language === 'zh' ? '设置聊天目标' : 'Set chat goal', detail: '/goal', keywords: 'goal objective target session', idle: true, run: () => setComposerValue('/goal ') },
+      { icon: '✎', label: language === 'zh' ? '重命名聊天' : 'Rename chat', detail: '/rename', keywords: 'rename title session chat', idle: true, run: () => setComposerValue('/rename ') },
       { icon: '›', label: copy.focusComposer, detail: language === 'zh' ? '发送消息' : 'Message Orbit', keywords: 'focus prompt message composer', run: () => elements.prompt.focus() },
       { icon: '◫', label: copy.openActivity, detail: language === 'zh' ? '运行状态与工具' : 'Runtime and tools', keywords: 'activity details runtime tools', run: () => setInspector(true, 'activity') },
       { icon: '⚙', label: copy.openSettings, detail: 'Ctrl ,', keywords: 'settings preferences configuration', run: () => setInspector(true, 'settings') },

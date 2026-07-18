@@ -285,6 +285,24 @@ describe("FullscreenTui prompt interactions", () => {
     await expect(result).resolves.toBe("line one\nline two");
   });
 
+  it("returns an orderly exit request after Ctrl+C is confirmed", async () => {
+    const tui = createTui();
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit must not be called by the TUI input loop");
+    }) as typeof process.exit);
+
+    const result = tui.askInput();
+
+    press("", { name: "c", ctrl: true });
+    press("", { name: "c", ctrl: true });
+
+    await expect(result).resolves.toBeNull();
+    expect(exit).not.toHaveBeenCalled();
+    expect(setRawMode).toHaveBeenLastCalledWith(false);
+    expect(process.stdin.pause).toHaveBeenCalled();
+    expect((tui as any).isActive).toBe(true);
+  });
+
   it("supports Ctrl+R reverse history search from the active query", async () => {
     const tui = createTui();
     (tui as any).inputHistory = [

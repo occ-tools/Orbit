@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { stripAnsiCodes } from "../../tui/TerminalText.js";
 import {
   handleRollbackCommand,
   parseGitStatusPaths,
@@ -118,8 +119,9 @@ describe("RollbackCommandHandler", () => {
       loop,
       printOutput,
     });
-    expect(printOutput).toHaveBeenCalledWith(
-      expect.stringMatching(/1\s+checkpoint-n.*src\/new\.ts/),
+    expect(printOutput).toHaveBeenCalledOnce();
+    expect(stripAnsiCodes(printOutput.mock.calls[0][0])).toMatch(
+      /1\s+checkpoint-n.*src\/new\.ts/,
     );
 
     await handleRollbackCommand("/rewind", "1", {

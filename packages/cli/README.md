@@ -33,9 +33,15 @@ orbit "Fix the failing tests" # one-shot task
 orbit exec "Review src" --jsonl
 orbit doctor --deepseek
 orbit config
+orbit extension .orbit/extensions/example.yaml
 orbit update --check
 orbit lsp
 ```
+
+`orbit extension <manifest> [--json]` validates the versioned, workspace-bound
+extension contract without installing or executing third-party code. Automatic
+extension installation and lifecycle loading are intentionally not implied by
+this validation command.
 
 Inspect or remove Orbit-owned runtime data with `orbit clean`. It never removes
 project source, `ORBIT.md`, or `orbit.config.yaml`:
@@ -59,6 +65,7 @@ orbit update --check       # network check only
 orbit update               # check, then confirm interactively
 orbit update --yes         # explicit non-interactive install
 orbit update --check --json
+orbit update --channel beta --check
 ```
 
 The TUI performs one bounded background version check per process: the cat heart
@@ -68,6 +75,11 @@ The interactive `/update` command invokes this same Orbit CLI updater; it no
 longer runs a package-manager install inside the active project. From the Web
 UI it remains check-only to avoid interrupting the local server; the TUI can
 confirm and install an available release.
+
+Stable uses npm's `latest` dist-tag and beta uses `next`. After installation,
+Orbit verifies the globally installed version. A failed install or mismatched
+version triggers a best-effort rollback to the previous exact version and an
+actionable manual recovery command.
 
 Enter `/webui` inside the TUI to open Orbit's authenticated local browser UI.
 Projects map to codebase folders and contain independent persisted chats that

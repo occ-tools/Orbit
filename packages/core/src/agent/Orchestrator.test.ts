@@ -6,6 +6,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { WorktreeManager } from "@orbit-build/sandbox";
+import { McpRuntimeManager } from "./McpRuntimeManager.js";
 
 describe("Orchestrator Multi-Agent Flow", () => {
   let testCwd: string;
@@ -84,6 +85,8 @@ describe("Orchestrator Multi-Agent Flow", () => {
     let plannerCalled = false;
     let coderCalled = false;
     let reviewerCalled = false;
+    let activeReviewers = 0;
+    let maxActiveReviewers = 0;
 
     const mockProvider: ModelProvider = {
       id: "openai",
@@ -100,10 +103,17 @@ describe("Orchestrator Multi-Agent Flow", () => {
             yield { type: "text_delta" as const, text: "Coder finished." };
           } else if (params.model === "reviewer-model") {
             reviewerCalled = true;
-            yield {
-              type: "text_delta" as const,
-              text: '{"verdict":"approved","feedback":""}',
-            };
+            activeReviewers += 1;
+            maxActiveReviewers = Math.max(maxActiveReviewers, activeReviewers);
+            try {
+              await new Promise((resolve) => setTimeout(resolve, 20));
+              yield {
+                type: "text_delta" as const,
+                text: '{"verdict":"approved","feedback":""}',
+              };
+            } finally {
+              activeReviewers -= 1;
+            }
           }
         })();
       },
@@ -132,10 +142,17 @@ describe("Orchestrator Multi-Agent Flow", () => {
     const mergeAndCleanupSpy = vi
       .spyOn(WorktreeManager.prototype, "mergeAndCleanup")
       .mockReturnValue({ success: true });
+    const mcpStartSpy = vi.spyOn(McpRuntimeManager.prototype, "start");
 
     const orchestrator = new Orchestrator(
       testCwd,
-      dummyConfig,
+      {
+        ...dummyConfig,
+        tools: {
+          ...dummyConfig.tools,
+          mcp: { enabled: true },
+        },
+      },
       mockProvider,
       "Test user task",
       dummyInteraction,
@@ -146,6 +163,8 @@ describe("Orchestrator Multi-Agent Flow", () => {
     expect(plannerCalled).toBe(true);
     expect(coderCalled).toBe(true);
     expect(reviewerCalled).toBe(true);
+    expect(maxActiveReviewers).toBe(2);
+    expect(mcpStartSpy).not.toHaveBeenCalled();
 
     // Verify git worktree methods were invoked
     expect(isGitRepoSpy).toHaveBeenCalled();
@@ -392,7 +411,7 @@ describe("Orchestrator Multi-Agent Flow", () => {
       dummyInteraction,
     ).run();
 
-    expect(reviewerCalls).toBe(3);
+    expect(reviewerCalls).toBe(6);
     expect(merge).not.toHaveBeenCalled();
     expect(discard).toHaveBeenCalledOnce();
   });

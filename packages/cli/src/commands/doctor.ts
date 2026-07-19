@@ -672,9 +672,13 @@ export async function runDoctor(
     deepseek?: boolean;
     json?: boolean;
     strict?: boolean;
+    provider?: string;
   } = {},
 ): Promise<void> {
-  const config = ConfigLoader.loadSync(cwd);
+  const config = ConfigLoader.loadSync(
+    cwd,
+    options.provider ? { provider: { default: options.provider } } : undefined,
+  );
   let providerProbeText: string | undefined;
   let providerProbeOk: boolean | undefined;
   if (options.probe) {

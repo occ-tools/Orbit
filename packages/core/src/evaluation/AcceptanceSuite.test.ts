@@ -15,6 +15,13 @@ describe("acceptance suite", () => {
         requiredChangedFiles: ["src/**/*.ts"],
         forbiddenChangedFiles: [".env*", "package-lock.json"],
         maxChangedFiles: 4,
+        limits: {
+          maxDurationMs: 5_000,
+          maxInputTokens: 10_000,
+          maxOutputTokens: 2_000,
+          maxCostUsd: 0.1,
+          minCacheHitRate: 0.5,
+        },
         verification: [{ name: "tests", command: "pnpm test" }],
       },
     ],
@@ -36,12 +43,20 @@ describe("acceptance suite", () => {
         },
       ],
       resolvedModels: ["deepseek-v4-pro", "deepseek-v4-pro"],
+      usage: {
+        inputTokens: 5_000,
+        outputTokens: 500,
+        cacheReadTokens: 3_000,
+        cacheHitRate: 0.6,
+        costUsd: 0.02,
+      },
     });
 
     expect(result).toMatchObject({
       passed: true,
       durationMs: 1235,
       resolvedModels: ["deepseek-v4-pro"],
+      usage: expect.objectContaining({ cacheHitRate: 0.6 }),
     });
   });
 
@@ -69,6 +84,34 @@ describe("acceptance suite", () => {
         "required_file_missing:src/**/*.ts",
         "forbidden_file_changed:.env.local",
         "verification_failed:tests",
+        "usage_missing",
+      ]),
+    );
+  });
+
+  it("enforces measured context, cost, cache and duration limits", () => {
+    const result = scoreAcceptanceTask({
+      task,
+      agentStatus: "completed",
+      durationMs: 6_000,
+      changedFiles: ["src/runtime/fix.ts"],
+      checks: [],
+      usage: {
+        inputTokens: 11_000,
+        outputTokens: 2_001,
+        cacheReadTokens: 1_000,
+        cacheHitRate: 0.1,
+        costUsd: 0.11,
+      },
+    });
+
+    expect(result.failureReasons).toEqual(
+      expect.arrayContaining([
+        "input_token_limit:11000>10000",
+        "output_token_limit:2001>2000",
+        "cost_limit:0.11>0.1",
+        "cache_hit_rate:0.1<0.5",
+        "duration_limit:6000>5000",
       ]),
     );
   });

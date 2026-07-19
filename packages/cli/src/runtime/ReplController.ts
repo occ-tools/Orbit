@@ -295,7 +295,7 @@ export class ReplController {
       }
     }
 
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       this.cwd,
       this.config,
       this.providerInstance,

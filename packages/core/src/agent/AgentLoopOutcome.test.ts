@@ -82,7 +82,7 @@ describe("AgentLoop run outcome", () => {
       capabilities,
       chat,
     };
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       cwd,
       createConfig(),
       provider,
@@ -112,7 +112,7 @@ describe("AgentLoop run outcome", () => {
       capabilities,
       chat,
     };
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       cwd,
       createConfig(),
       provider,
@@ -150,7 +150,7 @@ describe("AgentLoop run outcome", () => {
       capabilities,
       chat,
     };
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       cwd,
       createConfig(),
       provider,
@@ -203,7 +203,7 @@ describe("AgentLoop run outcome", () => {
     };
     const config = createConfig();
     config.agent.maxIterations = 1;
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       cwd,
       config,
       provider,
@@ -262,7 +262,7 @@ describe("AgentLoop run outcome", () => {
     const askApproval = vi
       .spyOn(Prompt, "askApproval")
       .mockRejectedValue(new Error("Terminal prompt must not be opened."));
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       cwd,
       config,
       provider,

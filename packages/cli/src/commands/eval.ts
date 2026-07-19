@@ -17,6 +17,7 @@ import {
   type AcceptanceCheckResult,
   type AcceptanceSuite,
   type AcceptanceTaskResult,
+  type AcceptanceUsage,
 } from "@orbit-build/core";
 import { DEFAULT_CONFIG } from "@orbit-build/config";
 import { WorktreeManager, type WorktreeSession } from "@orbit-build/sandbox";
@@ -123,6 +124,7 @@ export async function runEval(
       const changedFiles = readChangedFiles(worktree.path);
       const sessionId = outcome?.sessionId || undefined;
       let resolvedModels: string[] = [];
+      let usage: AcceptanceUsage | undefined;
       let traceFile: string | undefined;
       if (sessionId) {
         const store = new SessionStore(worktree.path);
@@ -139,6 +141,16 @@ export async function runEval(
           }
           return [event.payload.resolvedModel];
         });
+        const inputTokens = trace.session.totalInputTokens;
+        const cacheReadTokens = trace.session.totalCacheReadTokens || 0;
+        usage = {
+          inputTokens,
+          outputTokens: trace.session.totalOutputTokens,
+          cacheReadTokens,
+          cacheHitRate:
+            inputTokens > 0 ? Math.min(1, cacheReadTokens / inputTokens) : 0,
+          costUsd: trace.session.totalCostEstimate,
+        };
         traceFile = writeEvaluationTrace(cwd, runId, task.id, trace);
       }
       results.push(
@@ -153,6 +165,7 @@ export async function runEval(
           changedFiles,
           checks,
           resolvedModels,
+          usage,
           sessionId,
           traceFile,
         }),

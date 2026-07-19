@@ -21,6 +21,20 @@ export const AcceptanceTaskSchema = z.object({
   requiredChangedFiles: z.array(z.string().trim().min(1)).max(100).default([]),
   forbiddenChangedFiles: z.array(z.string().trim().min(1)).max(100).default([]),
   maxChangedFiles: z.number().int().min(0).max(10_000).optional(),
+  limits: z
+    .object({
+      maxDurationMs: z
+        .number()
+        .int()
+        .min(1_000)
+        .max(24 * 60 * 60_000)
+        .optional(),
+      maxInputTokens: z.number().int().nonnegative().optional(),
+      maxOutputTokens: z.number().int().nonnegative().optional(),
+      maxCostUsd: z.number().finite().nonnegative().optional(),
+      minCacheHitRate: z.number().finite().min(0).max(1).optional(),
+    })
+    .optional(),
 });
 
 export const AcceptanceSuiteSchema = z.object({
@@ -53,12 +67,22 @@ export const AcceptanceTaskResultSchema = z.object({
   requestedProvider: z.string().optional(),
   requestedModel: z.string().optional(),
   resolvedModels: z.array(z.string()).default([]),
+  usage: z
+    .object({
+      inputTokens: z.number().int().nonnegative(),
+      outputTokens: z.number().int().nonnegative(),
+      cacheReadTokens: z.number().int().nonnegative(),
+      cacheHitRate: z.number().finite().min(0).max(1),
+      costUsd: z.number().finite().nonnegative(),
+    })
+    .optional(),
   changedFiles: z.array(z.string()),
   checks: z.array(AcceptanceCheckResultSchema),
   failureReasons: z.array(z.string()),
 });
 
 export type AcceptanceTaskResult = z.infer<typeof AcceptanceTaskResultSchema>;
+export type AcceptanceUsage = NonNullable<AcceptanceTaskResult["usage"]>;
 
 /** Score one isolated task from objective evidence rather than model self-report. */
 export function scoreAcceptanceTask(input: {
@@ -68,6 +92,7 @@ export function scoreAcceptanceTask(input: {
   changedFiles: string[];
   checks: AcceptanceCheckResult[];
   resolvedModels?: string[];
+  usage?: AcceptanceUsage;
   sessionId?: string;
   traceFile?: string;
 }): AcceptanceTaskResult {
@@ -100,6 +125,52 @@ export function scoreAcceptanceTask(input: {
   for (const check of input.checks) {
     if (!check.passed) failureReasons.push(`verification_failed:${check.name}`);
   }
+  if (task.limits) {
+    if (!input.usage) {
+      failureReasons.push("usage_missing");
+    } else {
+      if (
+        task.limits.maxInputTokens !== undefined &&
+        input.usage.inputTokens > task.limits.maxInputTokens
+      ) {
+        failureReasons.push(
+          `input_token_limit:${input.usage.inputTokens}>${task.limits.maxInputTokens}`,
+        );
+      }
+      if (
+        task.limits.maxOutputTokens !== undefined &&
+        input.usage.outputTokens > task.limits.maxOutputTokens
+      ) {
+        failureReasons.push(
+          `output_token_limit:${input.usage.outputTokens}>${task.limits.maxOutputTokens}`,
+        );
+      }
+      if (
+        task.limits.maxCostUsd !== undefined &&
+        input.usage.costUsd > task.limits.maxCostUsd
+      ) {
+        failureReasons.push(
+          `cost_limit:${input.usage.costUsd}>${task.limits.maxCostUsd}`,
+        );
+      }
+      if (
+        task.limits.minCacheHitRate !== undefined &&
+        input.usage.cacheHitRate < task.limits.minCacheHitRate
+      ) {
+        failureReasons.push(
+          `cache_hit_rate:${input.usage.cacheHitRate}<${task.limits.minCacheHitRate}`,
+        );
+      }
+    }
+    if (
+      task.limits.maxDurationMs !== undefined &&
+      input.durationMs > task.limits.maxDurationMs
+    ) {
+      failureReasons.push(
+        `duration_limit:${Math.round(input.durationMs)}>${task.limits.maxDurationMs}`,
+      );
+    }
+  }
 
   return AcceptanceTaskResultSchema.parse({
     taskId: task.id,
@@ -111,6 +182,7 @@ export function scoreAcceptanceTask(input: {
     requestedProvider: task.provider,
     requestedModel: task.model,
     resolvedModels: Array.from(new Set(input.resolvedModels || [])),
+    usage: input.usage,
     changedFiles,
     checks: input.checks,
     failureReasons,

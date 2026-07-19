@@ -1,9 +1,6 @@
 import type { OrbitConfig } from "@orbit-build/config";
-import type {
-  ModelCapabilities,
-  ModelProvider,
-  OrbitMessage,
-} from "@orbit-build/model-providers";
+import type { ModelProvider, OrbitMessage } from "@orbit-build/model-providers";
+import { resolveModelCapabilities } from "@orbit-build/model-providers";
 import {
   estimateTokenCount,
   truncateTextToTokenBudget,
@@ -47,23 +44,12 @@ export function resolveContextWindowStatus(
   input: ContextWindowInput,
 ): ContextWindowStatus {
   const { model, config, provider, history } = input;
-  const providerCapabilities: Partial<ModelCapabilities> =
-    provider.capabilities || {};
-  let modelCapabilities: Partial<ModelCapabilities> = providerCapabilities;
-  try {
-    modelCapabilities =
-      provider.getModelCapabilities?.(model) || providerCapabilities;
-  } catch {
-    // A third-party provider may reject probes for custom model names. The
-    // runtime must retain a conservative fallback instead of blocking chat.
-  }
+  const modelCapabilities = resolveModelCapabilities(provider, model);
 
   const maxContextTokens = Math.max(
     1,
     Math.floor(
-      modelCapabilities.maxContextTokens ||
-        providerCapabilities.maxContextTokens ||
-        DEFAULT_MODEL_CONTEXT_TOKENS,
+      modelCapabilities.maxContextTokens || DEFAULT_MODEL_CONTEXT_TOKENS,
     ),
   );
   const configuredMaxOutputTokens =

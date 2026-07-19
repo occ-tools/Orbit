@@ -1,6 +1,7 @@
 import { OrbitConfig } from "@orbit-build/config";
 import {
   getDeepSeekV4ModelProfile,
+  resolveModelCapabilities,
   ModelProvider,
   OrbitMessage,
   OrbitContentBlock,
@@ -42,12 +43,11 @@ import { eventBus } from "../events/EventBus.js";
 import picocolors from "picocolors";
 import path from "path";
 import fs from "fs";
-import { createHash, randomUUID } from "crypto";
+import { randomUUID } from "crypto";
 import { exec, execFile } from "child_process";
 import { promisify } from "util";
 const execPromise = promisify(exec);
 const execFilePromise = promisify(execFile);
-import { MCPClient, DynamicMCPTool } from "@orbit-build/mcp";
 import {
   estimateTokenCount,
   redactSecrets,
@@ -75,6 +75,12 @@ import {
   executeLocalPackageBinary,
   isValidPackageName,
 } from "./LocalPackageBinary.js";
+import { McpRuntimeManager } from "./McpRuntimeManager.js";
+import {
+  initializeAgentSession,
+  type AgentLoopOptions,
+  type AgentSessionBootstrapResult,
+} from "./AgentSessionBootstrap.js";
 
 const DEEPSEEK_CACHE_DEGRADED_HIT_RATE = 0.85;
 const DEEPSEEK_VERBOSE_CACHE_ENV = "ORBIT_DEEPSEEK_VERBOSE_CACHE";
@@ -143,6 +149,23 @@ function safeAgentLoopErrorMessage(error: unknown): string {
   return `${message.slice(0, AGENT_LOOP_ERROR_MESSAGE_MAX_CHARS - 1)}…`;
 }
 
+function safeHookOutput(value: unknown): string {
+  return redactSecrets(String(value ?? ""))
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, " ")
+    .trim()
+    .slice(0, 4000);
+}
+
+function hookErrorOutput(error: unknown): string {
+  if (typeof error !== "object" || error === null) return String(error);
+  const record = error as Record<string, unknown>;
+  const output = `${typeof record.stdout === "string" ? record.stdout : ""}${
+    typeof record.stderr === "string" ? record.stderr : ""
+  }`;
+  if (output.trim()) return output;
+  return typeof record.message === "string" ? record.message : String(error);
+}
+
 export interface UserInteraction {
   askApproval(reason: string, preview?: string): Promise<boolean>;
   askToolApproval?(request: {
@@ -173,7 +196,7 @@ export class AgentLoop {
   private contextBuilder: ContextPackBuilder;
   private stepRunner: StepRunner;
   private verificationManager: VerificationContractManager;
-  private mcpClients: MCPClient[] = [];
+  private readonly mcpRuntimeManager = new McpRuntimeManager(toolRegistry);
   private abortController: AbortController | null = null;
   private interruptMode: "prompt" | "abort" = "prompt";
   private sessionCost = 0;
@@ -197,101 +220,47 @@ export class AgentLoop {
   private userId: string;
   private readonly projectMemoryStore: ProjectMemoryStore;
 
-  constructor(
+  public static initialize(
+    cwd: string,
+    config: OrbitConfig,
+    provider: ModelProvider,
+    task: string,
+    interaction: UserInteraction,
+    options: AgentLoopOptions = {},
+  ): AgentLoop {
+    return new AgentLoop(
+      cwd,
+      config,
+      provider,
+      interaction,
+      options,
+      initializeAgentSession(cwd, config, provider, task, options),
+    );
+  }
+
+  private constructor(
     private cwd: string,
     private config: OrbitConfig,
     private provider: ModelProvider,
-    task: string,
     private interaction: UserInteraction,
-    private options?: {
-      modelOverride?: string;
-      systemPromptOverride?: string;
-      allowedTools?: string[];
-      disableStatusBar?: boolean;
-      sessionId?: string;
-      requireSession?: boolean;
-      nonInteractive?: boolean;
-    },
+    private options: AgentLoopOptions,
+    bootstrap: AgentSessionBootstrapResult,
   ) {
-    this.statusBar = new StatusBar(!!this.options?.disableStatusBar);
-    this.projectMemoryStore = new ProjectMemoryStore(cwd);
-    this.sessionManager = new SessionManager(
-      cwd,
-      config.session.store === "jsonl"
-        ? config.session.path
-        : ".orbit/sessions",
-    );
-    const workspaceIdentity = path.resolve(cwd).replace(/\\/g, "/");
-    this.userId = createHash("sha256")
-      .update(
-        process.platform === "win32"
-          ? workspaceIdentity.toLowerCase()
-          : workspaceIdentity,
-      )
-      .digest("hex");
-
-    let session;
-    if (options?.sessionId) {
-      session = this.sessionManager.resumeSession(options.sessionId);
-      if (!session && options.requireSession) {
-        throw new Error(`Orbit session not found: ${options.sessionId}`);
-      }
-    }
-    if (!session) {
-      session = this.sessionManager.startNewSession(
-        provider.id,
-        options?.modelOverride || config.models.default,
-      );
-    } else {
-      this.sessionCost = session.totalCostEstimate || 0;
-      this.totalInputTokens = session.totalInputTokens || 0;
-      this.totalOutputTokens = session.totalOutputTokens || 0;
-      this.totalCacheReadTokens = session.totalCacheReadTokens || 0;
-    }
-    const runtimeModel = options?.modelOverride || config.models.default;
-    if (session.provider !== provider.id || session.model !== runtimeModel) {
-      this.sessionManager.setRuntime(provider.id, runtimeModel);
-    }
-
-    this.state = createInitialState(
-      session.id,
-      task,
-      this.getMaxLoopAttempts(),
-    );
-
-    if (options?.sessionId) {
-      const savedHistory = this.sessionManager.getHistory();
-      if (savedHistory && savedHistory.length > 0) {
-        this.state.history = savedHistory;
-        const lastUser = [...savedHistory]
-          .reverse()
-          .find(
-            (message) =>
-              message.role === "user" &&
-              message.metadata?.kind !== VOLATILE_CONTEXT_MESSAGE_KIND &&
-              message.metadata?.kind !== "history_compaction_summary",
-          );
-        if (lastUser) {
-          const userText = lastUser.content
-            .map((content) => (content.type === "text" ? content.text : ""))
-            .join("");
-          this.state.task = userText;
-        }
-      }
-    }
-
-    this.checkpointManager = new CheckpointManager(cwd, session.id);
-    this.rollbackManager = new RollbackManager(cwd);
-    this.permissionEngine = new PermissionEngine(config);
-    this.contextBuilder = new ContextPackBuilder(cwd);
-    this.stepRunner = new StepRunner(cwd, session.id, config);
-    this.verificationManager = new VerificationContractManager(
-      cwd,
-      session.id,
-      this.checkpointManager,
-      config.security?.trustProjectExecutables ?? false,
-      config.tools.bash.timeoutMs,
-    );
+    this.state = bootstrap.state;
+    this.sessionManager = bootstrap.sessionManager;
+    this.checkpointManager = bootstrap.checkpointManager;
+    this.rollbackManager = bootstrap.rollbackManager;
+    this.permissionEngine = bootstrap.permissionEngine;
+    this.contextBuilder = bootstrap.contextBuilder;
+    this.stepRunner = bootstrap.stepRunner;
+    this.verificationManager = bootstrap.verificationManager;
+    this.projectMemoryStore = bootstrap.projectMemoryStore;
+    this.statusBar = bootstrap.statusBar;
+    this.userId = bootstrap.userId;
+    this.sessionCost = bootstrap.sessionCost;
+    this.totalInputTokens = bootstrap.totalInputTokens;
+    this.totalOutputTokens = bootstrap.totalOutputTokens;
+    this.totalCacheReadTokens = bootstrap.totalCacheReadTokens;
   }
 
   public abort(mode: "prompt" | "immediate" = "prompt"): void {
@@ -304,14 +273,6 @@ export class AgentLoop {
   /** Replace the active interaction surface while the shared loop is idle. */
   public setUserInteraction(interaction: UserInteraction): void {
     this.interaction = interaction;
-  }
-
-  private getMaxLoopAttempts(): number {
-    const raw = this.config.agent?.maxIterations;
-    if (!Number.isFinite(raw)) {
-      return 8;
-    }
-    return Math.max(1, Math.min(50, Math.floor(raw)));
   }
 
   private getRunawayPromptInterval(): number {
@@ -503,43 +464,26 @@ export class AgentLoop {
     symbolIndexer.index().catch(() => {});
 
     // Initialize MCP Servers if enabled
-    if (this.config.tools.mcp.enabled && this.config.mcpServers) {
+    if (
+      !this.options?.disableMcp &&
+      this.config.tools.mcp.enabled &&
+      this.config.mcpServers
+    ) {
+      eventBus.emitEvent("agent_status", {
+        taskId: this.state.sessionId,
+        status: "initializing_mcp",
+        detail: `${Object.keys(this.config.mcpServers).length} configured server(s)`,
+      });
       this.interaction.showText(`● Initializing MCP servers...`);
-      for (const [serverName, serverConfig] of Object.entries(
+      const mcpResult = await this.mcpRuntimeManager.start(
         this.config.mcpServers,
-      )) {
-        try {
-          const client = new MCPClient(
-            serverName,
-            serverConfig.command,
-            serverConfig.args || [],
-            serverConfig.env || {},
-            serverConfig.inheritEnv || [],
-          );
-          const tools = await client.start();
-          this.mcpClients.push(client);
-
-          for (const toolDef of tools) {
-            const configuredTool = serverConfig.tools?.[toolDef.name];
-            const risk = configuredTool?.risk || "execute";
-
-            const dynamicTool = new DynamicMCPTool(
-              serverName,
-              toolDef,
-              risk,
-              client,
-            );
-            toolRegistry.register(dynamicTool);
-            this.interaction.showText(
-              `  ✔ Registered MCP tool: ${dynamicTool.name} (${risk})`,
-            );
-          }
-        } catch (err: any) {
-          this.interaction.showText(
-            `  ✖ Failed to start MCP server "${serverName}": ${err.message}`,
-          );
-        }
-      }
+        (message) => this.interaction.showText(message),
+      );
+      eventBus.emitEvent("agent_status", {
+        taskId: this.state.sessionId,
+        status: mcpResult.failures.length === 0 ? "mcp_ready" : "mcp_degraded",
+        detail: `${mcpResult.startedServers} server(s), ${mcpResult.registeredTools} tool(s), ${mcpResult.failures.length} failure(s)`,
+      });
     }
 
     const sigintListener = () => {
@@ -553,13 +497,7 @@ export class AgentLoop {
     process.on("SIGINT", sigintListener);
 
     const exitListener = () => {
-      for (const client of this.mcpClients) {
-        try {
-          client.stop().catch(() => {});
-        } catch {
-          // Ignore
-        }
-      }
+      void this.mcpRuntimeManager.stop();
     };
     process.on("exit", exitListener);
 
@@ -799,20 +737,10 @@ export class AgentLoop {
         }
         toolDefs.sort((a, b) => a.name.localeCompare(b.name));
 
-        const capabilities = (typeof this.provider.getModelCapabilities ===
-        "function"
-          ? this.provider.getModelCapabilities(activeModel)
-          : this.provider?.capabilities) || {
-          streaming: true,
-          toolCalls: true,
-          jsonMode: true,
-          thinking:
-            activeModel.toLowerCase().includes("reasoner") ||
-            activeModel.toLowerCase().includes("r1") ||
-            activeModel.toLowerCase().includes("v4"),
-          vision: false,
-          promptCaching: true,
-        };
+        const capabilities = resolveModelCapabilities(
+          this.provider,
+          activeModel,
+        );
 
         // DeepSeek cache-aware layering:
         // Stable system: core rules + canonical tool prompt + project profile.
@@ -832,6 +760,7 @@ export class AgentLoop {
               ? projectMemory.entries.map((entry) => entry.text)
               : [],
             taskPlan?.items.map((item) => `[${item.status}] ${item.text}`),
+            capabilities.thinking,
           );
         const toolsPrompt = capabilities.toolCalls
           ? generateNativeToolsPrompt(toolDefs)
@@ -878,16 +807,15 @@ export class AgentLoop {
         // assistant response and tool results.
         const messages = [...builtMessages.messages];
         const supportsThinking = capabilities.thinking;
-        const modelName = activeModel.toLowerCase();
         const deepSeekProfile = getDeepSeekV4ModelProfile(activeModel);
         const thinkingEnabled = supportsThinking
           ? deepSeekProfile?.legacyAlias
             ? deepSeekProfile.optimizedThinkingDefault
-            : isRepairTurn ||
-              isComplexTask ||
-              modelName.includes("v4-pro") ||
-              modelName.includes("reasoner") ||
-              modelName.includes("r1")
+            : Boolean(
+                deepSeekProfile?.optimizedThinkingDefault ||
+                isRepairTurn ||
+                isComplexTask,
+              )
           : false;
 
         this.statusBar.start(
@@ -903,7 +831,7 @@ export class AgentLoop {
         let thinkingBudget = 1024;
         if (isRepairTurn) {
           thinkingBudget = 8192; // Max thinking budget for repair
-        } else if (isComplexTask || modelName.includes("v4-pro")) {
+        } else if (isComplexTask || deepSeekProfile?.lane === "pro") {
           thinkingBudget = 4096; // Standard high thinking budget
         }
 
@@ -2753,12 +2681,7 @@ ${errLog}`;
     } finally {
       process.removeListener("SIGINT", sigintListener);
       process.removeListener("exit", exitListener);
-      if (this.mcpClients.length > 0) {
-        this.interaction.showText(`\n● Stopping MCP servers...`);
-        for (const client of this.mcpClients) {
-          await client.stop();
-        }
-      }
+      await this.mcpRuntimeManager.stop();
     }
 
     if (this.terminalFailure) {
@@ -2895,18 +2818,80 @@ ${errLog}`;
       };
     }
 
+    const toolCallId = `hook_${randomUUID()}`;
+    eventBus.emitEvent("tool_proposal", {
+      toolCallId,
+      toolName: "hook",
+      arguments: { filePath: relativePath },
+      explanation: "Run a configured Orbit lifecycle hook.",
+    });
+    const decision = this.permissionEngine.evaluate(
+      "bash",
+      { command: hookCommand },
+      "execute",
+    );
+    if (decision.action === "deny") {
+      eventBus.emitEvent("tool_approval", {
+        toolCallId,
+        approved: false,
+        reason: decision.reason,
+      });
+      eventBus.emitEvent("tool_result", {
+        toolCallId,
+        toolName: "hook",
+        error: decision.reason,
+      });
+      return { ok: false, output: decision.reason };
+    }
+    if (decision.action === "ask") {
+      const approved = await this.interaction.askApproval(
+        decision.reason,
+        redactSecrets(hookCommand),
+      );
+      eventBus.emitEvent("tool_approval", {
+        toolCallId,
+        approved,
+        reason: decision.reason,
+      });
+      if (!approved) {
+        const output = "Hook execution was not approved.";
+        eventBus.emitEvent("tool_result", {
+          toolCallId,
+          toolName: "hook",
+          error: output,
+        });
+        return { ok: false, output };
+      }
+    } else {
+      eventBus.emitEvent("tool_approval", {
+        toolCallId,
+        approved: true,
+        reason: decision.reason,
+      });
+    }
+
     try {
       const { stdout, stderr } = await execPromise(hookCommand, {
         cwd: this.cwd,
         env: { ...process.env, ORBIT_FILE: relativePath },
         timeout: this.config.tools.bash.timeoutMs,
+        signal: this.abortController?.signal,
       });
-      return { ok: true, output: (stdout + stderr).trim() };
-    } catch (err: any) {
-      return {
-        ok: false,
-        output: (err.stdout + err.stderr || err.message).trim(),
-      };
+      const output = safeHookOutput(stdout + stderr);
+      eventBus.emitEvent("tool_result", {
+        toolCallId,
+        toolName: "hook",
+        result: { ok: true },
+      });
+      return { ok: true, output };
+    } catch (error: unknown) {
+      const output = safeHookOutput(hookErrorOutput(error));
+      eventBus.emitEvent("tool_result", {
+        toolCallId,
+        toolName: "hook",
+        error: output,
+      });
+      return { ok: false, output };
     }
   }
 

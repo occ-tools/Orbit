@@ -1,5 +1,9 @@
 import { spawn, type ChildProcess } from "child_process";
-import { redactSecrets, type ToolRisk } from "@orbit-build/shared";
+import {
+  readRuntimePackageVersion,
+  redactSecrets,
+  type ToolRisk,
+} from "@orbit-build/shared";
 import {
   type OrbitTool,
   type ToolContext,
@@ -55,6 +59,13 @@ const MCPResponseSchema = z
 export type MCPToolDefinition = z.infer<typeof MCPToolDefinitionSchema>;
 export type MCPToolCallResult = z.infer<typeof MCPToolCallResultSchema>;
 
+export interface MCPToolClient {
+  callTool(
+    originalToolName: string,
+    args: Record<string, unknown>,
+  ): Promise<MCPToolCallResult>;
+}
+
 const REQUIRED_RUNTIME_ENV = [
   "PATH",
   "Path",
@@ -104,6 +115,7 @@ export class MCPClient {
     private readonly args: string[] = [],
     private readonly env: Record<string, string> = {},
     private readonly inheritEnv: string[] = [],
+    private readonly clientVersion?: string,
   ) {}
 
   /** Start the server, complete the MCP handshake, and return validated tools. */
@@ -194,7 +206,11 @@ export class MCPClient {
     await this.sendRequest("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: "orbit-client", version: "0.1.6" },
+      clientInfo: {
+        name: "orbit-client",
+        version:
+          this.clientVersion ?? readRuntimePackageVersion(import.meta.url),
+      },
     });
     this.sendNotification("notifications/initialized");
   }
@@ -327,7 +343,7 @@ export class DynamicMCPTool implements OrbitTool<
     serverName: string,
     toolDefinition: MCPToolDefinition,
     risk: ToolRisk,
-    private readonly client: MCPClient,
+    private readonly client: MCPToolClient,
   ) {
     this.name = `mcp__${serverName}__${toolDefinition.name}`;
     this.description = `[MCP Tool: ${serverName}] ${toolDefinition.description}`;

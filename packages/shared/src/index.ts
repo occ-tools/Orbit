@@ -5,3 +5,4 @@ export * from "./paths.js";
 export * from "./tokens.js";
 export * from "./redaction.js";
 export * from "./truncator.js";
+export * from "./version.js";

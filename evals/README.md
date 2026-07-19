@@ -15,3 +15,16 @@ Use a dedicated low-privilege provider account. Do not put credentials in a
 suite. Provider and model overrides can be supplied on the command line or per
 task. The checked-in suite is deliberately small; release owners should add
 representative private repositories without committing customer code.
+
+The manual `DeepSeek release gate` workflow repeats bounded Flash and Pro
+protocol/latency checks from a protected `deepseek-testing` environment. Add
+only a dedicated `DEEPSEEK_API_KEY` or `TOKENDANCE_API_KEY`; never copy a
+personal or production customer credential into repository secrets. Enable the
+extended input only when the extra acceptance-suite cost is intended.
+
+Tasks may optionally declare `limits` for `maxDurationMs`, `maxInputTokens`,
+`maxOutputTokens`, `maxCostUsd`, and `minCacheHitRate`. Orbit reads the measured
+values from the redacted session trace; missing usage data fails a task that
+declares usage limits. Calibrate limits from repeated runs on one controlled
+runner and provider tier instead of copying arbitrary thresholds between
+machines or accounts.

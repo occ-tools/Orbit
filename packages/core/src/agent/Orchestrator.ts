@@ -12,6 +12,7 @@ import {
   type AgentLoopRunOutcome,
   type UserInteraction,
 } from "./AgentLoop.js";
+import { AgentTaskScheduler } from "./AgentTaskScheduler.js";
 
 const ReviewVerdictSchema = z.object({
   verdict: z.enum(["approved", "rejected"]),
@@ -21,7 +22,8 @@ const ReviewVerdictSchema = z.object({
 type ReviewVerdict = z.infer<typeof ReviewVerdictSchema>;
 
 export class Orchestrator {
-  private currentLoop: AgentLoop | null = null;
+  private readonly activeLoops = new Set<AgentLoop>();
+  private activeTaskScheduler: AgentTaskScheduler | undefined;
   private aborted = false;
 
   constructor(
@@ -34,7 +36,8 @@ export class Orchestrator {
 
   public abort(mode: "prompt" | "immediate" = "prompt"): void {
     this.aborted = true;
-    this.currentLoop?.abort(mode);
+    this.activeTaskScheduler?.abort("Orchestration was interrupted.");
+    for (const loop of this.activeLoops) loop.abort(mode);
   }
 
   public async run(): Promise<AgentLoopRunOutcome> {
@@ -157,7 +160,7 @@ export class Orchestrator {
         break;
       }
     } finally {
-      this.currentLoop = null;
+      this.activeLoops.clear();
       if (worktree && !mergeFailed) {
         try {
           worktrees.discardWorktree(worktree);
@@ -203,7 +206,7 @@ export class Orchestrator {
     this.interaction.showText(
       "\n[Phase 1: Planning] Initializing Planner Agent...",
     );
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       this.cwd,
       this.config,
       this.provider,
@@ -224,9 +227,10 @@ Do not modify files. Return the plan as plain text.`,
           "detect_project",
           "inspect_project",
         ],
+        disableMcp: true,
       },
     );
-    this.currentLoop = loop;
+    this.activeLoops.add(loop);
     try {
       const outcome = await loop.run();
       return {
@@ -234,7 +238,7 @@ Do not modify files. Return the plan as plain text.`,
         outcome,
       };
     } finally {
-      this.currentLoop = null;
+      this.activeLoops.delete(loop);
     }
   }
 
@@ -251,7 +255,7 @@ Do not modify files. Return the plan as plain text.`,
     const prompt = feedback
       ? `Repair the implementation using this reviewer feedback:\n${feedback}\n\nOriginal plan:\n${plan}`
       : `Implement the following plan:\n${plan}`;
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       cwd,
       this.config,
       this.provider,
@@ -271,13 +275,14 @@ Make precise changes in the current isolated workspace. Do not commit or merge.`
           "git_status",
           "git_diff",
         ],
+        disableMcp: true,
       },
     );
-    this.currentLoop = loop;
+    this.activeLoops.add(loop);
     try {
       return await loop.run();
     } finally {
-      this.currentLoop = null;
+      this.activeLoops.delete(loop);
     }
   }
 
@@ -287,18 +292,114 @@ Make precise changes in the current isolated workspace. Do not commit or merge.`
     maxAttempts: number,
   ): Promise<ReviewVerdict & { outcome: AgentLoopRunOutcome }> {
     this.interaction.showText(
-      `\n[Phase 3: Review ${attempt}/${maxAttempts}] Initializing Reviewer Agent...`,
+      `\n[Phase 3: Review ${attempt}/${maxAttempts}] Running correctness and security reviewers in parallel...`,
     );
-    const loop = new AgentLoop(
+    const scheduler = new AgentTaskScheduler({ maxConcurrency: 2 });
+    this.activeTaskScheduler = scheduler;
+    const timeoutMs = this.reviewerTimeoutMs();
+    const taskAccess = { mode: "read" as const, scopes: ["workspace"] };
+    const scheduled = await (async () => {
+      try {
+        return await scheduler.run([
+          {
+            id: `correctness-${attempt}`,
+            timeoutMs,
+            access: taskAccess,
+            run: (signal) =>
+              this.runReviewerPerspective(
+                cwd,
+                "correctness",
+                "Review correctness, regressions, tests, and verification evidence.",
+                signal,
+              ),
+          },
+          {
+            id: `security-${attempt}`,
+            timeoutMs,
+            access: taskAccess,
+            run: (signal) =>
+              this.runReviewerPerspective(
+                cwd,
+                "security",
+                "Review security, workspace boundaries, credential handling, and destructive edge cases.",
+                signal,
+              ),
+          },
+        ]);
+      } finally {
+        if (this.activeTaskScheduler === scheduler) {
+          this.activeTaskScheduler = undefined;
+        }
+      }
+    })();
+    const schedulingFailure = scheduled.find(
+      (result) => result.status !== "completed",
+    );
+    if (schedulingFailure) {
+      return {
+        verdict: "rejected",
+        feedback: schedulingFailure.error.message,
+        outcome:
+          schedulingFailure.status === "aborted"
+            ? this.abortedOutcome(attempt, schedulingFailure.error.message)
+            : this.failedOutcome(attempt, schedulingFailure.error.message),
+      };
+    }
+    const reviews = scheduled.flatMap((result) =>
+      result.status === "completed" ? [result.value] : [],
+    );
+    const failedRun = reviews.find(
+      (review) => review.outcome.status !== "completed",
+    );
+    if (failedRun) return failedRun;
+
+    const rejected = reviews.filter((review) => review.verdict === "rejected");
+    return {
+      verdict: rejected.length === 0 ? "approved" : "rejected",
+      feedback: rejected
+        .map((review) => review.feedback)
+        .filter(Boolean)
+        .join(" | "),
+      outcome: reviews[0].outcome,
+    };
+  }
+
+  private reviewerTimeoutMs(): number {
+    const provider = this.config.providers[this.config.provider.default];
+    const requestTimeout = provider?.requestTimeoutMs ?? 120_000;
+    return Math.max(
+      30_000,
+      Math.min(
+        600_000,
+        requestTimeout * Math.min(3, this.config.agent.maxIterations),
+      ),
+    );
+  }
+
+  private async runReviewerPerspective(
+    cwd: string,
+    perspective: "correctness" | "security",
+    instruction: string,
+    signal?: AbortSignal,
+  ): Promise<ReviewVerdict & { outcome: AgentLoopRunOutcome }> {
+    const childId = generateId(`review-${perspective}`);
+    eventBus.emitEvent("agent_spawn", {
+      parentId: "multi-agent-session",
+      childId,
+      role: `reviewer:${perspective}`,
+      task: instruction,
+    });
+    const loop = AgentLoop.initialize(
       cwd,
       this.config,
       this.provider,
-      "Review the current worktree diff and run the relevant verification tasks.",
+      `${instruction} Inspect the current worktree diff and run only relevant read-only verification tasks.`,
       this.interaction,
       {
         modelOverride: this.config.models.reviewer,
         systemPromptOverride: `You are the Orbit Reviewer Agent.
-Review the current workspace diff and run tests when available. Do not edit files.
+Your assigned perspective is ${perspective}. ${instruction}
+Review the current workspace diff and run tests when useful. Do not edit files.
 Your final response must be one JSON object with this exact shape:
 {"verdict":"approved"|"rejected","feedback":"concise explanation"}`,
         allowedTools: [
@@ -308,17 +409,33 @@ Your final response must be one JSON object with this exact shape:
           "grep",
           "git_status",
           "git_diff",
-          "run_tests",
-          "bash",
+          ...(perspective === "correctness" ? ["run_tests", "bash"] : []),
         ],
+        disableMcp: true,
       },
     );
-    this.currentLoop = loop;
+    const abortLoop = () => loop.abort("immediate");
+    if (signal?.aborted) abortLoop();
+    signal?.addEventListener("abort", abortLoop, { once: true });
+    this.activeLoops.add(loop);
     try {
       const outcome = await loop.run();
+      eventBus.emitEvent("agent_completed", {
+        taskId: childId,
+        success: outcome.status === "completed",
+        result: { perspective, status: outcome.status },
+      });
       return { ...parseReviewVerdict(lastAssistantText(loop)), outcome };
+    } catch (error: unknown) {
+      eventBus.emitEvent("agent_completed", {
+        taskId: childId,
+        success: false,
+        error: errorMessage(error),
+      });
+      throw error;
     } finally {
-      this.currentLoop = null;
+      signal?.removeEventListener("abort", abortLoop);
+      this.activeLoops.delete(loop);
     }
   }
 

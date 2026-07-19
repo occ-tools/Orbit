@@ -66,4 +66,20 @@ describe("Planner system prompt", () => {
 
     expect(prompt).toContain("DeepSeek via TokenDance");
   });
+
+  it("uses declared reasoning capability instead of model-name guessing", () => {
+    const capable = Planner.makeSystemPrompt(
+      "opaque-model-id",
+      "en",
+      "custom",
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+    const nameOnly = Planner.makeSystemPrompt("looks-like-r1", "en", "custom");
+
+    expect(capable).toContain("Since you are a reasoning model");
+    expect(nameOnly).not.toContain("Since you are a reasoning model");
+  });
 });

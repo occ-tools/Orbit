@@ -110,7 +110,7 @@ describe("AgentLoop Hunk Acceptance Flow", () => {
   it("should accept all changes when user selects yes", async () => {
     const askSelectSpy = vi.spyOn(Prompt, "askSelect").mockResolvedValue("yes");
 
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       dummyConfig,
       createMockProvider(),
@@ -127,7 +127,7 @@ describe("AgentLoop Hunk Acceptance Flow", () => {
   it("should reject and rollback changes when user selects no", async () => {
     const askSelectSpy = vi.spyOn(Prompt, "askSelect").mockResolvedValue("no");
 
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       dummyConfig,
       createMockProvider(),
@@ -153,7 +153,7 @@ describe("AgentLoop Hunk Acceptance Flow", () => {
       .spyOn(Prompt, "askMultiSelect")
       .mockResolvedValue(["0"]);
 
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       dummyConfig,
       createMockProvider(),
@@ -199,7 +199,7 @@ describe("AgentLoop Hunk Acceptance Flow", () => {
       },
     } as any;
 
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       dummyConfig,
       xmlMockProvider,
@@ -235,7 +235,7 @@ describe("AgentLoop Hunk Acceptance Flow", () => {
       },
     } as any;
 
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       dummyConfig,
       srMockProvider,

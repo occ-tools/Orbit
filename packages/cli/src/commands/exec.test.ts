@@ -15,6 +15,16 @@ vi.mock("@orbit-build/core", async () => {
     );
 
   class MockAgentLoop {
+    static initialize(
+      cwd: string,
+      config: any,
+      provider: any,
+      task: string,
+      interaction: any,
+    ) {
+      return new MockAgentLoop(cwd, config, provider, task, interaction);
+    }
+
     constructor(
       private cwd: string,
       private config: any,
@@ -140,11 +150,13 @@ describe("non-interactive orbit exec tests", () => {
     expect(infoEvent.schemaVersion).toBe(1);
     expect(infoEvent.sequence).toBeGreaterThan(0);
     expect(infoEvent.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(infoEvent.eventId).toEqual(expect.any(String));
     expect(infoEvent.payload.message).toBe("Test info message");
     const modelRequest = parsedEvents.find(
       (event) => event?.type === "model_request",
     );
     expect(modelRequest.payload).toEqual({ model: "test-model" });
+    expect(modelRequest.eventId).toEqual(expect.any(String));
     expect(eventBus.listenerCount("*")).toBe(listenerCountBefore);
   });
 

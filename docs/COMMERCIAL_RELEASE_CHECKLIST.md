@@ -44,6 +44,12 @@ should fail only against an explicitly approved threshold and controlled test
 profile. Record the runner, region, provider account tier, model ID, and sample
 count alongside any approved benchmark gate so later releases remain comparable.
 
+The protected `DeepSeek release gate` workflow automates these checks after a
+dedicated low-privilege credential is configured in the `deepseek-testing`
+environment. Until that environment exists and a run is recorded, the real
+provider gate is not considered satisfied even when the credential-free CI is
+green.
+
 ## Manual product smoke tests
 
 - Install the packed CLI into a clean user profile and verify `orbit --version`,

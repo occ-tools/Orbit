@@ -5,6 +5,8 @@ const SemanticVersionSchema = z
   .string()
   .trim()
   .regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/);
+export const UpdateChannelSchema = z.enum(["stable", "beta"]);
+export type UpdateChannel = z.infer<typeof UpdateChannelSchema>;
 
 export const UpdateCheckSchema = z.object({
   currentVersion: SemanticVersionSchema,
@@ -59,31 +61,43 @@ export class UpdateManager {
     this.timeoutMs = options.timeoutMs ?? 15_000;
   }
 
-  public check(currentVersion: string): UpdateCheck {
+  public check(
+    currentVersion: string,
+    channel: UpdateChannel = "stable",
+  ): UpdateCheck {
     const validatedCurrentVersion = SemanticVersionSchema.parse(currentVersion);
-    const raw = this.run(this.executable, this.latestVersionArguments(), {
-      timeoutMs: this.timeoutMs,
-      inheritOutput: false,
-    });
+    const raw = this.run(
+      this.executable,
+      this.latestVersionArguments(channel),
+      {
+        timeoutMs: this.timeoutMs,
+        inheritOutput: false,
+      },
+    );
     return this.createUpdateCheck(validatedCurrentVersion, raw);
   }
 
-  public async checkAsync(currentVersion: string): Promise<UpdateCheck> {
+  public async checkAsync(
+    currentVersion: string,
+    channel: UpdateChannel = "stable",
+  ): Promise<UpdateCheck> {
     const validatedCurrentVersion = SemanticVersionSchema.parse(currentVersion);
     const raw = await this.runAsync(
       this.executable,
-      this.latestVersionArguments(),
+      this.latestVersionArguments(channel),
       this.timeoutMs,
     );
     return this.createUpdateCheck(validatedCurrentVersion, raw);
   }
 
-  private latestVersionArguments(): string[] {
+  private latestVersionArguments(channel: UpdateChannel): string[] {
+    const tag =
+      UpdateChannelSchema.parse(channel) === "stable" ? "latest" : "next";
     return [
       ...this.argumentPrefix,
       "view",
       "@orbit-build/cli",
-      "dist-tags.latest",
+      `dist-tags.${tag}`,
       "--json",
     ];
   }
@@ -115,6 +129,30 @@ export class UpdateManager {
       ],
       { timeoutMs: Math.max(this.timeoutMs, 120_000), inheritOutput },
     );
+  }
+
+  /** Read the version npm currently exposes from the global Orbit install. */
+  public readInstalledVersion(): string {
+    const raw = this.run(
+      this.executable,
+      [
+        ...this.argumentPrefix,
+        "list",
+        "--global",
+        "@orbit-build/cli",
+        "--depth=0",
+        "--json",
+      ],
+      { timeoutMs: this.timeoutMs, inheritOutput: false },
+    );
+    const parsed = z
+      .object({
+        dependencies: z.object({
+          "@orbit-build/cli": z.object({ version: SemanticVersionSchema }),
+        }),
+      })
+      .parse(JSON.parse(raw) as unknown);
+    return parsed.dependencies["@orbit-build/cli"].version;
   }
 }
 

@@ -1,3 +1,35 @@
+import type { ModelCapabilities, ModelProvider } from "./types.js";
+
+/**
+ * Resolve one model's effective capabilities without relying on its name.
+ * Provider-level declarations remain the safe fallback when a dynamic catalog
+ * rejects an unknown or private model.
+ */
+export function resolveModelCapabilities(
+  provider: ModelProvider,
+  model: string,
+): ModelCapabilities {
+  const providerCapabilities = provider.capabilities ?? {
+    streaming: true,
+    toolCalls: false,
+    jsonMode: false,
+    thinking: false,
+    vision: false,
+    promptCaching: false,
+  };
+  if (typeof provider.getModelCapabilities !== "function") {
+    return { ...providerCapabilities };
+  }
+  try {
+    return {
+      ...providerCapabilities,
+      ...provider.getModelCapabilities(model),
+    };
+  } catch {
+    return { ...providerCapabilities };
+  }
+}
+
 function withDescription(schema: any, json: any): any {
   const description = schema?.description || schema?._def?.description;
   return description ? { ...json, description } : json;

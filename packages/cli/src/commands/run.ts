@@ -4,6 +4,7 @@ import {
   UserInteraction,
   Orchestrator,
   eventBus,
+  ORBIT_EVENT_SCHEMA_VERSION,
   type AgentLoopRunOutcome,
 } from "@orbit-build/core";
 import { Prompt, DiffView } from "@orbit-build/tui";
@@ -86,7 +87,7 @@ export async function runAgent(
     try {
       new ProjectRegistry().register(cwd);
     } catch (error: unknown) {
-      eventBus.emitEvent("project_registry_warning", {
+      eventBus.emitEvent("warning", {
         message: redactSecrets(
           error instanceof Error
             ? error.message
@@ -221,7 +222,7 @@ export async function runAgent(
       return await orchestrator.run();
     } else {
       try {
-        const loop = new AgentLoop(
+        const loop = AgentLoop.initialize(
           cwd,
           config,
           providerInstance,
@@ -277,7 +278,7 @@ function configureJsonlOutput(): () => void {
     const sanitized = sanitizeJsonlEvent(event);
     originalLog(
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: ORBIT_EVENT_SCHEMA_VERSION,
         sequence: ++sequence,
         timestamp: new Date().toISOString(),
         ...(isRecord(sanitized) ? sanitized : { type: "unknown", payload: {} }),
@@ -297,16 +298,28 @@ function configureJsonlOutput(): () => void {
 function sanitizeJsonlEvent(event: unknown): unknown {
   if (!isRecord(event) || typeof event.type !== "string") return {};
   const payload = isRecord(event.payload) ? event.payload : {};
+  const metadata = {
+    ...(typeof event.eventId === "string" ? { eventId: event.eventId } : {}),
+    ...(typeof event.timestamp === "string"
+      ? { timestamp: event.timestamp }
+      : {}),
+  };
   switch (event.type) {
     case "model_request":
-      return { type: event.type, payload: { model: payload.model } };
+      return {
+        ...metadata,
+        type: event.type,
+        payload: { model: payload.model },
+      };
     case "model_response":
       return {
+        ...metadata,
         type: event.type,
         payload: { model: payload.model, usage: payload.usage },
       };
     case "tool_proposal":
       return {
+        ...metadata,
         type: event.type,
         payload: {
           toolCallId: payload.toolCallId,
@@ -316,6 +329,7 @@ function sanitizeJsonlEvent(event: unknown): unknown {
       };
     case "tool_result":
       return {
+        ...metadata,
         type: event.type,
         payload: {
           toolCallId: payload.toolCallId,

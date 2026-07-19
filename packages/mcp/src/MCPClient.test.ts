@@ -41,6 +41,10 @@ rl.on('line', (line) => {
   if (!line.trim()) return;
   const msg = JSON.parse(line);
   if (msg.method === 'initialize') {
+    if (msg.params.clientInfo.version !== '9.8.7') {
+      process.stderr.write('unexpected client version');
+      process.exit(2);
+    }
     process.stdout.write(JSON.stringify({
       jsonrpc: '2.0',
       id: msg.id,
@@ -79,7 +83,14 @@ rl.on('line', (line) => {
 `;
     writeFileSync(dummyServerPath, dummyServerCode);
 
-    const client = new MCPClient("dummy-server", "node", [dummyServerPath]);
+    const client = new MCPClient(
+      "dummy-server",
+      "node",
+      [dummyServerPath],
+      {},
+      [],
+      "9.8.7",
+    );
     try {
       const tools = await client.start();
       expect(tools).toHaveLength(1);

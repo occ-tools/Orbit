@@ -1,7 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "fs";
 import { EventBus } from "./EventBus.js";
+import { OrbitEventEnvelopeSchema } from "./EventSchema.js";
 
 describe("EventBus", () => {
+  it("keeps the checked-in v1 transport fixture compatible", () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL("./fixtures/event-envelope-v1.json", import.meta.url),
+        "utf8",
+      ),
+    ) as unknown;
+
+    expect(OrbitEventEnvelopeSchema.parse(fixture)).toMatchObject({
+      schemaVersion: 1,
+      eventId: "fixture:1",
+      type: "info",
+    });
+  });
+
   it("does not publish payloads that fail runtime validation", () => {
     const bus = new EventBus();
     const listener = vi.fn();
@@ -19,10 +36,29 @@ describe("EventBus", () => {
     bus.on("*", listener);
 
     expect(bus.emitEvent("info", { message: "ready" })).toBe(true);
-    expect(listener).toHaveBeenCalledWith({
-      type: "info",
-      payload: { message: "ready" },
-    });
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        schemaVersion: 1,
+        eventId: expect.any(String),
+        timestamp: expect.any(String),
+        type: "info",
+        payload: { message: "ready" },
+      }),
+    );
+  });
+
+  it("assigns ordered unique identifiers to transport envelopes", () => {
+    const bus = new EventBus();
+    const listener = vi.fn();
+    bus.on("*", listener);
+
+    bus.emitEvent("info", { message: "first" });
+    bus.emitEvent("info", { message: "second" });
+
+    const [first, second] = listener.mock.calls.map(([event]) => event);
+    expect(first.eventId).not.toBe(second.eventId);
+    expect(Date.parse(first.timestamp)).not.toBeNaN();
+    expect(Date.parse(second.timestamp)).not.toBeNaN();
   });
 
   it("publishes error envelopes without triggering EventEmitter's unhandled error", () => {
@@ -31,10 +67,13 @@ describe("EventBus", () => {
     bus.on("*", listener);
 
     expect(bus.emitEvent("error", { message: "failed" })).toBe(true);
-    expect(listener).toHaveBeenCalledWith({
-      type: "error",
-      payload: { message: "failed" },
-    });
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        schemaVersion: 1,
+        type: "error",
+        payload: { message: "failed" },
+      }),
+    );
   });
 
   it("publishes outer UI turns independently of internal agent events", () => {

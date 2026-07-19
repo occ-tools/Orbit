@@ -89,9 +89,10 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     const mockProvider: ModelProvider = {
       id: "openai",
       chat: chatMock,
+      capabilities: capableProviderDefaults(),
     } as any;
 
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       dummyConfig,
       mockProvider,
@@ -119,9 +120,10 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     const mockProvider: ModelProvider = {
       id: "openai",
       chat: chatMock,
+      capabilities: capableProviderDefaults(),
     } as any;
 
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       dummyConfig,
       mockProvider,
@@ -147,8 +149,9 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     const mockProvider: ModelProvider = {
       id: "deepseek-openai",
       chat: chatMock,
+      capabilities: capableProviderDefaults(),
     } as any;
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       {
         ...dummyConfig,
@@ -178,8 +181,9 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     const mockProvider: ModelProvider = {
       id: "deepseek-openai",
       chat: chatMock,
+      capabilities: capableProviderDefaults(),
     } as any;
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       dummyConfig,
       mockProvider,
@@ -213,7 +217,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
         promptCaching: true,
       }),
     } as any;
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       dummyConfig,
       mockProvider,
@@ -236,7 +240,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
       chat: vi.fn(),
     } as any;
 
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       {
         ...dummyConfig,
@@ -346,6 +350,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     const mockProvider: ModelProvider = {
       id: "openai",
       chat: chatMock,
+      capabilities: capableProviderDefaults(),
       getModelCapabilities: () => ({
         streaming: true,
         toolCalls: true,
@@ -357,7 +362,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     } as any;
 
     try {
-      const loop = new AgentLoop(
+      const loop = AgentLoop.initialize(
         testDir,
         {
           ...dummyConfig,
@@ -439,7 +444,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     } as any;
 
     try {
-      const loop = new AgentLoop(
+      const loop = AgentLoop.initialize(
         testDir,
         {
           ...dummyConfig,
@@ -495,10 +500,11 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     const mockProvider: ModelProvider = {
       id: "openai",
       chat: chatMock,
+      capabilities: capableProviderDefaults(),
     } as any;
 
     try {
-      const loop = new AgentLoop(
+      const loop = AgentLoop.initialize(
         testDir,
         {
           ...dummyConfig,
@@ -555,7 +561,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
       }),
     } as any;
 
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       {
         ...dummyConfig,
@@ -616,7 +622,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
       }),
     } as any;
 
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       {
         ...dummyConfig,
@@ -675,7 +681,7 @@ describe("AgentLoop Fin Heuristic Routing", () => {
         promptCaching: true,
       }),
     } as any;
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       testDir,
       dummyConfig,
       mockProvider,
@@ -697,3 +703,14 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     });
   });
 });
+
+function capableProviderDefaults() {
+  return {
+    streaming: true,
+    toolCalls: true,
+    jsonMode: true,
+    thinking: true,
+    vision: false,
+    promptCaching: true,
+  };
+}

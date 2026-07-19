@@ -6,6 +6,7 @@ export class Planner {
     sessionGoal?: string,
     projectMemory?: string[],
     taskPlan?: string[],
+    supportsThinking = false,
   ): string {
     const cleanModel = cleanRuntimeLabel(modelName, "unknown-model");
     const cleanProviderId = cleanRuntimeLabel(providerId || "", "");
@@ -89,11 +90,7 @@ Core rules:
 13. Keep your answers concise, practical, and highly focused.
 14. Use the runtime date from the Volatile Context for all relative-date requests. For current weather, news, prices, laws, schedules, API/model information, or any other time-sensitive facts, search the live web instead of relying on model training memory.`;
 
-    if (
-      cleanModel.toLowerCase().includes("reasoner") ||
-      cleanModel.toLowerCase().includes("r1") ||
-      cleanModel.toLowerCase().includes("v4")
-    ) {
+    if (supportsThinking) {
       return (
         prompt +
         "\n15. Since you are a reasoning model, utilize your internal reasoning tokens to deeply analyze the codebase structure, potential side-effects of edits, and root causes of errors before making any tool calls. Keep your final output extremely concise, direct, and avoid repeating the reasoning process in your response.\n16. CRITICAL: Never output <tool_call> or SEARCH/REPLACE blocks inside your reasoning/thinking block. All tool calls and code edits must be placed strictly in your final response text."

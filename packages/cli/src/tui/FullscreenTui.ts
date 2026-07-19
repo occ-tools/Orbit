@@ -37,6 +37,14 @@ import {
 } from "./TuiPromptSession.js";
 import { renderPromptScreen } from "./TuiPromptView.js";
 import { UpdateManager } from "../runtime/UpdateManager.js";
+import {
+  buildTuiConversationViewModel,
+  type TuiHistoryEntry,
+} from "./TuiConversationViewModel.js";
+import {
+  TuiEnvironmentStatus,
+  type TuiCacheTelemetry,
+} from "./TuiEnvironmentStatus.js";
 
 export {
   filterPromptOptionIndices,
@@ -66,29 +74,13 @@ export interface FullscreenTuiDependencies {
 // Width of the fixed input-box left prefix "  │ orbit > " (constant, pre-calculated)
 const INPUT_PREFIX_WIDTH = 12; // "  │ orbit > " visual width
 
-/** One conversation turn in the TUI history view. */
-type HistoryEntry = {
-  role: "user" | "assistant" | "system";
-  text: string;
-  thoughtTime?: number;
-  totalTime?: number;
-  attempt?: number;
-  model?: string;
-};
-
-interface TuiTurn {
-  user?: HistoryEntry;
-  assistant?: HistoryEntry;
-  system: HistoryEntry[];
-}
-
 export class FullscreenTui {
-  private history: HistoryEntry[] = [];
+  private history: TuiHistoryEntry[] = [];
 
   private inputBuffer = "";
   private cursorPosition = 0;
   public isActive = false;
-  private currentAttempt = 0;
+  private readonly environmentStatus = new TuiEnvironmentStatus();
 
   // Command history
   private inputHistory: string[] = [];
@@ -114,22 +106,9 @@ export class FullscreenTui {
 
   private isThinking = false;
 
-  private sessionCost = 0;
   private hasCheckedOrbitUpdate = false;
   private isCheckingOrbitUpdate = false;
   private orbitUpdateAvailable = false;
-  private totalInputTokens = 0;
-  private totalCacheReadTokens = 0;
-  private totalOutputTokens = 0;
-  private cacheTelemetry: {
-    slabHash: string;
-    slabTokenEstimate: number;
-    hitTokens: number;
-    missTokens: number;
-    inputTokens: number;
-    hitRate: number;
-    degraded: boolean;
-  } | null = null;
   private budgetLimit = 0;
 
   private resolveInput: ((val: string | null) => void) | null = null;
@@ -157,8 +136,6 @@ export class FullscreenTui {
     sessions: string[];
   } | null = null;
   private modelNameGetter: () => string = () => this.modelName;
-  private activeModelName = "";
-  private permissionsMode = "normal";
   private hideAutocomplete = false;
   /** Cached logo-line widths — static strings, computed once. */
   private _cachedLogoWidths: {
@@ -234,7 +211,7 @@ export class FullscreenTui {
   }
 
   public setPermissionsMode(mode: string) {
-    this.permissionsMode = mode;
+    this.environmentStatus.setPermissionsMode(mode);
   }
 
   public setModelNameGetter(getter: () => string) {
@@ -243,7 +220,7 @@ export class FullscreenTui {
 
   public setActiveModelName(model: string) {
     const cleanModel = model.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
-    this.activeModelName = cleanModel;
+    this.environmentStatus.setActiveModelName(cleanModel);
     const lastAsst = [...this.history]
       .reverse()
       .find((m) => m.role === "assistant" && (!m.text || !m.model));
@@ -346,7 +323,7 @@ export class FullscreenTui {
   }
 
   private formatSystemLinesForDisplay(
-    system: HistoryEntry[],
+    system: TuiHistoryEntry[],
     options: { prefixUnknown: boolean; preserveBlank: boolean },
   ): string[] {
     const morandi = MORANDI;
@@ -1092,23 +1069,17 @@ export class FullscreenTui {
     cacheReadTokens = 0,
     outputTokens = 0,
   ) {
-    this.sessionCost = cost;
-    this.totalInputTokens = inputTokens;
-    this.totalCacheReadTokens = cacheReadTokens;
-    this.totalOutputTokens = outputTokens;
+    this.environmentStatus.setUsage(
+      cost,
+      inputTokens,
+      cacheReadTokens,
+      outputTokens,
+    );
     this.render();
   }
 
-  public setCacheTelemetry(payload: {
-    slabHash: string;
-    slabTokenEstimate: number;
-    hitTokens: number;
-    missTokens: number;
-    inputTokens: number;
-    hitRate: number;
-    degraded: boolean;
-  }) {
-    this.cacheTelemetry = payload;
+  public setCacheTelemetry(payload: TuiCacheTelemetry) {
+    this.environmentStatus.setCacheTelemetry(payload);
     this.render();
   }
 
@@ -1669,7 +1640,7 @@ export class FullscreenTui {
   }
 
   public startAttempt(attempt: number) {
-    this.currentAttempt = attempt;
+    this.environmentStatus.setAttempt(attempt);
     this.attemptStartTime = Date.now();
     this.firstDeltaTime = 0;
     this.isThinking = true;
@@ -1687,7 +1658,9 @@ export class FullscreenTui {
       role: "assistant",
       text: "",
       attempt: attempt,
-      model: this.activeModelName || this.modelNameGetter(),
+      model:
+        this.environmentStatus.snapshot().activeModelName ||
+        this.modelNameGetter(),
     });
 
     if (this.thoughtTimer) clearInterval(this.thoughtTimer);
@@ -2082,7 +2055,8 @@ export class FullscreenTui {
     bottomLines.push(...boxContentLines);
 
     // A.4 构建底部状态行
-    const mode = this.permissionsMode.toUpperCase();
+    const environment = this.environmentStatus.snapshot();
+    const mode = environment.permissionsMode.toUpperCase();
 
     let statusText = "";
     if (this.historyScrollOffset > 0) {
@@ -2112,9 +2086,10 @@ export class FullscreenTui {
             : `history search: ${truncatePlainToWidth(query, 28)}`,
         );
     } else {
-      const displayedModel = this.activeModelName || this.modelNameGetter();
+      const displayedModel =
+        environment.activeModelName || this.modelNameGetter();
       const cleanModel = displayedModel.split("/").pop() || displayedModel;
-      const costStr = `$` + this.sessionCost.toFixed(4);
+      const costStr = `$` + environment.sessionCost.toFixed(4);
       statusText =
         morandi.completed("●") +
         " " +
@@ -2125,7 +2100,7 @@ export class FullscreenTui {
         morandi.accent(costStr) +
         morandi.gray("  ·  ") +
         morandi.dim(
-          `${languageIsZh ? "尝试" : "attempt"}: ${this.currentAttempt || 1}`,
+          `${languageIsZh ? "尝试" : "attempt"}: ${environment.currentAttempt || 1}`,
         );
     }
 
@@ -2166,7 +2141,7 @@ export class FullscreenTui {
       keybindingsLength = this.getStringWidth(keybindings);
     }
     if (statusTextLength + keybindingsLength > columns - 8) {
-      const compactMode = `${mode.slice(0, 6)} · ${this.currentAttempt || 1}`;
+      const compactMode = `${mode.slice(0, 6)} · ${environment.currentAttempt || 1}`;
       statusText = morandi.completed("●") + " " + morandi.white(compactMode);
       statusTextLength = this.getStringWidth(statusText);
     }
@@ -2185,7 +2160,8 @@ export class FullscreenTui {
 
     // 全屏渲染逻辑（当无法增量时）
     // Strip all ANSI escape sequences (e.g. \x1b[1m bold) from the model name
-    const displayedModel = this.activeModelName || this.modelNameGetter();
+    const displayedModel =
+      environment.activeModelName || this.modelNameGetter();
     const cleanModel = displayedModel.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
 
     // 1. 获取 Git 当前分支与状态（短时缓存，避免流式输出期间阻塞重绘）
@@ -2275,23 +2251,25 @@ export class FullscreenTui {
     );
     const displayPath = truncatePath(shortCwd, maxPathWidth);
 
-    const hitRate = this.cacheTelemetry
-      ? this.cacheTelemetry.hitRate * 100
-      : this.totalInputTokens > 0
-        ? (this.totalCacheReadTokens / this.totalInputTokens) * 100
+    const hitRate = environment.cacheTelemetry
+      ? environment.cacheTelemetry.hitRate * 100
+      : environment.totalInputTokens > 0
+        ? (environment.totalCacheReadTokens / environment.totalInputTokens) *
+          100
         : 0;
-    const cacheRead = this.cacheTelemetry
-      ? this.cacheTelemetry.hitTokens
-      : this.totalCacheReadTokens;
-    const cacheInput = this.cacheTelemetry
-      ? this.cacheTelemetry.inputTokens || this.totalInputTokens
-      : this.totalInputTokens;
+    const cacheRead = environment.cacheTelemetry
+      ? environment.cacheTelemetry.hitTokens
+      : environment.totalCacheReadTokens;
+    const cacheInput = environment.cacheTelemetry
+      ? environment.cacheTelemetry.inputTokens || environment.totalInputTokens
+      : environment.totalInputTokens;
     const cacheMiss =
-      this.cacheTelemetry?.missTokens || Math.max(0, cacheInput - cacheRead);
-    const slabLabel = this.cacheTelemetry
-      ? ` slab:${this.cacheTelemetry.slabHash.slice(0, 8)}`
+      environment.cacheTelemetry?.missTokens ||
+      Math.max(0, cacheInput - cacheRead);
+    const slabLabel = environment.cacheTelemetry
+      ? ` slab:${environment.cacheTelemetry.slabHash.slice(0, 8)}`
       : "";
-    const cachePrefix = this.cacheTelemetry?.degraded
+    const cachePrefix = environment.cacheTelemetry?.degraded
       ? languageIsZh
         ? "[缓存!]"
         : "[cache!]"
@@ -2332,35 +2310,9 @@ export class FullscreenTui {
     // 3. 构建历史对话内容
     const renderedLines: string[] = [];
 
-    // TuiTurn is now defined at file level above the class
-    const turns: TuiTurn[] = [];
-    let currentTurn: TuiTurn | null = null;
-
-    for (const msg of this.history) {
-      if (msg.role === "user") {
-        if (currentTurn) {
-          turns.push(currentTurn);
-        }
-        currentTurn = { user: msg, system: [] };
-      } else if (msg.role === "assistant") {
-        if (!currentTurn) {
-          currentTurn = { system: [] };
-        }
-        currentTurn.assistant = msg;
-      } else if (msg.role === "system") {
-        if (!currentTurn) {
-          currentTurn = { system: [] };
-        }
-        currentTurn.system.push(msg);
-      }
-    }
-    if (currentTurn) {
-      turns.push(currentTurn);
-    }
-
-    const lastAsst = [...this.history]
-      .reverse()
-      .find((m) => m.role === "assistant");
+    const conversation = buildTuiConversationViewModel(this.history);
+    const turns = conversation.turns;
+    const lastAsst = conversation.lastAssistant;
     const uBorder = "    ";
     const aBorder = "    ";
 

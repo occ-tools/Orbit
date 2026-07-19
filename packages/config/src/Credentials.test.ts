@@ -154,6 +154,26 @@ describe("CredentialsManager tests", () => {
     expect(manager.getSecret("DEEPSEEK_API_KEY")).toBe("secret");
   });
 
+  it("keeps a legacy key usable when the native store is unavailable", () => {
+    const legacyKey = Buffer.alloc(32, 12);
+    const masterKeyPath = join(orbitDir, "master.key");
+    writeFileSync(masterKeyPath, legacyKey.toString("base64"));
+    const keyStore = createKeyStore();
+    keyStore.store.mockImplementation(() => {
+      throw new Error("native store unavailable");
+    });
+    const manager = new CredentialsManager({
+      orbitDir,
+      platform: "linux",
+      keyStore,
+    });
+
+    manager.storeSecret("DEEPSEEK_API_KEY", "secret");
+
+    expect(existsSync(masterKeyPath)).toBe(true);
+    expect(manager.getSecret("DEEPSEEK_API_KEY")).toBe("secret");
+  });
+
   it("purges encrypted files and the native platform key", () => {
     const keyStore = createKeyStore(Buffer.alloc(32, 13));
     const manager = new CredentialsManager({

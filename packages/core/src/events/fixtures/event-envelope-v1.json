@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "eventId": "fixture:1",
+  "timestamp": "2026-07-19T00:00:00.000Z",
+  "type": "info",
+  "payload": {
+    "message": "Orbit event protocol v1"
+  }
+}

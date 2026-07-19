@@ -73,7 +73,7 @@ describe("AgentLoop model-aware context compaction", () => {
       showDiff: vi.fn(),
     };
     return {
-      loop: new AgentLoop(cwd, config, provider, "test", interaction, {
+      loop: AgentLoop.initialize(cwd, config, provider, "test", interaction, {
         disableStatusBar: true,
       }),
       interaction,
@@ -180,7 +180,7 @@ describe("AgentLoop model-aware context compaction", () => {
       getModelCapabilities: loop.getProvider().getModelCapabilities,
       chat: vi.fn(),
     };
-    const resumed = new AgentLoop(
+    const resumed = AgentLoop.initialize(
       workspace,
       config,
       provider,

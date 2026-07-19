@@ -1,6 +1,9 @@
 node_modules/
 dist/
 out/
+coverage/
+playwright-report/
+test-results/
 .orbit/
 scratch_git_test/
 *.log

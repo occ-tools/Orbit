@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { MacOSKeychainKeyStore } from "./CredentialKeyStore.js";
+import {
+  LinuxSecretServiceKeyStore,
+  MacOSKeychainKeyStore,
+} from "./CredentialKeyStore.js";
 
 describe("MacOSKeychainKeyStore", () => {
   it("uses bounded security CLI arguments without exposing output", () => {
@@ -44,5 +47,51 @@ describe("MacOSKeychainKeyStore", () => {
 
     expect(() => store.load()).toThrow("Unable to read");
     expect(() => store.delete()).toThrow("Unable to remove");
+  });
+});
+
+describe("LinuxSecretServiceKeyStore", () => {
+  it("stores, loads, and deletes a validated key", () => {
+    const key = Buffer.alloc(32, 9);
+    let stored = "";
+    const calls: string[][] = [];
+    const store = new LinuxSecretServiceKeyStore({
+      run: (_executable, args, input) => {
+        calls.push(args);
+        if (args[0] === "store") stored = input?.trim() ?? "";
+        if (args[0] === "lookup") return stored;
+        if (args[0] === "clear") stored = "";
+        return "";
+      },
+    });
+
+    store.store(key);
+    expect(store.load()).toEqual(key);
+    store.delete();
+    expect(store.load()).toBeNull();
+    expect(calls.map(([command]) => command)).toEqual([
+      "store",
+      "lookup",
+      "clear",
+      "lookup",
+    ]);
+  });
+
+  it("degrades when Secret Service is unavailable", () => {
+    const unavailable = Object.assign(new Error("missing"), { code: "ENOENT" });
+    const store = new LinuxSecretServiceKeyStore({
+      run: () => {
+        throw unavailable;
+      },
+    });
+
+    expect(store.load()).toBeNull();
+    expect(() => store.delete()).not.toThrow();
+    expect(() => store.store(Buffer.alloc(32))).toThrow("missing");
+  });
+
+  it("rejects a malformed stored key", () => {
+    const store = new LinuxSecretServiceKeyStore({ run: () => "not-a-key" });
+    expect(() => store.load()).toThrow("Secret Service is invalid");
   });
 });

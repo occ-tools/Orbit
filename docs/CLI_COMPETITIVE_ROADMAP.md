@@ -1,6 +1,6 @@
 # Orbit CLI Competitive Roadmap
 
-Last reviewed: 2026-07-13
+Last reviewed: 2026-07-19
 
 ## Product objective
 
@@ -29,26 +29,26 @@ The comparison baseline includes current public capabilities documented by Codex
 - Permission-aware direct shell and Git commands.
 - Chinese and English terminal UI.
 
-## Highest-priority gaps
+## Delivery status and highest-priority gaps
 
-| Priority | Capability                 | Current state                                          | Required outcome                                                                                                                                          |
-| -------- | -------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P0       | Parallel subagents         | Fixed planner/coder/reviewer sequence                  | Agent-thread manager with parallel fan-out, role manifests, per-agent budgets, cancellation, result consolidation, and visible approval ownership         |
-| P0       | Non-interactive automation | One-shot prompt exists, but output is human-oriented   | `orbit exec` with JSONL events, stable schemas, deterministic exit codes, resume support, output-schema validation, and CI-safe approval failure behavior |
-| P0       | Verification contracts     | Tests can run, but success policy is distributed       | First-class task acceptance contract covering build, tests, lint, typecheck, security checks, changed-file limits, and required artifacts                 |
-| P0       | Full audit trail           | Session events exist but are not a supported interface | Exportable trace containing prompts, model routing, tool calls, approvals, diffs, checkpoints, verification, timing, and cost with secret redaction       |
-| P0       | Agent isolation            | Agents share one working tree                          | Optional Git worktree per agent/task, conflict-aware merge, and cleanup policy                                                                            |
-| P1       | Hook system                | Only pre-edit and post-edit command hooks              | Typed lifecycle hooks for session, prompt, permission, pre/post tool, compact, verification, subagent, and stop events                                    |
-| P1       | Plugin and skill system    | Custom prompt commands and MCP exist separately        | Versioned plugin manifest bundling commands, skills, agents, hooks, MCP servers, tools, templates, and compatibility metadata                             |
-| P1       | MCP completeness           | STDIO tool discovery is supported                      | Streaming HTTP transport, OAuth, resources, prompts, reconnect policy, health state, tool-name collision handling, and per-server permissions             |
-| P1       | Code review product        | Reviewer role exists only in orchestration             | Dedicated `/review` presets for uncommitted work, commits, branches, security, tests, accessibility, and custom policy                                    |
-| P1       | Multimodal input           | Text-only primary workflow                             | Image attachment, clipboard paste, screenshot context, image-aware provider capability negotiation, and transcript persistence                            |
-| P1       | TUI power-user controls    | Strong custom TUI, limited customization               | Theme system, keymap persistence, Vim mode, reverse history search, queued follow-ups, accessible no-color mode, and screen-reader-friendly direct mode   |
-| P1       | Memory                     | AGENTS and session history are available               | Explicit opt-in durable memory with provenance, secret redaction, project/user scopes, review UI, and external-context exclusion                          |
-| P2       | Remote runtime             | Local process only                                     | Authenticated local/remote app server protocol with reconnectable TUI and IDE clients                                                                     |
-| P2       | Cloud/offload              | Not supported                                          | Provider-neutral remote task interface with best-of-N attempts and local patch application                                                                |
-| P2       | Workflow recording         | Not supported                                          | Record/replay for terminal and tool workflows, compiled into reviewable skills                                                                            |
-| P2       | Enterprise governance      | Basic local permissions                                | Managed policy, signed plugin trust, allowed provider/model lists, audit export, retention controls, and policy precedence                                |
+| Priority | Capability                 | Current state                                                                                                                                                                                       | Required outcome                                                                                                                                        |
+| -------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P0       | Parallel subagents         | A one-shot dependency DAG scheduler now provides bounded concurrency, normalized scope ownership, graph-wide timeout cancellation, and isolated writer/reviewer orchestration                       | Add durable agent threads, per-agent token/cost budgets, merge-aware write ownership, and visible approval ownership                                    |
+| Done     | Non-interactive automation | `orbit exec` provides JSONL events, schema versions, deterministic exit codes, resume, output-schema validation, and CI-safe approvals                                                              | Preserve compatibility and add fixtures when the event schema evolves                                                                                   |
+| Done     | Verification contracts     | Build/test/lint/typecheck/security/file-limit/artifact policies are first-class and persisted                                                                                                       | Expand contract presets from measured customer repositories                                                                                             |
+| Done     | Full audit trail           | Secret-redacted trace export covers prompts, routing, tools, approvals, diffs, checkpoints, verification, timing, and cost                                                                          | Maintain redaction regression tests and schema compatibility                                                                                            |
+| Done     | Agent isolation            | Orchestration uses temporary Git worktrees with merge/conflict handling and safe fallback                                                                                                           | Require isolation for future parallel writers and keep cleanup tests cross-platform                                                                     |
+| P1       | Hook system                | Only pre-edit and post-edit command hooks                                                                                                                                                           | Typed lifecycle hooks for session, prompt, permission, pre/post tool, compact, verification, subagent, and stop events                                  |
+| P1       | Plugin and skill system    | A versioned, workspace-bound extension manifest validates compatibility, permissions, commands, skills, agents, tools, hooks, MCP servers, and templates; installation/loading is not yet automatic | Signed installation, trust policy, lifecycle loading, updates, and removal without weakening the existing permission engine                             |
+| P1       | MCP completeness           | Validated STDIO tool discovery, bounded I/O, per-tool risk, and runtime cleanup are supported                                                                                                       | Streaming HTTP transport, OAuth, resources, prompts, reconnect policy, health state, collision policy, and per-server permissions                       |
+| P1       | Code review product        | Reviewer role exists only in orchestration                                                                                                                                                          | Dedicated `/review` presets for uncommitted work, commits, branches, security, tests, accessibility, and custom policy                                  |
+| P1       | Multimodal input           | Text-only primary workflow                                                                                                                                                                          | Image attachment, clipboard paste, screenshot context, image-aware provider capability negotiation, and transcript persistence                          |
+| P1       | TUI power-user controls    | Strong custom TUI, limited customization                                                                                                                                                            | Theme system, keymap persistence, Vim mode, reverse history search, queued follow-ups, accessible no-color mode, and screen-reader-friendly direct mode |
+| Done     | Memory                     | Explicit opt-in project memory has provenance, secret redaction, review/delete controls, and excludes external context by default                                                                   | Add user scope only after a clear precedence and privacy design exists                                                                                  |
+| P2       | Remote runtime             | Local process only                                                                                                                                                                                  | Authenticated local/remote app server protocol with reconnectable TUI and IDE clients                                                                   |
+| P2       | Cloud/offload              | Not supported                                                                                                                                                                                       | Provider-neutral remote task interface with best-of-N attempts and local patch application                                                              |
+| P2       | Workflow recording         | Not supported                                                                                                                                                                                       | Record/replay for terminal and tool workflows, compiled into reviewable skills                                                                          |
+| P2       | Enterprise governance      | Basic local permissions                                                                                                                                                                             | Managed policy, signed plugin trust, allowed provider/model lists, audit export, retention controls, and policy precedence                              |
 
 ## Architecture changes required
 
@@ -66,9 +66,10 @@ split is also complete:
   bridge, security, serialization, HTTP boundary, browser fragments, and CSS
   fragments. Stopped instances cannot publish into replacement runtimes.
 
-The main conversation renderer in `FullscreenTui.ts` remains the largest
-stateful hotspot. Further work should extract a view model or environment-status
-owner only when that boundary can own its state and tests cleanly.
+The conversation turn grouping and environment/status telemetry are now owned
+by tested `TuiConversationViewModel.ts` and `TuiEnvironmentStatus.ts` modules.
+`FullscreenTui.ts` remains the composition and rendering owner so this split did
+not change the established terminal layout.
 
 Target modules:
 
@@ -85,9 +86,12 @@ Target modules:
 No major feature should expand these hotspot files without first extracting a
 focused handler, coordinator, or view module with colocated tests.
 
-### 2. Introduce a typed event protocol
+### 2. Typed event protocol (implemented baseline)
 
-Replace the untyped `EventBus` payloads with a discriminated Zod event schema. Every UI, JSONL automation client, trace exporter, remote client, and test harness should consume the same protocol.
+`EventBus` payloads use a discriminated Zod envelope shared by the TUI, Web UI,
+JSONL automation, and trace surfaces. The v1 golden fixture protects serialized
+compatibility. New event families must extend that schema and add a migration or
+versioned fixture when the wire representation changes.
 
 Required event families:
 
@@ -101,9 +105,9 @@ Required event families:
 - context assembly and compaction
 - warning/error/final result
 
-### 3. Make capabilities explicit
+### 3. Explicit provider capabilities (implemented baseline)
 
-Each provider should declare support for:
+Providers declare and routing consumes support for:
 
 - streaming
 - native tools
@@ -114,11 +118,15 @@ Each provider should declare support for:
 - structured output
 - maximum context/output
 
-Routing must use capabilities rather than model-name substring heuristics.
+Known profiles provide the authoritative capability record. Unknown compatible
+models use conservative defaults rather than optimistic name guessing; live
+capability negotiation remains a future enhancement.
 
-### 4. Make safety consistent
+### 4. Shared safety path (implemented baseline, keep extending)
 
-All execution paths must pass through the same permission engine:
+Model tools, direct commands, Git, hooks, MCP tools, and orchestrated agents now
+pass through the shared permission/audit path. Future extension loaders and new
+execution surfaces must do the same:
 
 - model tool calls
 - direct shell commands
@@ -135,11 +143,11 @@ Permission decisions should include normalized target scope, command classificat
 
 ### Phase A: automation and trust
 
-1. `orbit exec --jsonl`
-2. typed event protocol
-3. verification contracts
-4. trace export and replay fixtures
-5. worktree isolation
+1. `orbit exec --jsonl` — complete
+2. typed event protocol — complete baseline
+3. verification contracts — complete baseline
+4. trace export and replay fixtures — complete baseline
+5. worktree isolation — complete baseline
 
 ### Phase B: agent leverage
 

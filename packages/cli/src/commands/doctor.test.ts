@@ -1,12 +1,35 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildDoctorReport,
   buildDoctorSnapshot,
   DoctorSnapshotSchema,
+  runDoctor,
 } from "./doctor.js";
-import { ConfigSchema, type OrbitConfig } from "@orbit-build/config";
+import {
+  ConfigLoader,
+  ConfigSchema,
+  DEFAULT_CONFIG,
+  type OrbitConfig,
+} from "@orbit-build/config";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("doctor diagnostics", () => {
+  it("applies an explicit provider override before probing or reporting", async () => {
+    const loadConfig = vi
+      .spyOn(ConfigLoader, "loadSync")
+      .mockReturnValue(ConfigSchema.parse(DEFAULT_CONFIG));
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runDoctor("D:/repo", { provider: "tokendance", json: true });
+
+    expect(loadConfig).toHaveBeenCalledWith("D:/repo", {
+      provider: { default: "tokendance" },
+    });
+  });
+
   it("summarizes capabilities without exposing secret values", () => {
     const config = {
       schemaVersion: 1,

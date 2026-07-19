@@ -55,8 +55,41 @@ describe("runUpdate", () => {
 
     expect(result.installed).toBe(true);
     expect(manager.install).toHaveBeenCalledWith("0.2.0", true);
+    expect(manager.readInstalledVersion).toHaveBeenCalledOnce();
     expect(beforeInstall).toHaveBeenCalledOnce();
     expect(afterInstall).toHaveBeenCalledOnce();
+  });
+
+  it("rolls back when the installed version cannot be verified", async () => {
+    const manager = createManager(true);
+    manager.readInstalledVersion
+      .mockReturnValueOnce("0.1.9")
+      .mockReturnValueOnce("0.1.6");
+
+    await expect(
+      runUpdate("0.1.6", { yes: true }, { manager, write: vi.fn() }),
+    ).rejects.toThrow("Orbit 0.1.6 was restored");
+    expect(manager.install).toHaveBeenNthCalledWith(1, "0.2.0", true);
+    expect(manager.install).toHaveBeenNthCalledWith(2, "0.1.6", true);
+  });
+
+  it("redacts credentials from install failures", async () => {
+    const manager = createManager(true);
+    manager.install
+      .mockImplementationOnce(() => {
+        throw new Error("Authorization: Bearer private-npm-token");
+      })
+      .mockImplementationOnce(() => undefined);
+    manager.readInstalledVersion.mockReturnValue("0.1.6");
+
+    const error = await runUpdate(
+      "0.1.6",
+      { yes: true },
+      { manager, write: vi.fn() },
+    ).catch((caught: unknown) => caught);
+
+    expect(String(error)).not.toContain("private-npm-token");
+    expect(String(error)).toContain("***REDACTED***");
   });
 
   it("does not install when already current", async () => {
@@ -80,5 +113,6 @@ function createManager(updateAvailable: boolean) {
       updateAvailable,
     })),
     install: vi.fn(),
+    readInstalledVersion: vi.fn(() => (updateAvailable ? "0.2.0" : "0.1.6")),
   };
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { AgentLoop } from "./AgentLoop.js";
 import { DEFAULT_CONFIG, type OrbitConfig } from "@orbit-build/config";
 import { ModelProvider } from "@orbit-build/model-providers";
@@ -66,7 +66,7 @@ describe("AgentLoop Hooks System", () => {
   };
 
   it("should run preEdit and postEdit hooks successfully", async () => {
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       process.cwd(),
       dummyConfig,
       dummyProvider,
@@ -93,7 +93,7 @@ describe("AgentLoop Hooks System", () => {
   });
 
   it("should expose the target path through ORBIT_FILE", async () => {
-    const loop = new AgentLoop(
+    const loop = AgentLoop.initialize(
       process.cwd(),
       dummyConfig,
       dummyProvider,
@@ -107,5 +107,31 @@ describe("AgentLoop Hooks System", () => {
     );
     expect(res.ok).toBe(true);
     expect(res.output).toContain("dummy-test-file.txt");
+  });
+
+  it("routes hook execution through the shared permission policy", async () => {
+    const interaction = {
+      ...dummyInteraction,
+      askApproval: vi.fn(async () => true),
+    };
+    const loop = AgentLoop.initialize(
+      process.cwd(),
+      {
+        ...dummyConfig,
+        permissions: { ...dummyConfig.permissions, mode: "plan" },
+      },
+      dummyProvider,
+      "test task",
+      interaction,
+    );
+
+    const result = await (loop as any).runHook(
+      "node -e \"console.log('must-not-run')\"",
+      "dummy.txt",
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain("blocked under plan mode");
+    expect(interaction.askApproval).not.toHaveBeenCalled();
   });
 });

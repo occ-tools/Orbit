@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { eventBus, type OrbitEvent } from "@orbit-build/core";
+import { eventBus, type OrbitEventEnvelope } from "@orbit-build/core";
 import type { ActiveWebTurn } from "./WebUiContracts.js";
 import { sendJson } from "./WebUiHttp.js";
 import { sanitizeWebEventPayload } from "./WebUiSecurity.js";
@@ -20,16 +20,16 @@ export class WebUiEventStream {
     ReturnType<typeof setInterval>
   >();
   private readonly getActiveTurn: () => WebUiTurnContext | undefined;
-  private sequence = 0;
   private state: "idle" | "started" | "stopped" = "idle";
-  private readonly eventBridge = (event: OrbitEvent): void => {
+  private readonly eventBridge = (event: OrbitEventEnvelope): void => {
     const payload = sanitizeWebEventPayload(event.type, event.payload);
     if (payload === undefined) return;
     const turn = this.getActiveTurn();
     this.broadcast({
       kind: "orbit_event",
-      id: ++this.sequence,
-      timestamp: new Date().toISOString(),
+      schemaVersion: event.schemaVersion,
+      id: event.eventId,
+      timestamp: event.timestamp,
       turnId: turn?.id,
       sessionId: turn?.sessionId,
       type: event.type,

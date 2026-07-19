@@ -13,6 +13,7 @@ import { homedir } from "os";
 import crypto from "crypto";
 import { z } from "zod";
 import {
+  LinuxSecretServiceKeyStore,
   MacOSKeychainKeyStore,
   type CredentialKeyStore,
 } from "./CredentialKeyStore.js";
@@ -76,7 +77,9 @@ export class CredentialsManager {
       options.keyStore === undefined
         ? platform === "darwin"
           ? new MacOSKeychainKeyStore()
-          : null
+          : platform === "linux"
+            ? new LinuxSecretServiceKeyStore()
+            : null
         : options.keyStore;
     this.fallbackKey = options.fallbackKey;
   }
@@ -284,8 +287,13 @@ export class CredentialsManager {
     const legacyKey = this.readMasterKeyFile();
     if (legacyKey) {
       if (this.keyStore) {
-        this.keyStore.store(legacyKey);
-        this.removeFileIfPresent(this.masterKeyPath);
+        try {
+          this.keyStore.store(legacyKey);
+          this.removeFileIfPresent(this.masterKeyPath);
+        } catch {
+          // Keep the restricted legacy key when the native store is temporarily
+          // unavailable. A later run can retry migration without data loss.
+        }
       }
       this.fallbackKey = legacyKey;
       return legacyKey;

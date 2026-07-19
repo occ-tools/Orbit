@@ -8,6 +8,7 @@ export default defineConfig({
       "**/dist/**",
       "**/.git/**",
       "**/.orbit/**",
+      "**/e2e/**",
       "**/rag-test-temp/**",
       "**/hunk-test-temp/**",
     ],

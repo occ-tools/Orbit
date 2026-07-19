@@ -3,9 +3,62 @@ import { z } from "zod";
 import {
   fetchWithRetry,
   modelFinishReasonError,
+  resolveModelCapabilities,
   sanitizeProviderErrorText,
   zodToJsonSchema,
 } from "./utils.js";
+
+describe("resolveModelCapabilities", () => {
+  const base = {
+    streaming: true,
+    toolCalls: false,
+    jsonMode: false,
+    thinking: false,
+    vision: false,
+    promptCaching: false,
+  };
+
+  it("merges model declarations over provider defaults", () => {
+    const capabilities = resolveModelCapabilities(
+      {
+        id: "custom",
+        type: "openai-compatible",
+        capabilities: base,
+        chat: async function* () {},
+        getModelCapabilities: () => ({
+          ...base,
+          thinking: true,
+          maxContextTokens: 256_000,
+        }),
+      },
+      "opaque-model-id",
+    );
+
+    expect(capabilities).toMatchObject({
+      streaming: true,
+      thinking: true,
+      maxContextTokens: 256_000,
+    });
+  });
+
+  it("falls back to provider declarations when a custom model probe fails", () => {
+    const capabilities = resolveModelCapabilities(
+      {
+        id: "custom",
+        type: "openai-compatible",
+        capabilities: { ...base, toolCalls: true },
+        chat: async function* () {},
+        getModelCapabilities: () => {
+          throw new Error("unknown model");
+        },
+      },
+      "private-model",
+    );
+
+    expect(capabilities.toolCalls).toBe(true);
+    expect(capabilities.thinking).toBe(false);
+  });
+});
 
 describe("zodToJsonSchema", () => {
   it("preserves descriptions, required fields, enums, and numeric bounds", () => {

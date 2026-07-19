@@ -86,9 +86,10 @@ platform supports it, with a validated path field as the fallback.
 Run `orbit login` to create, inspect, and delete saved provider profiles. Orbit
 stores credentials through its credential manager and redacts secrets from
 configuration output, diagnostics, events, and sessions. Windows uses DPAPI,
-while macOS stores the encryption key in the user's Keychain. Existing macOS
-`master.key` files migrate on first use; restricted file storage remains the
-portable fallback when a native key store is unavailable.
+macOS stores the encryption key in the user's Keychain, and Linux uses Secret
+Service through `secret-tool` when available. Existing macOS `master.key` files
+migrate on first use; restricted `0600` file storage remains the portable
+fallback when a native key store is unavailable.
 
 For an OpenAI-compatible service, enter the exact base URL required by that
 service—for example `https://provider.example/v1`. Orbit does not guess or append
@@ -198,6 +199,23 @@ Run it with `/review packages/core`. Templates support `$ARGUMENTS`, `{{args}}`,
 and `$1` through `$9`. Project commands override user commands; built-ins cannot
 be shadowed.
 
+### Extension manifests
+
+Orbit can validate a versioned extension manifest before any future installer
+or loader is allowed to trust it:
+
+```bash
+orbit extension .orbit/extensions/example.yaml
+orbit extension .orbit/extensions/example.yaml --json
+```
+
+The manifest declares Orbit compatibility, filesystem/network/process/
+credential permissions, and contributed commands, skills, agents, tools,
+hooks, MCP servers, and templates. Paths must stay inside the workspace and
+symlink escapes are rejected. This command validates and normalizes the
+contract only; it does not install or execute third-party code. See
+[`docs/EXTENSIONS.md`](docs/EXTENSIONS.md).
+
 ## Data cleanup and uninstall
 
 Preview and remove Orbit-owned runtime data without touching source files or
@@ -232,6 +250,7 @@ orbit update --check
 orbit update
 orbit update --yes
 orbit update --check --json
+orbit update --channel beta --check
 ```
 
 Inside the interactive TUI or synchronized Web UI, `/update` performs the same
@@ -239,9 +258,13 @@ Orbit CLI version check. The TUI can confirm and install the update; the Web UI
 stays check-only and directs the user to the terminal so it never replaces its
 own running server. It does not modify the current project's dependencies.
 
-The updater resolves npm's `dist-tags.latest`, validates the exact semantic
-version, and invokes the user's npm installation with fixed arguments. JSON
-mode without `--yes` is check-only, which keeps automation non-destructive.
+The stable channel resolves npm's `dist-tags.latest`; `--channel beta` resolves
+`dist-tags.next`. Orbit validates the exact semantic version, invokes the
+user's npm installation with fixed arguments, and verifies the version that npm
+actually installed. If installation or verification fails, it attempts to
+restore the previously installed version and prints an exact manual recovery
+command. JSON mode without `--yes` is check-only, which keeps automation
+non-destructive.
 
 ## Non-interactive automation
 

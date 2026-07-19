@@ -5,3 +5,4 @@ export * from "./Credentials.js";
 export * from "./CredentialKeyStore.js";
 export * from "./ProviderProfiles.js";
 export * from "./redactConfig.js";
+export * from "./ExtensionManifest.js";

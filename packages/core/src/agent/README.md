@@ -8,7 +8,13 @@ state in `cli`/`tui`; this folder coordinates those capabilities.
 
 - `AgentLoop.ts` owns one persisted chat's execution lifecycle, approvals,
   checkpoints, verification, context compaction, and public session controls.
-- `Orchestrator.ts` coordinates higher-level task execution and worker flows.
+- `AgentSessionBootstrap.ts` performs the explicit I/O bootstrap for new and
+  resumed sessions. `AgentLoop` constructors remain assignment-only.
+- `Orchestrator.ts` coordinates higher-level task execution: one isolated
+  writer followed by parallel read-only correctness and security reviewers.
+- `AgentTaskScheduler.ts` runs one dependency DAG with bounded concurrency,
+  normalized scope ownership, and graph-wide cancellation after timeout or
+  failure. Scheduler instances are deliberately single-use.
 - `Planner.ts` and `StepRunner.ts` turn a task into recoverable execution steps.
 - `MessageBuilder.ts` constructs stable model messages and volatile project
   context without exposing internal messages to normal chat history.
@@ -26,6 +32,8 @@ state in `cli`/`tui`; this folder coordinates those capabilities.
 - `AgentAudit.ts`: file-mutation classification, hashes, and bounded audit diffs.
 - `LocalPackageBinary.ts`: safe resolution and execution of workspace-local
   formatter, linter, and test binaries.
+- `McpRuntimeManager.ts`: owns MCP process lifetimes and removes temporary
+  dynamic tools when a run ends or restarts.
 
 These helpers are deliberately stateless. Add pure parsing and formatting logic
 there instead of extending `AgentLoop.ts`. Keep filesystem, approval, session,

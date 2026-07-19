@@ -1,10 +1,13 @@
 import { EventEmitter } from "events";
-import { OrbitEvent, OrbitEventSchema } from "./EventSchema.js";
+import {
+  ORBIT_EVENT_SCHEMA_VERSION,
+  type OrbitEvent,
+  OrbitEventEnvelopeSchema,
+  OrbitEventSchema,
+} from "./EventSchema.js";
 
 export class EventBus extends EventEmitter {
-  constructor() {
-    super();
-  }
+  private sequence = 0;
 
   public emitEvent<T extends OrbitEvent["type"]>(
     type: T,
@@ -15,10 +18,16 @@ export class EventBus extends EventEmitter {
     if (!validation.success) {
       return false;
     }
-    if (validation.data.type !== "error" || this.listenerCount("error") > 0) {
-      this.emit(validation.data.type, validation.data.payload);
+    const envelope = OrbitEventEnvelopeSchema.parse({
+      ...validation.data,
+      schemaVersion: ORBIT_EVENT_SCHEMA_VERSION,
+      eventId: `${process.pid}:${Date.now()}:${++this.sequence}`,
+      timestamp: new Date().toISOString(),
+    });
+    if (envelope.type !== "error" || this.listenerCount("error") > 0) {
+      this.emit(envelope.type, envelope.payload);
     }
-    this.emit("*", validation.data);
+    this.emit("*", envelope);
     return true;
   }
 }

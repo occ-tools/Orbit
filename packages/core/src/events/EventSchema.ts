@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+/** Public event-envelope version consumed by the TUI, Web UI and JSONL API. */
+export const ORBIT_EVENT_SCHEMA_VERSION = 1 as const;
+
 // --- Model Request & Response Events ---
 export const ModelRequestEventSchema = z.object({
   type: z.literal("model_request"),
@@ -303,3 +306,17 @@ export const OrbitEventSchema = z.discriminatedUnion("type", [
 ]);
 
 export type OrbitEvent = z.infer<typeof OrbitEventSchema>;
+
+/**
+ * Stable transport envelope for every wildcard event subscriber. Type-specific
+ * EventEmitter listeners intentionally continue receiving only their payload.
+ */
+export const OrbitEventEnvelopeSchema = z
+  .object({
+    schemaVersion: z.literal(ORBIT_EVENT_SCHEMA_VERSION),
+    eventId: z.string().min(1),
+    timestamp: z.string().datetime(),
+  })
+  .and(OrbitEventSchema);
+
+export type OrbitEventEnvelope = z.infer<typeof OrbitEventEnvelopeSchema>;

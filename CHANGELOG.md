@@ -4,6 +4,47 @@ All notable user-facing changes are recorded here. Orbit is pre-1.0; minor
 versions may still include configuration or API migrations, which must be
 called out explicitly.
 
+## 0.1.8 - 2026-07-19
+
+### Added
+
+- Added a bounded dependency-aware agent task scheduler with normalized scope
+  ownership, graph-wide timeout cancellation, and isolated parallel review.
+- Added task-level acceptance limits for duration, tokens, cost, and measured
+  prompt-cache hit rate, plus a protected credentialed DeepSeek release gate.
+- Added a versioned, workspace-bound extension manifest validator covering
+  compatibility, permissions, commands, skills, agents, tools, hooks, MCP
+  servers, and templates without executing third-party code.
+- Added real-browser Web UI release smoke tests, critical coverage thresholds,
+  installed-package smoke tests, and generated third-party notices.
+
+### Changed
+
+- Moved new/resumed session I/O into an explicit bootstrap boundary so the
+  agent loop constructor remains side-effect free.
+- Routed hooks through the shared permission, approval, audit, cancellation,
+  and secret-redaction path.
+- Split terminal conversation grouping and environment telemetry into focused,
+  tested view-model modules without changing the established TUI layout.
+- Strengthened macOS credential cleanup and key migration, npm update rollback,
+  provider capability routing, model-aware context budgeting, and MCP runtime
+  lifecycle ownership.
+
+### Fixed
+
+- Preserved event IDs and schema-version compatibility across JSONL, TUI, Web
+  UI, and trace consumers with a golden v1 wire fixture.
+- Prevented agent DAG tasks from continuing after timeout and rejected unsafe
+  scheduler reuse or overlapping nested write scopes.
+- Kept legacy DeepSeek aliases on their documented thinking behavior while
+  retaining V4 capability-aware routing for current models.
+- Made `orbit doctor --provider <id>` apply the requested provider so protected
+  DeepSeek and TokenDance release probes inspect the intended endpoint.
+- Isolated Playwright specifications from Vitest discovery so unit and browser
+  suites run through their correct test runners.
+
+No configuration migration is required from 0.1.7.
+
 ## 0.1.7 - 2026-07-19
 
 ### Added

@@ -13,6 +13,7 @@ import { runTraceExport } from "./commands/trace.js";
 import { runEval } from "./commands/eval.js";
 import { runClean } from "./commands/clean.js";
 import { runUpdate } from "./commands/update.js";
+import { validateExtension } from "./commands/extension.js";
 import { readCliVersion } from "./runtime/CliVersion.js";
 import { existsSync, realpathSync, statSync } from "fs";
 import { resolve } from "path";
@@ -71,6 +72,15 @@ program
   });
 
 program
+  .command("extension")
+  .description("validate a versioned Orbit extension manifest")
+  .argument("<manifest>", "YAML or JSON manifest inside the workspace")
+  .option("--json", "print the normalized manifest as JSON")
+  .action((manifest, options) => {
+    validateExtension(process.cwd(), manifest, { json: !!options.json });
+  });
+
+program
   .command("clean")
   .description("preview and remove Orbit-owned user or project data")
   .option("--user", "include user data under ~/.orbit")
@@ -95,6 +105,7 @@ program
   .command("update")
   .description("check for and install the latest published Orbit CLI")
   .option("--check", "check for an update without installing it")
+  .option("--channel <channel>", "update channel: stable or beta", "stable")
   .option("--yes", "install an available update without prompting")
   .option("--json", "print a versioned machine-readable result")
   .action(async (options) => {
@@ -102,6 +113,7 @@ program
       check: !!options.check,
       yes: !!options.yes,
       json: !!options.json,
+      channel: options.channel,
     });
   });
 
@@ -138,12 +150,14 @@ program
   )
   .option("--json", "print a redacted machine-readable diagnostic snapshot")
   .option("--strict", "return a non-zero status for warnings or errors")
-  .action(async (options) => {
+  .action(async (_localOptions, command) => {
+    const options = command.optsWithGlobals();
     await runDoctor(process.cwd(), {
       probe: !!options.probe,
       deepseek: !!options.deepseek,
       json: !!options.json,
       strict: !!options.strict,
+      provider: options.provider,
     });
   });
 

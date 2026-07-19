@@ -60,6 +60,21 @@ describe("UpdateManager", () => {
     );
   });
 
+  it("maps the beta channel to npm's next dist-tag", () => {
+    const run = vi.fn().mockReturnValue('"0.3.0-beta.1"');
+    const manager = new UpdateManager({ platform: "linux", run });
+
+    expect(manager.check("0.2.0", "beta")).toMatchObject({
+      latestVersion: "0.3.0-beta.1",
+      updateAvailable: true,
+    });
+    expect(run).toHaveBeenCalledWith(
+      "npm",
+      ["view", "@orbit-build/cli", "dist-tags.next", "--json"],
+      { timeoutMs: 15000, inheritOutput: false },
+    );
+  });
+
   it("installs only a validated exact package version", () => {
     const run = vi.fn().mockReturnValue("");
     const manager = new UpdateManager({ platform: "linux", run });
@@ -83,5 +98,21 @@ describe("UpdateManager", () => {
   it("rejects malformed registry output", () => {
     const manager = new UpdateManager({ run: () => "not-json" });
     expect(() => manager.check("0.1.6")).toThrow("invalid latest-version");
+  });
+
+  it("reads and validates the installed global version", () => {
+    const run = vi.fn().mockReturnValue(
+      JSON.stringify({
+        dependencies: { "@orbit-build/cli": { version: "0.2.0" } },
+      }),
+    );
+    const manager = new UpdateManager({ platform: "linux", run });
+
+    expect(manager.readInstalledVersion()).toBe("0.2.0");
+    expect(run).toHaveBeenCalledWith(
+      "npm",
+      ["list", "--global", "@orbit-build/cli", "--depth=0", "--json"],
+      { timeoutMs: 15000, inheritOutput: false },
+    );
   });
 });

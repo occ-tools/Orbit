@@ -102,6 +102,29 @@ for (const entry of readdirSync(join(repositoryRoot, "packages"), {
     );
   }
 }
+const runtimeVersionLiteral = new RegExp(
+  String.raw`(?:version\s*:\s*|ORBIT_VERSION\s*=\s*)["']\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?["']`,
+);
+const inspectRuntimeSource = (directory) => {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      inspectRuntimeSource(entryPath);
+    } else if (
+      entry.isFile() &&
+      entry.name.endsWith(".ts") &&
+      !entry.name.endsWith(".test.ts")
+    ) {
+      const source = readFileSync(entryPath, "utf8");
+      if (runtimeVersionLiteral.test(source)) {
+        fail(
+          `runtime source contains a hard-coded product version: ${entryPath}`,
+        );
+      }
+    }
+  }
+};
+inspectRuntimeSource(join(repositoryRoot, "packages"));
 const cliOutput = run(
   process.execPath,
   [join(cliRoot, "dist", "index.js"), "--version"],

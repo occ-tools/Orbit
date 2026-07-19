@@ -1,13 +1,20 @@
 import readline from "readline";
 import picocolors from "picocolors";
 import { z } from "zod";
-import { UpdateManager, type UpdateCheck } from "../runtime/UpdateManager.js";
+import { redactSecrets } from "@orbit-build/shared";
+import {
+  UpdateChannelSchema,
+  UpdateManager,
+  type UpdateChannel,
+  type UpdateCheck,
+} from "../runtime/UpdateManager.js";
 
 const UpdateCommandOptionsSchema = z
   .object({
     check: z.boolean().default(false),
     yes: z.boolean().default(false),
     json: z.boolean().default(false),
+    channel: UpdateChannelSchema.default("stable"),
   })
   .strict();
 
@@ -15,10 +22,11 @@ export interface UpdateCommandOptions {
   check?: boolean;
   yes?: boolean;
   json?: boolean;
+  channel?: UpdateChannel;
 }
 
 export interface UpdateCommandDependencies {
-  manager?: Pick<UpdateManager, "check" | "install">;
+  manager?: Pick<UpdateManager, "check" | "install" | "readInstalledVersion">;
   interactive?: boolean;
   confirm?: (prompt: string) => Promise<boolean>;
   write?: (text: string) => void;
@@ -29,6 +37,8 @@ export interface UpdateCommandDependencies {
 export interface UpdateCommandResult {
   check: UpdateCheck;
   installed: boolean;
+  channel: UpdateChannel;
+  rollback?: "not-needed" | "succeeded" | "failed";
 }
 
 /** Check the published npm version and explicitly install an available update. */
@@ -40,10 +50,10 @@ export async function runUpdate(
   const options = UpdateCommandOptionsSchema.parse(rawOptions);
   const manager = dependencies.manager ?? new UpdateManager();
   const write = dependencies.write ?? ((text: string) => console.log(text));
-  const check = manager.check(currentVersion);
+  const check = manager.check(currentVersion, options.channel);
 
   if (!check.updateAvailable) {
-    const result = { check, installed: false };
+    const result = { check, installed: false, channel: options.channel };
     write(
       options.json
         ? JSON.stringify({ schemaVersion: 1, ...result })
@@ -55,7 +65,7 @@ export async function runUpdate(
   }
 
   if (options.check || (options.json && !options.yes)) {
-    const result = { check, installed: false };
+    const result = { check, installed: false, channel: options.channel };
     write(
       options.json
         ? JSON.stringify({ schemaVersion: 1, ...result })
@@ -81,16 +91,52 @@ export async function runUpdate(
 
   if (!confirmed) {
     write(picocolors.yellow("⚠ Update cancelled."));
-    return { check, installed: false };
+    return { check, installed: false, channel: options.channel };
   }
 
   dependencies.beforeInstall?.();
   try {
     manager.install(check.latestVersion, !options.json);
+    const installedVersion = manager.readInstalledVersion();
+    if (installedVersion !== check.latestVersion) {
+      throw new Error(
+        `npm reported Orbit ${installedVersion} after installing ${check.latestVersion}.`,
+      );
+    }
+  } catch (error: unknown) {
+    let rollback: "succeeded" | "failed" = "failed";
+    try {
+      manager.install(check.currentVersion, !options.json);
+      rollback =
+        manager.readInstalledVersion() === check.currentVersion
+          ? "succeeded"
+          : "failed";
+    } catch {
+      rollback = "failed";
+    }
+    const detail = redactSecrets(
+      error instanceof Error ? error.message : String(error),
+    )
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 2_000);
+    const recovery =
+      rollback === "succeeded"
+        ? `Orbit ${check.currentVersion} was restored.`
+        : `Automatic rollback failed. Run npm install --global @orbit-build/cli@${check.currentVersion}.`;
+    throw new Error(`Orbit update did not complete: ${detail} ${recovery}`, {
+      cause: error,
+    });
   } finally {
     dependencies.afterInstall?.();
   }
-  const result = { check, installed: true };
+  const result = {
+    check,
+    installed: true,
+    channel: options.channel,
+    rollback: "not-needed" as const,
+  };
   write(
     options.json
       ? JSON.stringify({ schemaVersion: 1, ...result })

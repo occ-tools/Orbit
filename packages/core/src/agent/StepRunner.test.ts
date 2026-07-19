@@ -11,6 +11,30 @@ describe("StepRunner Subprocess Timestamps & Limits", () => {
     vi.useRealTimers();
   });
 
+  it("does not start a tool when its parent operation is already cancelled", async () => {
+    const execute = vi.fn(async () => ({ ok: true }));
+    vi.spyOn(toolRegistry, "get").mockReturnValue({
+      name: "read_file",
+      description: "mock read",
+      risk: "read",
+      inputSchema: { safeParse: () => ({ success: true, data: {} }) },
+      execute,
+    } as any);
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await new StepRunner(process.cwd(), "test-session").run(
+      { id: "call-cancelled", name: "read_file", arguments: "{}" },
+      controller.signal,
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Tool execution was cancelled before it started.",
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("should abort tool execution using the configured command timeout", async () => {
     // Mock the registry get to return a dummy execution tool that hangs
     const mockTool = {

@@ -197,6 +197,8 @@ describe("WebUiServer", () => {
     expect(localizedPage).toContain('id="inspectorBackdrop"');
     expect(localizedPage).toContain('aria-modal="true"');
     expect(localizedPage).toContain('id="commandPalette"');
+    expect(localizedPage).toContain('id="slashCommandMenu"');
+    expect(localizedPage).toContain('aria-controls="slashCommandResults"');
     expect(localizedPage).toContain(
       'aria-label="命令帮助" aria-haspopup="dialog"',
     );
@@ -256,9 +258,14 @@ describe("WebUiServer", () => {
     const cwd = mkdtempSync(join(tmpdir(), "orbit-webui-files-"));
     mkdirSync(join(cwd, "src", "runtime"), { recursive: true });
     mkdirSync(join(cwd, "node_modules", "private"), { recursive: true });
+    mkdirSync(join(cwd, ".orbit", "commands"), { recursive: true });
     writeFileSync(join(cwd, "src", "index.ts"), "export {};\n");
     writeFileSync(join(cwd, "src", "runtime", "indexer.ts"), "export {};\n");
     writeFileSync(join(cwd, "node_modules", "private", "index.ts"), "hidden\n");
+    writeFileSync(
+      join(cwd, ".orbit", "commands", "release-review.md"),
+      "---\ndescription: Review the pending release\nargument-hint: <scope>\n---\nReview this release: $ARGUMENTS\n",
+    );
 
     try {
       const handle = await startOrbitWebUi({
@@ -280,7 +287,25 @@ describe("WebUiServer", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
         files: ["src/index.ts", "src/runtime/indexer.ts"],
+        commands: [],
         total: 2,
+      });
+
+      const commandResponse = await fetch(
+        `${url.origin}/api/completions?query=`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      expect(commandResponse.status).toBe(200);
+      expect(await commandResponse.json()).toMatchObject({
+        commands: expect.arrayContaining(["/goal", "/help", "/release-review"]),
+        commandDetails: expect.arrayContaining([
+          {
+            command: "/release-review",
+            description: "Review the pending release",
+            argumentHint: "<scope>",
+            source: "project",
+          },
+        ]),
       });
 
       const invalid = await fetch(

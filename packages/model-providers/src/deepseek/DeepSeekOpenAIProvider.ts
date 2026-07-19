@@ -673,7 +673,7 @@ export class DeepSeekOpenAIProvider implements ModelProvider {
         function: {
           name: tool.name,
           description: tool.description,
-          parameters: zodToJsonSchema(tool.inputSchema),
+          parameters: tool.inputJsonSchema ?? zodToJsonSchema(tool.inputSchema),
         },
       }));
     } catch (error: unknown) {

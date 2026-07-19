@@ -3,7 +3,7 @@ import { execa } from "execa";
 import { OrbitTool, ToolContext, ToolResult } from "../types.js";
 
 export const GitRestoreInputSchema = z.object({
-  paths: z.array(z.string()),
+  paths: z.array(z.string().trim().min(1).max(4096)).min(1).max(200),
 });
 
 export type GitRestoreInput = z.infer<typeof GitRestoreInputSchema>;
@@ -22,16 +22,17 @@ export class GitRestoreTool implements OrbitTool<GitRestoreInput, string> {
     try {
       const { stdout } = await execa("git", ["restore", ...input.paths], {
         cwd: ctx.cwd,
+        signal: ctx.abortSignal,
       });
       return {
         ok: true,
         data: stdout,
         display: `Restored files: ${input.paths.join(", ")}`,
       };
-    } catch (e: any) {
+    } catch (error: unknown) {
       return {
         ok: false,
-        error: `Git restore failed: ${e.message}`,
+        error: `Git restore failed: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }

@@ -3,7 +3,8 @@ import glob from "fast-glob";
 import { OrbitTool, ToolContext, ToolResult } from "../types.js";
 
 export const GlobInputSchema = z.object({
-  pattern: z.string(),
+  pattern: z.string().min(1).max(4096),
+  maxResults: z.number().int().min(1).max(5000).optional(),
 });
 
 export type GlobInput = z.infer<typeof GlobInputSchema>;
@@ -11,7 +12,7 @@ export type GlobInput = z.infer<typeof GlobInputSchema>;
 export class GlobTool implements OrbitTool<GlobInput, string[]> {
   name = "glob";
   description =
-    "Find files matching a glob pattern inside the project workspace.";
+    "Find files matching a glob pattern inside the project workspace, with a configurable bounded result count.";
   inputSchema = GlobInputSchema;
   risk = "read" as const;
 
@@ -33,15 +34,17 @@ export class GlobTool implements OrbitTool<GlobInput, string[]> {
         suppressErrors: true,
       });
 
+      const maxResults = input.maxResults ?? 500;
+      const boundedFiles = files.slice(0, maxResults);
       return {
         ok: true,
-        data: files,
-        display: `Glob matches for "${input.pattern}": found ${files.length} files`,
+        data: boundedFiles,
+        display: `Glob matches for "${input.pattern}": returned ${boundedFiles.length}${files.length > boundedFiles.length ? ` of ${files.length}` : ""} files`,
       };
-    } catch (e: any) {
+    } catch (error: unknown) {
       return {
         ok: false,
-        error: e.message,
+        error: error instanceof Error ? error.message : String(error),
       };
     }
   }

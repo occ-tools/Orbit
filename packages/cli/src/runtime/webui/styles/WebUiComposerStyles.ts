@@ -85,6 +85,116 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
   box-shadow: none;
 }
 
+.slash-command-menu {
+  position: absolute;
+  z-index: 24;
+  left: 10px;
+  right: 10px;
+  bottom: calc(100% + 8px);
+  overflow: hidden;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 13px;
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--ink-strong) 10%, transparent);
+}
+
+/* The landing composer has ample space below; opening downward keeps the
+   command heading visible instead of letting the application topbar clip it. */
+.empty-composer-slot .slash-command-menu {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+
+.empty-composer-slot .slash-command-results {
+  max-height: min(230px, 32vh);
+}
+
+.slash-command-heading,
+.slash-command-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.slash-command-heading {
+  padding: 9px 11px 7px;
+  border-bottom: 1px solid var(--border);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.slash-command-heading span {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.slash-command-results {
+  max-height: min(318px, 46vh);
+  overflow-y: auto;
+  padding: 5px;
+}
+
+.slash-command-option {
+  width: 100%;
+  min-height: 45px;
+  display: grid;
+  grid-template-columns: minmax(145px, 0.38fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 6px 9px;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  text-align: left;
+}
+
+.slash-command-option[aria-selected="true"],
+.slash-command-option:hover {
+  background: var(--accent-soft);
+}
+
+.slash-command-invocation {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.slash-command-invocation strong {
+  color: var(--accent-strong);
+  font-size: 12px;
+}
+
+.slash-command-invocation small,
+.slash-command-description {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-command-empty {
+  margin: 0;
+  padding: 18px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.slash-command-hint {
+  justify-content: flex-start;
+  padding: 7px 11px 8px;
+  border-top: 1px solid var(--border);
+}
+
 #prompt {
   display: block;
   width: 100%;
@@ -99,6 +209,13 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
   outline: 0;
   font-size: 14.5px;
   line-height: 1.55;
+}
+
+@media (max-width: 620px) {
+  .slash-command-option {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
 }
 
 .empty-composer-slot #prompt {

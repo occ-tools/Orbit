@@ -8,6 +8,22 @@ export interface ToolContext {
   config?: OrbitConfig;
   logger?: ToolLogger;
   abortSignal?: AbortSignal;
+  services?: ToolRuntimeServices;
+}
+
+export interface ToolTaskPlanItem {
+  step: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+export interface ToolTaskPlanUpdate {
+  explanation?: string;
+  plan: ToolTaskPlanItem[];
+}
+
+/** Loop-scoped capabilities that tools may use without importing core state. */
+export interface ToolRuntimeServices {
+  updatePlan?(update: ToolTaskPlanUpdate): Promise<unknown> | unknown;
 }
 
 export interface ToolLogger {
@@ -29,6 +45,12 @@ export interface OrbitTool<I = unknown, O = unknown> {
   name: string;
   description: string;
   inputSchema: z.ZodType<I>;
+  /**
+   * Optional provider-facing JSON Schema. Dynamic tools such as MCP tools use
+   * this to preserve the server-declared contract while still validating the
+   * execution boundary with `inputSchema`.
+   */
+  inputJsonSchema?: Record<string, unknown>;
   risk: ToolRisk;
   execute(input: I, ctx: ToolContext): Promise<ToolResult<O>>;
 }

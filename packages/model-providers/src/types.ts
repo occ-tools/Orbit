@@ -73,6 +73,7 @@ export interface OrbitToolDefinition {
   name: string;
   description: string;
   inputSchema: z.ZodType<any>;
+  inputJsonSchema?: Record<string, unknown>;
 }
 
 export interface ModelChatInput {

@@ -16,7 +16,10 @@ describe("getAutocompleteCandidates", () => {
     });
     writeFileSync(join(cwd, "src", "index.ts"), "export {};\n");
     writeFileSync(join(cwd, "src", "ignored.tmp"), "ignored\n");
-    writeFileSync(join(cwd, ".orbit", "commands", "review.md"), "Review $1");
+    writeFileSync(
+      join(cwd, ".orbit", "commands", "review.md"),
+      "---\ndescription: Review this release\nargument-hint: <scope>\n---\nReview $1",
+    );
     writeFileSync(
       join(cwd, ".orbit", "symbols.json"),
       JSON.stringify({
@@ -44,6 +47,12 @@ describe("getAutocompleteCandidates", () => {
 
     expect(candidates.commands).toContain("/help");
     expect(candidates.commands).toContain("/review");
+    expect(candidates.commandDetails).toContainEqual({
+      command: "/review",
+      description: "Review this release",
+      argumentHint: "<scope>",
+      source: "project",
+    });
     expect(candidates.files).toContain("src/index.ts");
     expect(candidates.files).not.toContain("src/ignored.tmp");
     expect(candidates.symbols).toEqual(["main"]);

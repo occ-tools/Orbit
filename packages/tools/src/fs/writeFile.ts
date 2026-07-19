@@ -5,8 +5,8 @@ import { resolveSafePath } from "@orbit-build/shared";
 import { OrbitTool, ToolContext, ToolResult } from "../types.js";
 
 export const WriteFileInputSchema = z.object({
-  path: z.string(),
-  content: z.string(),
+  path: z.string().trim().min(1).max(4096),
+  content: z.string().max(5_000_000),
 });
 
 export type WriteFileInput = z.infer<typeof WriteFileInputSchema>;
@@ -31,10 +31,10 @@ export class WriteFileTool implements OrbitTool<WriteFileInput, void> {
         ok: true,
         display: `Wrote file to ${input.path}`,
       };
-    } catch (e: any) {
+    } catch (error: unknown) {
       return {
         ok: false,
-        error: e.message,
+        error: error instanceof Error ? error.message : String(error),
       };
     }
   }

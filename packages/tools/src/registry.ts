@@ -1,9 +1,9 @@
 import { OrbitTool } from "./types.js";
 
 export class ToolRegistry {
-  private tools = new Map<string, OrbitTool<any, any>>();
+  private tools = new Map<string, OrbitTool<unknown, unknown>>();
 
-  register(tool: OrbitTool<any, any>) {
+  register(tool: OrbitTool<unknown, unknown>) {
     this.tools.set(tool.name, tool);
   }
 
@@ -11,11 +11,11 @@ export class ToolRegistry {
     return this.tools.delete(name);
   }
 
-  get(name: string): OrbitTool<any, any> | undefined {
+  get(name: string): OrbitTool<unknown, unknown> | undefined {
     return this.tools.get(name);
   }
 
-  list(): OrbitTool<any, any>[] {
+  list(): OrbitTool<unknown, unknown>[] {
     return Array.from(this.tools.values());
   }
 
@@ -24,6 +24,7 @@ export class ToolRegistry {
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
+      inputJsonSchema: t.inputJsonSchema,
     }));
   }
 }

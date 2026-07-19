@@ -1,9 +1,27 @@
 import { describe, it, expect } from "vitest";
-import { buildMcpEnvironment, MCPClient } from "./MCPClient.js";
+import {
+  buildMcpEnvironment,
+  createMcpToolName,
+  MCPClient,
+} from "./MCPClient.js";
 import path from "path";
 import { writeFileSync, unlinkSync } from "fs";
 
 describe("MCPClient", () => {
+  it("creates stable DeepSeek-compatible names for arbitrary MCP tools", () => {
+    expect(createMcpToolName("docs", "lookup")).toBe("mcp__docs__lookup");
+    const normalized = createMcpToolName(
+      "server.with spaces",
+      "工具/read.document.with.a.very.long.name.that.exceeds.provider.limits",
+    );
+    expect(normalized).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    expect(
+      createMcpToolName(
+        "server.with spaces",
+        "工具/read.document.with.a.very.long.name.that.exceeds.provider.limits",
+      ),
+    ).toBe(normalized);
+  });
   it("inherits only runtime variables and explicitly requested names", () => {
     const result = buildMcpEnvironment(
       { EXPLICIT_VALUE: "configured" },
@@ -70,6 +88,7 @@ rl.on('line', (line) => {
     }) + '\\n');
   } else if (msg.method === 'tools/call') {
     const args = msg.params.arguments;
+    if (args?.wait === true) return;
     process.stdout.write(JSON.stringify({
       jsonrpc: '2.0',
       id: msg.id,
@@ -98,6 +117,15 @@ rl.on('line', (line) => {
 
       const res = await client.callTool("hello", { name: "Orbit" });
       expect(res.content[0].text).toBe("Hello, Orbit!");
+
+      const controller = new AbortController();
+      const pending = client.callTool(
+        "hello",
+        { wait: true },
+        controller.signal,
+      );
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     } finally {
       await client.stop();
       try {

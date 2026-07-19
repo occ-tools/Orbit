@@ -39,6 +39,14 @@ export class PermissionEngine {
 
     const safeArgs = isRecord(args) ? args : {};
 
+    if (toolName === "update_plan") {
+      return {
+        action: "allow",
+        reason: "Updating the current chat plan does not modify project files.",
+        risk: "write",
+      };
+    }
+
     if (readTools.has(toolName) || writeTools.has(toolName)) {
       targetPath = firstString(
         safeArgs.path,

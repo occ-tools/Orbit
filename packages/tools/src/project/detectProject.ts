@@ -27,8 +27,12 @@ export interface ProjectIndex {
 }
 
 export const DetectProjectInputSchema = z.object({});
+export type DetectProjectInput = z.infer<typeof DetectProjectInputSchema>;
 
-export class DetectProjectTool implements OrbitTool<any, ProjectIndex> {
+export class DetectProjectTool implements OrbitTool<
+  DetectProjectInput,
+  ProjectIndex
+> {
   name = "detect_project";
   description =
     "Detect project profile including programming languages, frameworks, package manager, test/lint/build scripts, and main entry files.";
@@ -36,7 +40,7 @@ export class DetectProjectTool implements OrbitTool<any, ProjectIndex> {
   risk = "read" as const;
 
   async execute(
-    input: any,
+    _input: DetectProjectInput,
     ctx: ToolContext,
   ): Promise<ToolResult<ProjectIndex>> {
     try {
@@ -150,10 +154,10 @@ export class DetectProjectTool implements OrbitTool<any, ProjectIndex> {
         data,
         display: `Detected Project: ${data.detectedLanguages.join(", ")} project. Frameworks: ${data.frameworks.join(", ") || "None"}. PM: ${data.packageManager || "None"}`,
       };
-    } catch (e: any) {
+    } catch (error: unknown) {
       return {
         ok: false,
-        error: e.message,
+        error: error instanceof Error ? error.message : String(error),
       };
     }
   }

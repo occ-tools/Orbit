@@ -12,7 +12,7 @@ only small process-level commands whose state cannot yet be cleanly isolated.
 | `ShellCommandHandler.ts`           | `!` and `/run`, including permission approval.                        |
 | `WorkspaceConfigCommandHandler.ts` | Validated direct and interactive `/config` updates.                   |
 | `ContextCommandHandler.ts`         | `/add`, `/drop`, `/compact`, and `/clear` context/history operations. |
-| `RollbackCommandHandler.ts`        | Safe Git/checkpoint `/rollback` selection and execution.              |
+| `RollbackCommandHandler.ts`        | Safe `/rollback` plus `/timeline` and `/rewind` checkpoints.          |
 | `SessionCommandHandler.ts`         | `/chat` list, create, resume, delete, and picker flows.               |
 | `SessionMetadataCommandHandler.ts` | `/goal` and `/rename` durable chat metadata.                          |
 | `WorkspaceStateCommandHandler.ts`  | `/memory`, `/plan`, and `/metrics` project/session state.             |

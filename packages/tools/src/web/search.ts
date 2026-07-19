@@ -4,6 +4,9 @@ import type { OrbitTool, ToolContext, ToolResult } from "../types.js";
 export const WebSearchInputSchema = z.object({
   query: z
     .string()
+    .trim()
+    .min(1)
+    .max(2048)
     .describe(
       "Search query. Resolve relative dates using the Runtime Context current date before adding date terms; do not add stale years from model memory.",
     ),

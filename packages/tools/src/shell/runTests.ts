@@ -6,7 +6,7 @@ import type { OrbitTool, ToolContext, ToolResult } from "../types.js";
 import { LogTruncator } from "@orbit-build/shared";
 
 export const RunTestsInputSchema = z.object({
-  command: z.string().optional(),
+  command: z.string().trim().min(1).max(100_000).optional(),
 });
 
 export type RunTestsInput = z.infer<typeof RunTestsInputSchema>;
@@ -52,15 +52,23 @@ export class RunTestsTool implements OrbitTool<
 
       const displayStdout = LogTruncator.truncate(stdout, 150, 20000);
       const displayStderr = LogTruncator.truncate(stderr, 150, 20000);
+      const truncated =
+        displayStdout.length !== stdout.length ||
+        displayStderr.length !== stderr.length;
 
       return {
         ok: exitCode === 0,
-        data: { stdout, stderr, exitCode },
+        data: { stdout: displayStdout, stderr: displayStderr, exitCode },
         display: `Ran tests using command "${testCommand}":\n\nStdout:\n${displayStdout}\n\nStderr:\n${displayStderr}\n\nExit code: ${exitCode}`,
         error:
           exitCode !== 0
             ? `Tests failed with exit code ${exitCode}`
             : undefined,
+        metadata: {
+          truncated,
+          stdoutChars: stdout.length,
+          stderrChars: stderr.length,
+        },
       };
     } catch (error: unknown) {
       if (

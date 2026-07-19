@@ -4,6 +4,37 @@ All notable user-facing changes are recorded here. Orbit is pre-1.0; minor
 versions may still include configuration or API migrations, which must be
 called out explicitly.
 
+## Unreleased
+
+## 0.1.9 - 2026-07-19
+
+### Added
+
+- Added keyboard-accessible `/` command discovery to the Web UI composer and
+  command palette, including validated project and user custom commands.
+- Connected `/timeline` and `/rewind <id|number>` to Orbit's persisted file
+  checkpoints with localized, bounded history output.
+- Added model-callable `update_plan` for durable multi-step progress and
+  `web_fetch` for bounded, redirect-safe public source retrieval.
+
+### Changed
+
+- Unified built-in slash command names, usage hints, localized descriptions,
+  terminal help, completion, and Web UI discovery under one catalog.
+- Preserved dynamic MCP JSON Schemas end to end, normalized provider-compatible
+  tool names, and added cancellation plus collision-safe registration.
+- Bounded and redacted file, search, shell, test, Git, web, and MCP tool output
+  before it enters model history or the terminal status stream.
+
+### Fixed
+
+- Rejected malformed, duplicate, unknown, and schema-invalid model tool calls
+  without crashing the agent loop or persisting invalid provider history.
+- Kept tool cancellation, permission preflight, checkpointing, and DeepSeek
+  tool definitions consistent across repeated model sub-turns.
+
+No configuration migration is required from 0.1.8.
+
 ## 0.1.8 - 2026-07-19
 
 ### Added

@@ -15,7 +15,9 @@ import { DetectProjectTool } from "./project/detectProject.js";
 import { InspectProjectTool } from "./project/inspectProject.js";
 import { SearchSymbolsTool } from "./project/searchSymbols.js";
 import { WebSearchTool } from "./web/search.js";
+import { WebFetchTool } from "./web/fetch.js";
 import { FindSymbolReferencesTool } from "./project/findReferences.js";
+import { UpdatePlanTool } from "./session/updatePlan.js";
 
 // Register core tools automatically
 toolRegistry.register(new ReadFileTool());
@@ -34,7 +36,9 @@ toolRegistry.register(new DetectProjectTool());
 toolRegistry.register(new InspectProjectTool());
 toolRegistry.register(new SearchSymbolsTool());
 toolRegistry.register(new WebSearchTool());
+toolRegistry.register(new WebFetchTool());
 toolRegistry.register(new FindSymbolReferencesTool());
+toolRegistry.register(new UpdatePlanTool());
 
 export * from "./types.js";
 export * from "./registry.js";
@@ -54,4 +58,6 @@ export * from "./project/detectProject.js";
 export * from "./project/inspectProject.js";
 export * from "./project/searchSymbols.js";
 export * from "./web/search.js";
+export * from "./web/fetch.js";
 export * from "./project/findReferences.js";
+export * from "./session/updatePlan.js";

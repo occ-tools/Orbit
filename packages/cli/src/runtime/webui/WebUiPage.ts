@@ -57,6 +57,9 @@ interface WebUiCopy {
   suggestionImproveBody: string;
   inputLabel: string;
   inputPlaceholder: string;
+  slashCommands: string;
+  slashCommandEmpty: string;
+  slashCommandHint: string;
   context: string;
   contextPickerTitle: string;
   contextPickerSearch: string;
@@ -158,6 +161,9 @@ const COPY: Record<WebUiLanguage, WebUiCopy> = {
     suggestionImproveBody: "Optimize performance, safety, and maintainability.",
     inputLabel: "Message Orbit",
     inputPlaceholder: "Ask Orbit to work on this codebase…",
+    slashCommands: "Slash commands",
+    slashCommandEmpty: "No matching commands",
+    slashCommandHint: "↑↓ navigate · Enter or Tab to insert · Esc to close",
     context: "Context",
     contextPickerTitle: "Add file context",
     contextPickerSearch: "Search workspace files…",
@@ -256,6 +262,9 @@ const COPY: Record<WebUiLanguage, WebUiCopy> = {
     suggestionImproveBody: "优化性能、安全性与可维护性。",
     inputLabel: "给 Orbit 发送消息",
     inputPlaceholder: "让 Orbit 在这个代码库中完成任务…",
+    slashCommands: "斜杠命令",
+    slashCommandEmpty: "没有匹配的命令",
+    slashCommandHint: "↑↓ 选择 · Enter 或 Tab 插入 · Esc 关闭",
     context: "上下文",
     contextPickerTitle: "添加文件上下文",
     contextPickerSearch: "搜索工作区文件…",
@@ -365,7 +374,13 @@ function renderComposer(copy: WebUiCopy): string {
     </section>
     <form class="composer" id="composer">
       <label class="sr-only" for="prompt">${copy.inputLabel}</label>
-      <textarea id="prompt" data-testid="composer-input" rows="1" maxlength="100000" autocomplete="off" autofocus placeholder="${copy.inputPlaceholder}"></textarea>
+      <textarea id="prompt" data-testid="composer-input" rows="1" maxlength="100000" autocomplete="off" autofocus placeholder="${copy.inputPlaceholder}" aria-autocomplete="list" aria-controls="slashCommandResults" aria-expanded="false"></textarea>
+      <section class="slash-command-menu" id="slashCommandMenu" aria-label="${copy.slashCommands}" aria-hidden="true" hidden>
+        <div class="slash-command-heading"><strong>${copy.slashCommands}</strong><span>/</span></div>
+        <div class="slash-command-results" id="slashCommandResults" role="listbox"></div>
+        <p class="slash-command-empty" id="slashCommandEmpty" role="status" hidden>${copy.slashCommandEmpty}</p>
+        <p class="slash-command-hint">${copy.slashCommandHint}</p>
+      </section>
       <section class="context-shelf" id="contextShelf" aria-label="${copy.activeContext}" hidden>
         <div class="context-shelf-header">
           <span>${renderUiIcon("context")}<strong>${copy.activeContext}</strong></span>

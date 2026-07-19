@@ -4,8 +4,8 @@ import type { OrbitTool, ToolContext, ToolResult } from "../types.js";
 import { LogTruncator } from "@orbit-build/shared";
 
 export const BashInputSchema = z.object({
-  command: z.string(),
-  timeoutMs: z.number().optional(),
+  command: z.string().min(1).max(100_000),
+  timeoutMs: z.number().int().positive().optional(),
 });
 
 export type BashInput = z.infer<typeof BashInputSchema>;
@@ -67,8 +67,8 @@ export class BashTool implements OrbitTool<BashInput, BashOutput> {
       return {
         ok: exitCode === 0,
         data: {
-          stdout,
-          stderr,
+          stdout: displayStdout,
+          stderr: displayStderr,
           exitCode,
         },
         display,
@@ -76,7 +76,11 @@ export class BashTool implements OrbitTool<BashInput, BashOutput> {
           exitCode === 0
             ? undefined
             : `Command exited with non-zero status ${exitCode}.`,
-        metadata: { truncated },
+        metadata: {
+          truncated,
+          stdoutChars: stdout.length,
+          stderrChars: stderr.length,
+        },
       };
     } catch (error: unknown) {
       if (

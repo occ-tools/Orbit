@@ -19,6 +19,13 @@ const GitStatusPathSchema = z.string().min(1).max(32_768);
 interface RollbackLoop {
   rollbackLastCheckpoint(): Promise<void>;
   rollbackFileToCheckpoint(filePath: string): boolean;
+  getCheckpoints(): Array<{
+    id: string;
+    timestamp: string;
+    toolCallId: string;
+    files: string[];
+  }>;
+  rewindToCheckpoint(checkpointId: string): Promise<boolean>;
 }
 
 interface RollbackPromptAdapter {
@@ -81,14 +88,22 @@ export function parseGitStatusPaths(output: string): string[] {
   return [...new Set(paths)];
 }
 
-/** Handle `/rollback` while keeping every selected path inside the workspace. */
+/** Handle checkpoint history commands and workspace-safe `/rollback`. */
 export async function handleRollbackCommand(
   command: string,
   argument: string,
   dependencies: RollbackCommandDependencies,
 ): Promise<CommandHandlerResult | null> {
-  if (command !== "/rollback") return null;
   const isZh = dependencies.language === "zh";
+  if (command === "/timeline") {
+    printCheckpointTimeline(dependencies.loop.getCheckpoints(), dependencies);
+    return HANDLED_COMMAND;
+  }
+  if (command === "/rewind") {
+    await rewindToCheckpoint(argument, dependencies);
+    return HANDLED_COMMAND;
+  }
+  if (command !== "/rollback") return null;
   if (argument === "all" || argument === "--all") {
     await dependencies.loop.rollbackLastCheckpoint();
     return HANDLED_COMMAND;
@@ -181,6 +196,101 @@ export async function handleRollbackCommand(
     );
   }
   return HANDLED_COMMAND;
+}
+
+function printCheckpointTimeline(
+  checkpoints: ReturnType<RollbackLoop["getCheckpoints"]>,
+  dependencies: RollbackCommandDependencies,
+): void {
+  const isZh = dependencies.language === "zh";
+  if (checkpoints.length === 0) {
+    dependencies.printOutput(
+      picocolors.yellow(
+        isZh
+          ? "当前聊天还没有文件检查点。"
+          : "This chat has no file checkpoints yet.",
+      ),
+    );
+    return;
+  }
+  const newestFirst = checkpoints.slice().reverse();
+  const visible = newestFirst.slice(0, 50);
+  const lines = [
+    picocolors.bold(
+      isZh
+        ? `文件检查点（${checkpoints.length}）`
+        : `File checkpoints (${checkpoints.length})`,
+    ),
+    ...visible.map((checkpoint, index) => {
+      const files = checkpoint.files.length
+        ? checkpoint.files.slice(0, 3).join(", ") +
+          (checkpoint.files.length > 3
+            ? ` +${checkpoint.files.length - 3}`
+            : "")
+        : isZh
+          ? "无文件"
+          : "no files";
+      return `${picocolors.cyan(String(index + 1).padStart(2))}  ${checkpoint.id.slice(0, 12)}  ${checkpoint.timestamp}  ${files}`;
+    }),
+  ];
+  if (newestFirst.length > visible.length) {
+    lines.push(
+      picocolors.gray(
+        isZh
+          ? `仅显示最近 ${visible.length} 个检查点。`
+          : `Showing the ${visible.length} most recent checkpoints.`,
+      ),
+    );
+  }
+  lines.push(
+    picocolors.gray(
+      isZh
+        ? "使用 /rewind <编号或 ID 前缀> 回退。"
+        : "Use /rewind <number or ID prefix> to restore one.",
+    ),
+  );
+  dependencies.printOutput(lines.join("\n"));
+}
+
+async function rewindToCheckpoint(
+  argument: string,
+  dependencies: RollbackCommandDependencies,
+): Promise<void> {
+  const isZh = dependencies.language === "zh";
+  const selector = argument.trim();
+  if (!selector) {
+    dependencies.printOutput(
+      picocolors.red(
+        isZh
+          ? "✖ 用法：/rewind <检查点编号或 ID 前缀>"
+          : "✖ Usage: /rewind <checkpoint number or ID prefix>",
+      ),
+    );
+    return;
+  }
+  const newestFirst = dependencies.loop.getCheckpoints().slice().reverse();
+  const numeric = /^\d+$/.test(selector) ? Number(selector) : Number.NaN;
+  const matches =
+    Number.isInteger(numeric) && numeric >= 1
+      ? newestFirst[numeric - 1]
+        ? [newestFirst[numeric - 1]]
+        : []
+      : newestFirst.filter((checkpoint) => checkpoint.id.startsWith(selector));
+  if (matches.length !== 1) {
+    dependencies.printOutput(
+      picocolors.red(
+        matches.length > 1
+          ? isZh
+            ? "✖ ID 前缀匹配多个检查点，请输入更长的前缀。"
+            : "✖ The ID prefix matches multiple checkpoints; enter a longer prefix."
+          : isZh
+            ? `✖ 未找到检查点：${selector}`
+            : `✖ Checkpoint not found: ${selector}`,
+      ),
+    );
+    return;
+  }
+  await dependencies.loop.rewindToCheckpoint(matches[0].id);
 }
 
 function removeWorkspacePath(absolutePath: string): void {

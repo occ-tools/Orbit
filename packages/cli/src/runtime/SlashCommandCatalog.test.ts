@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BUILTIN_SLASH_COMMANDS,
+  SLASH_COMMAND_DEFINITIONS,
   buildSlashCommandHelp,
 } from "./SlashCommandCatalog.js";
 
@@ -13,6 +14,17 @@ describe("SlashCommandCatalog", () => {
     expect(new Set(BUILTIN_SLASH_COMMANDS).size).toBe(
       BUILTIN_SLASH_COMMANDS.length,
     );
+  });
+
+  it("keeps localized discovery metadata complete and unique", () => {
+    expect(SLASH_COMMAND_DEFINITIONS.map(({ command }) => command)).toEqual(
+      BUILTIN_SLASH_COMMANDS,
+    );
+    for (const definition of SLASH_COMMAND_DEFINITIONS) {
+      expect(definition.description.en.trim()).not.toBe("");
+      expect(definition.description.zh.trim()).not.toBe("");
+      expect(typeof definition.webSuggested).toBe("boolean");
+    }
   });
 
   it("renders complete localized help", () => {

@@ -9,23 +9,29 @@ export const WEB_UI_CLIENT_PALETTE_SCRIPT = String.raw`  let paletteActions = []
     autoSizePrompt();
     updateSendButtonState();
     elements.prompt.focus();
+    closeSlashCommands();
   }
 
   function buildPaletteActions() {
     const actions = [
       { icon: '+', label: language === 'zh' ? '新建任务' : 'New task', detail: 'Ctrl N', keywords: 'new session task', idle: true, run: () => updateSession({ action: 'new' }) },
       { icon: '▣', label: language === 'zh' ? '新建或打开项目' : 'New or open project', detail: language === 'zh' ? '选择项目文件夹' : 'Choose a project folder', keywords: 'new open create project workspace folder', idle: true, run: openProjectDialog },
-      { icon: '◎', label: language === 'zh' ? '设置聊天目标' : 'Set chat goal', detail: '/goal', keywords: 'goal objective target session', idle: true, run: () => setComposerValue('/goal ') },
-      { icon: '✎', label: language === 'zh' ? '重命名聊天' : 'Rename chat', detail: '/rename', keywords: 'rename title session chat', idle: true, run: () => setComposerValue('/rename ') },
       { icon: '›', label: copy.focusComposer, detail: language === 'zh' ? '发送消息' : 'Message Orbit', keywords: 'focus prompt message composer', run: () => elements.prompt.focus() },
       { icon: '◫', label: copy.openActivity, detail: language === 'zh' ? '运行状态与工具' : 'Runtime and tools', keywords: 'activity details runtime tools', run: () => setInspector(true, 'activity') },
       { icon: '⚙', label: copy.openSettings, detail: 'Ctrl ,', keywords: 'settings preferences configuration', run: () => setInspector(true, 'settings') },
       { icon: '◧', label: language === 'zh' ? '切换导航栏' : 'Toggle navigation', detail: 'Ctrl B', keywords: 'toggle sidebar navigation focus', run: toggleNavigation },
-      { icon: '✓', label: language === 'zh' ? '运行诊断' : 'Run diagnostics', detail: '/doctor', keywords: 'doctor health diagnostics', idle: true, run: () => submitTurn('/doctor') },
-      { icon: '?', label: language === 'zh' ? '查看命令帮助' : 'Show command help', detail: '/help', keywords: 'help commands reference', idle: true, run: () => submitTurn('/help') },
-      { icon: '↺', label: copy.compactContext, detail: '/compact', keywords: 'compact context tokens summarize', idle: true, run: () => submitTurn('/compact') },
       { icon: '＋', label: language === 'zh' ? '添加文件上下文' : 'Add file context', detail: language === 'zh' ? '搜索工作区文件' : 'Search workspace files', keywords: 'add context file', idle: true, run: openContextPicker },
     ];
+    for (const definition of slashCommands) {
+      actions.push({
+        icon: '/',
+        label: definition.command + (definition.usage ? ' ' + definition.usage : ''),
+        detail: definition.description,
+        keywords: 'slash command ' + definition.command + ' ' + definition.description,
+        idle: true,
+        run: () => setComposerValue(definition.command + (definition.usage ? ' ' : '')),
+      });
+    }
     const status = state.status || {};
     const session = status.session || {};
     for (const item of session.recent || []) {

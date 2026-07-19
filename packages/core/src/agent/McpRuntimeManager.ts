@@ -59,10 +59,9 @@ export class McpRuntimeManager {
 
     for (const [serverName, serverConfig] of Object.entries(servers)) {
       const client = this.createClient(serverName, serverConfig);
+      const registeredForClient: string[] = [];
       try {
         const tools = await client.start();
-        this.clients.push(client);
-        result.startedServers += 1;
 
         for (const toolDefinition of tools) {
           const risk =
@@ -73,12 +72,25 @@ export class McpRuntimeManager {
             risk,
             client,
           );
+          if (this.registry.get(dynamicTool.name)) {
+            throw new Error(
+              `MCP tool name collision after normalization: "${dynamicTool.name}". Rename the server or remote tool.`,
+            );
+          }
           this.registry.register(dynamicTool);
           this.registeredToolNames.add(dynamicTool.name);
+          registeredForClient.push(dynamicTool.name);
           result.registeredTools += 1;
           report(`  ✔ Registered MCP tool: ${dynamicTool.name} (${risk})`);
         }
+        this.clients.push(client);
+        result.startedServers += 1;
       } catch (error: unknown) {
+        for (const toolName of registeredForClient) {
+          this.registry.unregister(toolName);
+          this.registeredToolNames.delete(toolName);
+          result.registeredTools -= 1;
+        }
         await client.stop().catch(() => undefined);
         const message = safeMcpRuntimeMessage(error);
         result.failures.push({ serverName, message });

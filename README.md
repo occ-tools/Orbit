@@ -60,6 +60,11 @@ persisted chats; chats can be resumed, archived, or deleted without mixing
 their history with another project. The native folder picker is used when the
 platform supports it, with a validated path field as the fallback.
 
+Type `/` in the Web UI composer to browse built-in and project/user custom
+commands without leaving the conversation. The same catalog powers terminal
+completion, `/help`, and browser discovery, so `/goal`, `/plan`, `/compact`,
+`/timeline`, `/rewind`, and related controls behave consistently.
+
 ## What Orbit includes
 
 - **One runtime across TUI and Web UI.** Model changes, turns, streamed output,
@@ -75,6 +80,10 @@ platform supports it, with a validated path field as the fallback.
 - **Safe edits and verification.** Workspace path checks, permission decisions,
   reviewable diffs, Git checkpoints, rollback, test/lint/build contracts, and
   bounded failure summaries protect the working tree.
+- **Validated model tools.** File, search, symbol, shell, test, Git, live-web,
+  source-fetch, and durable-plan tools use typed schemas, bounded redacted
+  results, cancellation, and permission checks. Connected MCP tools preserve
+  their server-declared schemas through the DeepSeek request boundary.
 - **Local diagnostics.** Provider probes, DeepSeek cache telemetry, benchmarks,
   session metrics, traces, and a credential-safe JSON support snapshot make
   failures diagnosable.

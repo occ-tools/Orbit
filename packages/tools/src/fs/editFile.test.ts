@@ -59,6 +59,29 @@ describe("EditFileTool Fuzzy Hunk Merging Cascade", () => {
     );
   });
 
+  it("replaces every whitespace-insensitive match when replaceAll is enabled", async () => {
+    writeFileSync(
+      filePath,
+      "start\n  alpha = 1  \nend\nstart\n    alpha = 1\nend\n",
+      "utf8",
+    );
+
+    const result = await tool.execute(
+      {
+        path: "sample.txt",
+        oldText: "start\nalpha = 1\nend",
+        newText: "start\nalpha = 2\nend",
+        replaceAll: true,
+      },
+      { cwd: tempDir, sessionId: "test" },
+    );
+
+    expect(result.ok).toBe(true);
+    const content = readFileSync(filePath, "utf8");
+    expect(content.match(/alpha = 2/g)).toHaveLength(2);
+    expect(content).not.toContain("alpha = 1");
+  });
+
   it("should match using Levenshtein distance when similarity is above 80%", async () => {
     writeFileSync(
       filePath,

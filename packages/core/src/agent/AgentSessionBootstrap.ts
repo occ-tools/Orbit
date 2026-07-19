@@ -5,7 +5,8 @@ import type { ModelProvider } from "@orbit-build/model-providers";
 import { PermissionEngine } from "@orbit-build/permissions";
 import { CheckpointManager, RollbackManager } from "@orbit-build/sandbox";
 import { ContextPackBuilder } from "@orbit-build/context-engine";
-import { SessionManager } from "@orbit-build/session";
+import { SessionManager, type TaskPlanItem } from "@orbit-build/session";
+import type { ToolTaskPlanUpdate } from "@orbit-build/tools";
 import { StatusBar } from "@orbit-build/tui";
 import { ProjectMemoryStore } from "../memory/ProjectMemoryStore.js";
 import { VerificationContractManager } from "../verification/VerificationContractManager.js";
@@ -91,7 +92,9 @@ export function initializeAgentSession(
     rollbackManager: new RollbackManager(cwd),
     permissionEngine: new PermissionEngine(config),
     contextBuilder: new ContextPackBuilder(cwd),
-    stepRunner: new StepRunner(cwd, session.id, config),
+    stepRunner: new StepRunner(cwd, session.id, config, {
+      updatePlan: (update) => updateSessionTaskPlan(sessionManager, update),
+    }),
     verificationManager: new VerificationContractManager(
       cwd,
       session.id,
@@ -107,6 +110,35 @@ export function initializeAgentSession(
     totalOutputTokens: session.totalOutputTokens || 0,
     totalCacheReadTokens: session.totalCacheReadTokens || 0,
   };
+}
+
+function updateSessionTaskPlan(
+  sessionManager: SessionManager,
+  update: ToolTaskPlanUpdate,
+): unknown {
+  const existing = sessionManager.getTaskPlan();
+  const available = [...(existing?.items ?? [])];
+  const now = new Date().toISOString();
+  const items: TaskPlanItem[] = update.plan.map((entry) => {
+    const matchIndex = available.findIndex((item) => item.text === entry.step);
+    const previous =
+      matchIndex >= 0 ? available.splice(matchIndex, 1)[0] : undefined;
+    return {
+      id:
+        previous?.id ??
+        `step_${createHash("sha256").update(`${entry.step}\0${now}`).digest("hex").slice(0, 16)}`,
+      text: entry.step,
+      status: entry.status,
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: previous?.status === entry.status ? previous.updatedAt : now,
+    };
+  });
+  const saved = sessionManager.saveTaskPlan(items, existing?.goal);
+  sessionManager.logEvent("model_task_plan_update", {
+    explanation: update.explanation?.slice(0, 1000),
+    itemCount: items.length,
+  });
+  return saved;
 }
 
 function restoreSessionHistory(

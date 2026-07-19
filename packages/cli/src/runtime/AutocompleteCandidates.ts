@@ -34,6 +34,12 @@ export interface AutocompleteConfig {
 
 export interface AutocompleteCandidates {
   commands: string[];
+  commandDetails?: Array<{
+    command: string;
+    description: string;
+    argumentHint?: string;
+    source: "user" | "project";
+  }>;
   files: string[];
   symbols: string[];
   sessions: string[];
@@ -49,6 +55,12 @@ export async function getAutocompleteCandidates(
     ...BUILTIN_SLASH_COMMANDS,
     ...customCommands.map((command) => `/${command.name}`),
   ];
+  const commandDetails = customCommands.map((command) => ({
+    command: `/${command.name}`,
+    description: command.description,
+    argumentHint: command.argumentHint,
+    source: command.source,
+  }));
   const files: string[] = [];
   const symbols: string[] = [];
   const sessions: string[] = [];
@@ -62,7 +74,7 @@ export async function getAutocompleteCandidates(
     dirname(normCwd) === normCwd;
 
   if (isHomeOrRoot) {
-    return { commands, files, symbols, sessions };
+    return { commands, commandDetails, files, symbols, sessions };
   }
 
   try {
@@ -115,6 +127,7 @@ export async function getAutocompleteCandidates(
 
   return {
     commands,
+    commandDetails,
     files,
     symbols: [...new Set(symbols)],
     sessions,

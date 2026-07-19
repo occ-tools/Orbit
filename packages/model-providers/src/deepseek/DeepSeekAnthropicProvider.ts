@@ -500,7 +500,7 @@ export class DeepSeekAnthropicProvider implements ModelProvider {
       tools = input.tools?.map((tool) => ({
         name: tool.name,
         description: tool.description,
-        input_schema: zodToJsonSchema(tool.inputSchema),
+        input_schema: tool.inputJsonSchema ?? zodToJsonSchema(tool.inputSchema),
       }));
       maxTokens = normalizeAnthropicMaxTokens(
         input.maxTokens,

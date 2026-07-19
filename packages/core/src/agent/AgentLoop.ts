@@ -87,6 +87,8 @@ const DEEPSEEK_VERBOSE_CACHE_ENV = "ORBIT_DEEPSEEK_VERBOSE_CACHE";
 const NETWORK_TOOL_RESULT_MAX_RESULTS = 10;
 const NETWORK_TOOL_RESULT_SUMMARY_CHARS = 280;
 const NETWORK_TOOL_RESULT_MAX_CHARS = 6000;
+const TOOL_RESULT_MAX_CHARS = 24_000;
+const TOOL_STATUS_MAX_CHARS = 2_000;
 const AGENT_LOOP_ERROR_MESSAGE_MAX_CHARS = 2000;
 
 export type AgentLoopFailureCode =
@@ -286,8 +288,11 @@ export class AgentLoop {
     toolName: string,
     risk?: string,
   ): string | null {
-    if (toolName === "web_search" && risk === "network") {
-      return "network:web_search";
+    if (
+      (toolName === "web_search" || toolName === "web_fetch") &&
+      risk === "network"
+    ) {
+      return "network:web";
     }
     return null;
   }
@@ -301,13 +306,16 @@ export class AgentLoop {
       : result.error || "Unknown error";
 
     if (!result.ok || toolName !== "web_search") {
-      return content;
+      return this.truncatePlain(
+        redactSecrets(content),
+        result.ok ? TOOL_RESULT_MAX_CHARS : TOOL_STATUS_MAX_CHARS,
+      );
     }
 
     return this.compactNetworkToolResult(
       toolName,
-      content,
-      result.display || "",
+      redactSecrets(content),
+      redactSecrets(result.display || ""),
     );
   }
 
@@ -723,7 +731,9 @@ export class AgentLoop {
         }
         let toolDefs = toolRegistry.getDefinitions();
         if (!this.config.tools.webSearch.enabled) {
-          toolDefs = toolDefs.filter((tool) => tool.name !== "web_search");
+          toolDefs = toolDefs.filter(
+            (tool) => tool.name !== "web_search" && tool.name !== "web_fetch",
+          );
         }
         if (!this.config.tools.bash.enabled) {
           toolDefs = toolDefs.filter(
@@ -865,6 +875,7 @@ export class AgentLoop {
         let resolvedModel: string | undefined;
         let providerRequestId: string | undefined;
         const toolCallsToExecute: OrbitToolCall[] = [];
+        const toolCallProtocolErrors = new Map<string, string>();
 
         try {
           for await (const event of stream) {
@@ -990,6 +1001,43 @@ export class AgentLoop {
                 }),
               });
             }
+          }
+        }
+
+        if (toolCallsToExecute.length > 1) {
+          const seenToolCallIds = new Set<string>();
+          const uniqueToolCalls: OrbitToolCall[] = [];
+          for (const toolCall of toolCallsToExecute) {
+            if (seenToolCallIds.has(toolCall.id)) {
+              const message = `Ignored duplicate tool call id "${toolCall.id}" from the model response.`;
+              this.interaction.showText(picocolors.yellow(`⚠ ${message}`));
+              this.sessionManager.logEvent("duplicate_tool_call_ignored", {
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+              });
+              continue;
+            }
+            seenToolCallIds.add(toolCall.id);
+            uniqueToolCalls.push(toolCall);
+          }
+          toolCallsToExecute.splice(
+            0,
+            toolCallsToExecute.length,
+            ...uniqueToolCalls,
+          );
+        }
+
+        for (const toolCall of toolCallsToExecute) {
+          try {
+            JSON.parse(toolCall.arguments);
+          } catch (error: unknown) {
+            toolCallProtocolErrors.set(
+              toolCall.id,
+              `Tool input JSON parse failed: ${safeAgentLoopErrorMessage(error)}`,
+            );
+            // Keep persisted/provider history protocol-valid. The original
+            // parse failure is returned as this call's tool result below.
+            toolCall.arguments = "{}";
           }
         }
 
@@ -1301,6 +1349,36 @@ ${errLog}`;
         }
 
         const toolResultBlocks: OrbitContentBlock[] = [];
+        const rejectInvalidToolCall = (
+          toolCall: OrbitToolCall,
+          message: string,
+          risk = "read",
+        ): void => {
+          const error = safeAgentLoopErrorMessage(message);
+          this.interaction.showText(`  ${picocolors.red("✖")} ${error}`);
+          eventBus.emitEvent("tool_result", {
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            error,
+          });
+          toolResultBlocks.push({
+            type: "tool_result",
+            toolResult: {
+              toolCallId: toolCall.id,
+              name: toolCall.name,
+              content: error,
+              isError: true,
+            },
+          });
+          this.sessionManager.recordToolExecution(
+            toolCall.name,
+            toolCall,
+            { ok: false, error },
+            risk,
+            "invalid",
+            "failed",
+          );
+        };
         for (const tc of toolCallsToExecute) {
           let argSummary = "";
           try {
@@ -1345,8 +1423,42 @@ ${errLog}`;
           );
 
           const registeredTool = toolRegistry.get(tc.name);
+          if (!registeredTool) {
+            rejectInvalidToolCall(
+              tc,
+              `Tool "${tc.name}" was not found in the registry.`,
+            );
+            continue;
+          }
           const declaredRisk = registeredTool?.risk;
-          const evalArgs = JSON.parse(tc.arguments);
+          const protocolError = toolCallProtocolErrors.get(tc.id);
+          if (protocolError) {
+            rejectInvalidToolCall(tc, protocolError, declaredRisk);
+            continue;
+          }
+          let preflightArgs: unknown;
+          try {
+            preflightArgs = JSON.parse(tc.arguments) as unknown;
+          } catch (error: unknown) {
+            rejectInvalidToolCall(
+              tc,
+              `Tool input JSON parse failed: ${safeAgentLoopErrorMessage(error)}`,
+              declaredRisk,
+            );
+            continue;
+          }
+          const validation =
+            registeredTool.inputSchema.safeParse(preflightArgs);
+          if (!validation.success) {
+            rejectInvalidToolCall(
+              tc,
+              `Tool input validation failed: ${validation.error.message}`,
+              declaredRisk,
+            );
+            continue;
+          }
+          const evalArgs = validation.data;
+          const evalArgsRecord = toUnknownRecord(evalArgs);
 
           eventBus.emitEvent("tool_proposal", {
             toolCallId: tc.id,
@@ -1366,11 +1478,12 @@ ${errLog}`;
             tc.name === "replace_file_content" ||
             tc.name === "multi_replace_file_content"
           ) {
-            const targetPath =
-              evalArgs.path ||
-              evalArgs.TargetFile ||
-              evalArgs.filePath ||
-              evalArgs.file;
+            const targetPath = firstStringValue(
+              evalArgsRecord.path,
+              evalArgsRecord.TargetFile,
+              evalArgsRecord.filePath,
+              evalArgsRecord.file,
+            );
             if (targetPath) {
               const relPath = path
                 .relative(this.cwd, path.resolve(this.cwd, targetPath))
@@ -2515,8 +2628,12 @@ ${errLog}`;
           );
 
           if (finalResult.ok) {
+            const statusText = this.truncatePlain(
+              redactSecrets(finalResult.display || "Done"),
+              TOOL_STATUS_MAX_CHARS,
+            );
             this.interaction.showText(
-              `  ${picocolors.green("✔")} Success: ${picocolors.gray(finalResult.display || "Done")}`,
+              `  ${picocolors.green("✔")} Success: ${picocolors.gray(statusText)}`,
             );
 
             if (targetPath) {
@@ -2526,8 +2643,12 @@ ${errLog}`;
               new SymbolIndexer(this.cwd).index().catch(() => {});
             }
           } else {
+            const statusError = this.truncatePlain(
+              redactSecrets(finalResult.error || "Unknown error"),
+              TOOL_STATUS_MAX_CHARS,
+            );
             this.interaction.showText(
-              `  ${picocolors.red("✖")} Failed: ${picocolors.red(finalResult.error || "Unknown error")}`,
+              `  ${picocolors.red("✖")} Failed: ${picocolors.red(statusError)}`,
             );
           }
 
@@ -3610,6 +3731,16 @@ ${errLog}`;
       // visible agent turn, which is normally the best cache warmer itself.
     }
   }
+}
+
+function toUnknownRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function firstStringValue(...values: unknown[]): string | undefined {
+  return values.find((value): value is string => typeof value === "string");
 }
 
 export function extractFilePathFromLine(line: string): string {

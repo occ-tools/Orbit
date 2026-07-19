@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "child_process";
+import { createHash } from "crypto";
 import {
   readRuntimePackageVersion,
   redactSecrets,
@@ -63,6 +64,7 @@ export interface MCPToolClient {
   callTool(
     originalToolName: string,
     args: Record<string, unknown>,
+    abortSignal?: AbortSignal,
   ): Promise<MCPToolCallResult>;
 }
 
@@ -98,6 +100,7 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timeout: NodeJS.Timeout;
+  removeAbortListener?: () => void;
 }
 
 /** A bounded, validated JSON-RPC client for one stdio MCP server. */
@@ -176,14 +179,19 @@ export class MCPClient {
   public async callTool(
     originalToolName: string,
     args: Record<string, unknown>,
+    abortSignal?: AbortSignal,
   ): Promise<MCPToolCallResult> {
     if (!this.isConnected) {
       throw new Error(`MCP client "${this.serverName}" is not connected.`);
     }
-    const result = await this.sendRequest("tools/call", {
-      name: originalToolName,
-      arguments: args,
-    });
+    const result = await this.sendRequest(
+      "tools/call",
+      {
+        name: originalToolName,
+        arguments: args,
+      },
+      abortSignal,
+    );
     return MCPToolCallResultSchema.parse(result);
   }
 
@@ -225,8 +233,13 @@ export class MCPClient {
   private sendRequest(
     method: string,
     params: Record<string, unknown>,
+    abortSignal?: AbortSignal,
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
+      if (abortSignal?.aborted) {
+        reject(createAbortError(`MCP request "${method}" was cancelled.`));
+        return;
+      }
       const stdin = this.child?.stdin;
       if (!this.isConnected || !stdin || !stdin.writable) {
         reject(new Error("MCP server process is not running."));
@@ -234,14 +247,39 @@ export class MCPClient {
       }
       const id = this.nextRequestId++;
       const timeout = setTimeout(() => {
+        const pending = this.pendingRequests.get(id);
         this.pendingRequests.delete(id);
+        pending?.removeAbortListener?.();
         reject(
           new Error(
             `MCP request "${method}" (id: ${id}) timed out after ${MCP_REQUEST_TIMEOUT_MS}ms.`,
           ),
         );
       }, MCP_REQUEST_TIMEOUT_MS);
-      this.pendingRequests.set(id, { resolve, reject, timeout });
+      const onAbort = () => {
+        const pending = this.pendingRequests.get(id);
+        if (!pending) return;
+        clearTimeout(pending.timeout);
+        this.pendingRequests.delete(id);
+        pending.removeAbortListener?.();
+        this.sendNotification("notifications/cancelled", {
+          requestId: id,
+          reason: "Orbit tool execution cancelled",
+        });
+        pending.reject(
+          createAbortError(`MCP request "${method}" was cancelled.`),
+        );
+      };
+      const removeAbortListener = abortSignal
+        ? () => abortSignal.removeEventListener("abort", onAbort)
+        : undefined;
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
+      this.pendingRequests.set(id, {
+        resolve,
+        reject,
+        timeout,
+        removeAbortListener,
+      });
       stdin.write(
         `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
         (error) => {
@@ -250,6 +288,7 @@ export class MCPClient {
           if (!pending) return;
           clearTimeout(pending.timeout);
           this.pendingRequests.delete(id);
+          pending.removeAbortListener?.();
           pending.reject(
             new Error(`Unable to write MCP request: ${safeMessage(error)}`),
           );
@@ -300,6 +339,7 @@ export class MCPClient {
     if (!pending) return;
     clearTimeout(pending.timeout);
     this.pendingRequests.delete(response.id);
+    pending.removeAbortListener?.();
     if (response.error) {
       pending.reject(
         new Error(
@@ -315,6 +355,7 @@ export class MCPClient {
     this.isConnected = false;
     for (const pending of this.pendingRequests.values()) {
       clearTimeout(pending.timeout);
+      pending.removeAbortListener?.();
       pending.reject(error);
     }
     this.pendingRequests.clear();
@@ -336,6 +377,7 @@ export class DynamicMCPTool implements OrbitTool<
   public readonly name: string;
   public readonly description: string;
   public readonly inputSchema = z.record(z.unknown());
+  public readonly inputJsonSchema: Record<string, unknown>;
   public readonly risk: ToolRisk;
   private readonly originalToolName: string;
 
@@ -345,18 +387,23 @@ export class DynamicMCPTool implements OrbitTool<
     risk: ToolRisk,
     private readonly client: MCPToolClient,
   ) {
-    this.name = `mcp__${serverName}__${toolDefinition.name}`;
+    this.name = createMcpToolName(serverName, toolDefinition.name);
     this.description = `[MCP Tool: ${serverName}] ${toolDefinition.description}`;
     this.risk = risk;
     this.originalToolName = toolDefinition.name;
+    this.inputJsonSchema = toolDefinition.inputSchema;
   }
 
   public async execute(
     input: Record<string, unknown>,
-    _context: ToolContext,
+    context: ToolContext,
   ): Promise<ToolResult<string>> {
     try {
-      const response = await this.client.callTool(this.originalToolName, input);
+      const response = await this.client.callTool(
+        this.originalToolName,
+        input,
+        context.abortSignal,
+      );
       const text = response.content
         .map((content) => content.text || "")
         .filter(Boolean)
@@ -375,4 +422,27 @@ export class DynamicMCPTool implements OrbitTool<
       };
     }
   }
+}
+
+/** Build an OpenAI/DeepSeek-compatible function name without losing identity. */
+export function createMcpToolName(
+  serverName: string,
+  originalToolName: string,
+): string {
+  const rawName = `mcp__${serverName}__${originalToolName}`;
+  if (/^[A-Za-z0-9_-]{1,64}$/.test(rawName)) return rawName;
+
+  const normalized = rawName
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const digest = createHash("sha256").update(rawName).digest("hex").slice(0, 8);
+  const prefix = (normalized || "mcp_tool").slice(0, 55).replace(/_+$/g, "");
+  return `${prefix}_${digest}`;
+}
+
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
 }

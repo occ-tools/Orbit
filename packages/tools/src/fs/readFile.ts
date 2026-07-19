@@ -4,9 +4,9 @@ import { resolveSafePath } from "@orbit-build/shared";
 import { OrbitTool, ToolContext, ToolResult } from "../types.js";
 
 export const ReadFileInputSchema = z.object({
-  path: z.string(),
-  startLine: z.number().optional(),
-  endLine: z.number().optional(),
+  path: z.string().min(1).max(4096),
+  startLine: z.number().int().positive().optional(),
+  endLine: z.number().int().positive().optional(),
 });
 
 export type ReadFileInput = z.infer<typeof ReadFileInputSchema>;
@@ -14,7 +14,7 @@ export type ReadFileInput = z.infer<typeof ReadFileInputSchema>;
 export class ReadFileTool implements OrbitTool<ReadFileInput, string> {
   name = "read_file";
   description =
-    "Read content from a file inside the project. Defaults to reading a maximum of 400 lines unless specified.";
+    "Read content from a file inside the project. Defaults to at most 400 lines and bounds oversized output for the model context.";
   inputSchema = ReadFileInputSchema;
   risk = "read" as const;
 
@@ -35,17 +35,21 @@ export class ReadFileTool implements OrbitTool<ReadFileInput, string> {
           : Math.min(lines.length, start + 399);
 
       const slicedLines = lines.slice(start - 1, end);
-      const displayContent = slicedLines.join("\n");
+      const rawDisplayContent = slicedLines.join("\n");
+      const displayContent =
+        rawDisplayContent.length > 120_000
+          ? `${rawDisplayContent.slice(0, 119_940)}\n... [truncated by read_file]`
+          : rawDisplayContent;
 
       return {
         ok: true,
         data: displayContent,
         display: `Read lines ${start}-${end} of ${input.path}`,
       };
-    } catch (e: any) {
+    } catch (error: unknown) {
       return {
         ok: false,
-        error: e.message,
+        error: error instanceof Error ? error.message : String(error),
       };
     }
   }

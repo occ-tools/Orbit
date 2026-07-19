@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { DeepSeekOpenAIProvider } from "./DeepSeekOpenAIProvider.js";
+import { z } from "zod";
 
 describe("DeepSeekOpenAIProvider messages mapping", () => {
   let originalFetch: any;
@@ -102,6 +103,47 @@ describe("DeepSeekOpenAIProvider messages mapping", () => {
     expect(messages[2].role).toBe("tool");
     expect(messages[2].content).toBe("tool output text");
     expect(messages[2].tool_call_id).toBe("call-1");
+  });
+
+  it("preserves a dynamic tool's provider-facing JSON Schema", async () => {
+    const provider = new DeepSeekOpenAIProvider("test-key");
+    const inputJsonSchema = {
+      type: "object",
+      properties: { query: { type: "string", minLength: 2 } },
+      required: ["query"],
+      additionalProperties: false,
+    };
+
+    const events = [];
+    for await (const event of provider.chat({
+      model: "deepseek-v4-flash",
+      messages: [
+        {
+          id: "msg-user-schema",
+          role: "user",
+          createdAt: "2026-07-19T00:00:00.000Z",
+          content: [{ type: "text", text: "search" }],
+        },
+      ],
+      tools: [
+        {
+          name: "mcp__docs__search",
+          description: "Search docs",
+          inputSchema: z.record(z.unknown()),
+          inputJsonSchema,
+        },
+      ],
+      stream: false,
+    })) {
+      events.push(event);
+    }
+    expect(events.length).toBeGreaterThan(0);
+
+    const postCall = (global.fetch as any).mock.calls.find(
+      (call: any) => call[1]?.method === "POST",
+    );
+    const requestBody = JSON.parse(postCall[1].body);
+    expect(requestBody.tools[0].function.parameters).toEqual(inputJsonSchema);
   });
 
   it("should prevent double /v1/v1 in endpoint URLs when base URL ends with /v1", async () => {

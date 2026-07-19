@@ -1,7 +1,10 @@
 import http, { type IncomingMessage, type ServerResponse } from "http";
 import { randomBytes, randomUUID } from "crypto";
 import { z } from "zod";
-import { getAutocompleteCandidates } from "../AutocompleteCandidates.js";
+import {
+  getAutocompleteCandidates,
+  type AutocompleteCandidates,
+} from "../AutocompleteCandidates.js";
 import {
   type ActiveWebTurn,
   type WebUiHandle,
@@ -149,7 +152,9 @@ export class OrbitWebUiRuntime {
   private server: http.Server | undefined;
   private handle: WebUiHandle | undefined;
   private stopPromise: Promise<void> | undefined;
-  private completionFilesPromise: Promise<string[]> | undefined;
+  private completionCandidatesPromise:
+    | Promise<AutocompleteCandidates>
+    | undefined;
 
   public constructor(options: WebUiOptions) {
     this.options = options;
@@ -181,7 +186,7 @@ export class OrbitWebUiRuntime {
       throw new Error("Orbit Web UI is not running.");
     }
     this.options = options;
-    this.completionFilesPromise = undefined;
+    this.completionCandidatesPromise = undefined;
   }
 
   /** Return this instance's live public handle. */
@@ -359,10 +364,18 @@ export class OrbitWebUiRuntime {
         sendJson(res, 400, { error: "Invalid completion query." });
         return;
       }
-      const files = await this.getCompletionFiles(options);
+      const candidates = await this.getCompletionCandidates(options);
+      const normalizedQuery = query.data.trim().toLowerCase();
       sendJson(res, 200, {
-        files: filterWebUiCompletionFiles(files, query.data),
-        total: files.length,
+        files: filterWebUiCompletionFiles(candidates.files, query.data),
+        commands: candidates.commands.filter(
+          (command) => !normalizedQuery || command.includes(normalizedQuery),
+        ),
+        commandDetails: (candidates.commandDetails ?? []).filter(
+          ({ command }) =>
+            !normalizedQuery || command.includes(normalizedQuery),
+        ),
+        total: candidates.files.length,
       });
       return;
     }
@@ -464,16 +477,22 @@ export class OrbitWebUiRuntime {
     }
   }
 
-  private getCompletionFiles(options: WebUiOptions): Promise<string[]> {
-    if (!this.completionFilesPromise) {
-      this.completionFilesPromise = getAutocompleteCandidates(
+  private getCompletionCandidates(
+    options: WebUiOptions,
+  ): Promise<AutocompleteCandidates> {
+    if (!this.completionCandidatesPromise) {
+      this.completionCandidatesPromise = getAutocompleteCandidates(
         options.cwd,
         options.config,
-      ).then((candidates) =>
-        candidates.files.slice(0, options.config.context.maxFilesToIndex),
-      );
+      ).then((candidates) => ({
+        ...candidates,
+        files: candidates.files.slice(
+          0,
+          options.config.context.maxFilesToIndex,
+        ),
+      }));
     }
-    return this.completionFilesPromise;
+    return this.completionCandidatesPromise;
   }
 
   private async handleChat(

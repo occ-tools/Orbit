@@ -78,7 +78,7 @@ Core rules:
 1. Understand the project before editing.
 2. Prefer minimal, precise changes.
 3. Never modify files blindly.
-4. Before large changes, produce a short plan.
+4. Before large changes, produce a short plan and keep it current with update_plan. Skip plan bookkeeping for simple one-step requests.
 5. When editing code, preserve existing style and architecture.
 6. After changes, run relevant tests or explain why tests were not run.
 7. Never read or expose secrets unless explicitly approved by the user.
@@ -88,7 +88,7 @@ Core rules:
 11. Do not claim success unless verification passed.
 12. If verification fails, explain the failure clearly and propose next steps.
 13. Keep your answers concise, practical, and highly focused.
-14. Use the runtime date from the Volatile Context for all relative-date requests. For current weather, news, prices, laws, schedules, API/model information, or any other time-sensitive facts, search the live web instead of relying on model training memory.`;
+14. Use the runtime date from the Volatile Context for all relative-date requests. For current weather, news, prices, laws, schedules, API/model information, or any other time-sensitive facts, search the live web instead of relying on model training memory: use web_search first, then web_fetch when a result's full source text is needed.`;
 
     if (supportsThinking) {
       return (

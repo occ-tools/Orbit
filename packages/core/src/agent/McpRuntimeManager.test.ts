@@ -16,17 +16,21 @@ function serverConfig(): OrbitConfig["mcpServers"][string] {
   };
 }
 
-function mockClient(options?: { startError?: Error }): McpRuntimeClient {
+function mockClient(options?: {
+  startError?: Error;
+  duplicateTools?: boolean;
+}): McpRuntimeClient {
   return {
     start: vi.fn(async () => {
       if (options?.startError) throw options.startError;
-      return [
+      const tools = [
         {
           name: "lookup",
           description: "Look up a value",
           inputSchema: {},
         },
       ];
+      return options?.duplicateTools ? [...tools, ...tools] : tools;
     }),
     callTool: vi.fn(async () => ({ content: [], isError: false })),
     stop: vi.fn(async () => undefined),
@@ -48,6 +52,11 @@ describe("McpRuntimeManager", () => {
       failures: [],
     });
     expect(registry.get("mcp__docs__lookup")?.risk).toBe("read");
+    expect(
+      registry
+        .getDefinitions()
+        .find((tool) => tool.name === "mcp__docs__lookup")?.inputJsonSchema,
+    ).toEqual({});
     expect(report).toHaveBeenCalledWith(
       "  ✔ Registered MCP tool: mcp__docs__lookup (read)",
     );
@@ -105,5 +114,22 @@ describe("McpRuntimeManager", () => {
     expect(first.stop).toHaveBeenCalledOnce();
     expect(registry.get("mcp__first__lookup")).toBeUndefined();
     expect(registry.get("mcp__second__lookup")).toBeDefined();
+  });
+
+  it("rolls back a server when normalized tool names collide", async () => {
+    const registry = new ToolRegistry();
+    const client = mockClient({ duplicateTools: true });
+    const manager = new McpRuntimeManager(registry, () => client);
+
+    const result = await manager.start(
+      { docs: serverConfig() },
+      () => undefined,
+    );
+
+    expect(result.startedServers).toBe(0);
+    expect(result.registeredTools).toBe(0);
+    expect(result.failures[0]?.message).toContain("tool name collision");
+    expect(registry.get("mcp__docs__lookup")).toBeUndefined();
+    expect(client.stop).toHaveBeenCalledOnce();
   });
 });

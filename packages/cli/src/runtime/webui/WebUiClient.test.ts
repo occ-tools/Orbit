@@ -9,6 +9,7 @@ import { WEB_UI_CLIENT_MESSAGES_SCRIPT } from "./WebUiClientMessages.js";
 import { WEB_UI_CLIENT_PALETTE_SCRIPT } from "./WebUiClientPalette.js";
 import { WEB_UI_CLIENT_SELECT_SCRIPT } from "./WebUiClientSelect.js";
 import { WEB_UI_CLIENT_SESSION_SCRIPT } from "./WebUiClientSession.js";
+import { WEB_UI_CLIENT_SLASH_COMMANDS_SCRIPT } from "./WebUiClientSlashCommands.js";
 import { BUILTIN_SLASH_COMMANDS } from "../SlashCommandCatalog.js";
 
 describe("WEB_UI_CLIENT_SCRIPT", () => {
@@ -20,6 +21,7 @@ describe("WEB_UI_CLIENT_SCRIPT", () => {
       WEB_UI_CLIENT_CONTEXT_SCRIPT,
       WEB_UI_CLIENT_MESSAGES_SCRIPT,
       WEB_UI_CLIENT_SESSION_SCRIPT,
+      WEB_UI_CLIENT_SLASH_COMMANDS_SCRIPT,
       WEB_UI_CLIENT_PALETTE_SCRIPT,
       WEB_UI_CLIENT_BINDINGS_SCRIPT,
     ];
@@ -142,6 +144,13 @@ describe("WEB_UI_CLIENT_SCRIPT", () => {
     expect(WEB_UI_CLIENT_SCRIPT).toContain("retry: 'Retry now'");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("retry: '立即重试'");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("buildPaletteActions()");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function renderSlashCommands()");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function loadSlashCommands()");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("slash-command-option-");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("result.commands");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain(
+      "definition.command + (definition.usage",
+    );
     expect(WEB_UI_CLIENT_SCRIPT).toContain("trapInspectorFocus");
     expect(WEB_UI_CLIENT_SCRIPT).toContain(
       "elements.workspaceView.inert = inspectorOpen || sidebarOpen",

@@ -519,6 +519,7 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  const controlCommands =
       setBusy(false, '');
     }
     closeContextPicker({ skipRestore: true });
+    closeSlashCommands();
     const turnId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
     const previousDraft = elements.prompt.value;
     const restoreDraft = String(options && options.restoreDraft || '');

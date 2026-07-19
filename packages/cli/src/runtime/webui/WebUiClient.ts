@@ -6,6 +6,7 @@ import { WEB_UI_CLIENT_MESSAGES_SCRIPT } from "./WebUiClientMessages.js";
 import { WEB_UI_CLIENT_PALETTE_SCRIPT } from "./WebUiClientPalette.js";
 import { WEB_UI_CLIENT_SELECT_SCRIPT } from "./WebUiClientSelect.js";
 import { WEB_UI_CLIENT_SESSION_SCRIPT } from "./WebUiClientSession.js";
+import { WEB_UI_CLIENT_SLASH_COMMANDS_SCRIPT } from "./WebUiClientSlashCommands.js";
 
 const WEB_UI_CLIENT_PREAMBLE = String.raw`(() => {
   'use strict';
@@ -24,6 +25,7 @@ export const WEB_UI_CLIENT_SCRIPT = [
   WEB_UI_CLIENT_CONTEXT_SCRIPT,
   WEB_UI_CLIENT_MESSAGES_SCRIPT,
   WEB_UI_CLIENT_SESSION_SCRIPT,
+  WEB_UI_CLIENT_SLASH_COMMANDS_SCRIPT,
   WEB_UI_CLIENT_PALETTE_SCRIPT,
   WEB_UI_CLIENT_BINDINGS_SCRIPT,
   WEB_UI_CLIENT_EPILOGUE,

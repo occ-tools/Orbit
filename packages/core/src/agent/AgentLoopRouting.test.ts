@@ -395,6 +395,100 @@ describe("AgentLoop Fin Heuristic Routing", () => {
     }
   });
 
+  it("returns malformed tool arguments to the model instead of crashing", async () => {
+    let callCount = 0;
+    let replayedMessages: any[] = [];
+    const chatMock = vi.fn().mockImplementation(async function* (input: any) {
+      callCount += 1;
+      if (callCount === 1) {
+        yield {
+          type: "tool_call",
+          toolCall: {
+            id: "malformed-call",
+            name: "read_file",
+            arguments: '{"path":',
+          },
+        };
+        return;
+      }
+      replayedMessages = input.messages;
+      yield { type: "text_delta", text: "recovered" };
+    });
+    const mockProvider: ModelProvider = {
+      id: "openai",
+      chat: chatMock,
+      capabilities: capableProviderDefaults(),
+    } as any;
+
+    const loop = AgentLoop.initialize(
+      testDir,
+      dummyConfig,
+      mockProvider,
+      "read a file",
+      dummyInteraction,
+      { disableStatusBar: true, allowedTools: ["read_file"] },
+    );
+
+    await loop.run();
+    const toolMessage = replayedMessages.find(
+      (message) => message.role === "tool",
+    );
+    expect(callCount).toBeGreaterThanOrEqual(2);
+    expect(toolMessage.content[0].toolResult).toMatchObject({
+      toolCallId: "malformed-call",
+      isError: true,
+    });
+    expect(toolMessage.content[0].toolResult.content).toContain(
+      "Tool input JSON parse failed",
+    );
+  });
+
+  it("lets the model persist a task plan through the update_plan tool", async () => {
+    let callCount = 0;
+    const chatMock = vi.fn().mockImplementation(async function* () {
+      callCount += 1;
+      if (callCount === 1) {
+        yield {
+          type: "tool_call",
+          toolCall: {
+            id: "plan-call",
+            name: "update_plan",
+            arguments: JSON.stringify({
+              explanation: "Repository inspected",
+              plan: [
+                { step: "Inspect repository", status: "completed" },
+                { step: "Implement fix", status: "in_progress" },
+              ],
+            }),
+          },
+        };
+        return;
+      }
+      yield { type: "text_delta", text: "working" };
+    });
+    const mockProvider: ModelProvider = {
+      id: "openai",
+      chat: chatMock,
+      capabilities: capableProviderDefaults(),
+    } as any;
+
+    const loop = AgentLoop.initialize(
+      testDir,
+      dummyConfig,
+      mockProvider,
+      "inspect and fix this project",
+      dummyInteraction,
+      { disableStatusBar: true, allowedTools: ["update_plan"] },
+    );
+
+    await loop.run();
+
+    expect(loop.getTaskPlan()?.items).toMatchObject([
+      { text: "Inspect repository", status: "completed" },
+      { text: "Implement fix", status: "in_progress" },
+    ]);
+  });
+
   it("compacts live lookup tool results before replaying them to the model", async () => {
     const originalWebSearch = toolRegistry.get("web_search");
     const longSummary = "杭州天气实时资料 ".repeat(80);

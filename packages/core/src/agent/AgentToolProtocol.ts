@@ -6,6 +6,7 @@ export interface ToolPromptDefinition {
   name: string;
   description: string;
   inputSchema?: z.ZodTypeAny;
+  inputJsonSchema?: Record<string, unknown>;
 }
 
 interface PromptFieldDescription {
@@ -47,6 +48,32 @@ export function generateXMLToolsPrompt(tools: ToolPromptDefinition[]): string {
         lines.push(
           `    - \`${key}\`: (type: ${field.typeName}${field.isOptional ? ", optional" : ""}${values})${description}`,
         );
+      }
+    } else if (tool.inputJsonSchema) {
+      const properties = tool.inputJsonSchema.properties;
+      const required = new Set(
+        Array.isArray(tool.inputJsonSchema.required)
+          ? tool.inputJsonSchema.required.filter(
+              (value): value is string => typeof value === "string",
+            )
+          : [],
+      );
+      if (properties && typeof properties === "object") {
+        for (const [key, value] of Object.entries(properties)) {
+          const property =
+            value && typeof value === "object"
+              ? (value as Record<string, unknown>)
+              : {};
+          const typeName =
+            typeof property.type === "string" ? property.type : "unknown";
+          const description =
+            typeof property.description === "string"
+              ? ` - ${property.description.replace(/\s+/g, " ").trim()}`
+              : "";
+          lines.push(
+            `    - \`${key}\`: (type: ${typeName}${required.has(key) ? "" : ", optional"})${description}`,
+          );
+        }
       }
     }
     lines.push("");

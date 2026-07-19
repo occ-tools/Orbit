@@ -62,6 +62,7 @@ export class FindSymbolReferencesTool implements OrbitTool<
       }
 
       const results: SymbolReferenceEntry[] = [];
+      let truncated = false;
       const escapedSymbol = escapeRegExp(input.symbol);
       const symbolRegex = new RegExp(
         `(?<![\\p{ID_Continue}$\\u200C\\u200D])${escapedSymbol}(?![\\p{ID_Continue}$\\u200C\\u200D])`,
@@ -104,11 +105,16 @@ export class FindSymbolReferencesTool implements OrbitTool<
               results.push({
                 file,
                 line: idx + 1,
-                content: trimmed,
+                content: trimmed.slice(0, 500),
               });
+              if (results.length >= 300) {
+                truncated = true;
+                break;
+              }
             }
           }
         }
+        if (truncated) break;
       }
 
       const display =
@@ -126,6 +132,7 @@ export class FindSymbolReferencesTool implements OrbitTool<
         ok: true,
         data: results,
         display,
+        metadata: { truncated },
       };
     } catch (error: unknown) {
       return {

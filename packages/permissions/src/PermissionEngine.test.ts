@@ -117,6 +117,20 @@ describe("PermissionEngine tests", () => {
     ).toBe("deny");
   });
 
+  it("allows model task-plan bookkeeping without a project-write prompt", () => {
+    const engine = new PermissionEngine(mockConfig("strict"));
+
+    expect(
+      engine.evaluate(
+        "update_plan",
+        {
+          plan: [{ step: "Inspect the project", status: "in_progress" }],
+        },
+        "write",
+      ),
+    ).toMatchObject({ action: "allow", risk: "write" });
+  });
+
   it("honors approval flags even in auto mode", () => {
     const config = mockConfig("auto");
     const engine = new PermissionEngine(config);

@@ -106,21 +106,24 @@ export class SearchSymbolsTool implements OrbitTool<
         }
       }
 
-      // Sort results by similarity or name
+      // Bound provider-facing results so a broad query cannot flood context.
       results.sort((a, b) => a.name.localeCompare(b.name));
+      const totalMatches = results.length;
+      const boundedResults = results.slice(0, 200);
 
       const display =
-        results.length > 0
-          ? `Found ${results.length} matching symbol(s):\n` +
-            results
+        boundedResults.length > 0
+          ? `Found ${totalMatches} matching symbol(s), returning ${boundedResults.length}:\n` +
+            boundedResults
               .map((r) => `- [${r.type}] ${r.name} in ${r.filePath}:${r.line}`)
               .join("\n")
           : `No symbols matching "${input.query}" found.`;
 
       return {
         ok: true,
-        data: results,
+        data: boundedResults,
         display,
+        metadata: { truncated: totalMatches > boundedResults.length },
       };
     } catch (error: unknown) {
       return {

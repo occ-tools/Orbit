@@ -3,15 +3,22 @@ import glob from "fast-glob";
 import { OrbitTool, ToolContext, ToolResult } from "../types.js";
 
 export const InspectProjectInputSchema = z.object({});
+export type InspectProjectInput = z.infer<typeof InspectProjectInputSchema>;
 
-export class InspectProjectTool implements OrbitTool<any, string> {
+export class InspectProjectTool implements OrbitTool<
+  InspectProjectInput,
+  string
+> {
   name = "inspect_project";
   description =
     "Inspect project directory structure, returning a tree summary of top-level folders and files.";
   inputSchema = InspectProjectInputSchema;
   risk = "read" as const;
 
-  async execute(input: any, ctx: ToolContext): Promise<ToolResult<string>> {
+  async execute(
+    _input: InspectProjectInput,
+    ctx: ToolContext,
+  ): Promise<ToolResult<string>> {
     try {
       const files = await glob("**/*", {
         cwd: ctx.cwd,
@@ -44,10 +51,10 @@ export class InspectProjectTool implements OrbitTool<any, string> {
         data: display,
         display,
       };
-    } catch (e: any) {
+    } catch (error: unknown) {
       return {
         ok: false,
-        error: e.message,
+        error: error instanceof Error ? error.message : String(error),
       };
     }
   }

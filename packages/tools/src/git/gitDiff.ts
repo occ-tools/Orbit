@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { execa } from "execa";
+import { LogTruncator } from "@orbit-build/shared";
 import { OrbitTool, ToolContext, ToolResult } from "../types.js";
 
 export const GitDiffInputSchema = z.object({
@@ -24,16 +25,24 @@ export class GitDiffTool implements OrbitTool<GitDiffInput, string> {
         args.push("--staged");
       }
 
-      const { stdout } = await execa("git", args, { cwd: ctx.cwd });
+      const { stdout } = await execa("git", args, {
+        cwd: ctx.cwd,
+        signal: ctx.abortSignal,
+      });
+      const bounded = LogTruncator.truncate(stdout, 300, 40000);
       return {
         ok: true,
-        data: stdout,
-        display: stdout ? stdout : "No changes detected in git workspace.",
+        data: bounded,
+        display: bounded || "No changes detected in git workspace.",
+        metadata: {
+          truncated: bounded.length !== stdout.length,
+          outputChars: stdout.length,
+        },
       };
-    } catch (e: any) {
+    } catch (error: unknown) {
       return {
         ok: false,
-        error: `Git diff failed: ${e.message}`,
+        error: `Git diff failed: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }

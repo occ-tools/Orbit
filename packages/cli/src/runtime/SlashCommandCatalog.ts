@@ -1,104 +1,320 @@
 import picocolors from "picocolors";
 
+export type SlashCommandCategory =
+  | "context"
+  | "session"
+  | "settings"
+  | "git"
+  | "system";
+
+export interface SlashCommandDefinition {
+  command: `/${string}`;
+  usage: string;
+  category: SlashCommandCategory;
+  description: { en: string; zh: string };
+  /** Commands that are useful and safe to advertise inside the WebUI composer. */
+  webSuggested: boolean;
+}
+
+/**
+ * Canonical metadata for built-in slash commands.
+ *
+ * TUI help, terminal completion, and WebUI discovery all derive from this
+ * catalog so a newly added command cannot silently disappear from one surface.
+ */
+export const SLASH_COMMAND_DEFINITIONS = [
+  {
+    command: "/help",
+    usage: "",
+    category: "system",
+    description: {
+      en: "Show all commands and usage",
+      zh: "显示全部命令与用法",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/status",
+    usage: "",
+    category: "settings",
+    description: {
+      en: "Show the active session, model, context, and cost",
+      zh: "查看当前会话、模型、上下文与费用",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/goal",
+    usage: "[objective]",
+    category: "session",
+    description: {
+      en: "Show or set this chat's durable goal; use clear to remove",
+      zh: "查看或设置当前聊天的持续目标；使用 clear 清除",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/rename",
+    usage: "<title>",
+    category: "session",
+    description: { en: "Rename the current chat", zh: "重命名当前聊天" },
+    webSuggested: true,
+  },
+  {
+    command: "/memory",
+    usage: "[action]",
+    category: "session",
+    description: {
+      en: "Review and manage explicit project memory",
+      zh: "审查和管理项目级显式记忆",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/plan",
+    usage: "[action]",
+    category: "session",
+    description: {
+      en: "Manage this chat's recoverable task plan",
+      zh: "管理当前聊天可恢复的任务计划",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/metrics",
+    usage: "",
+    category: "settings",
+    description: {
+      en: "Show local runtime and reliability metrics",
+      zh: "查看本地运行与可靠性指标",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/doctor",
+    usage: "",
+    category: "settings",
+    description: {
+      en: "Diagnose runtime, models, web, skills, and safety",
+      zh: "诊断运行环境、模型、联网、技能与安全配置",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/config",
+    usage: "[key=value]",
+    category: "settings",
+    description: {
+      en: "View or update Orbit configuration",
+      zh: "查看或更新 Orbit 配置",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/model",
+    usage: "[name]",
+    category: "settings",
+    description: {
+      en: "Show or switch the active model",
+      zh: "查看或切换当前模型",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/chat",
+    usage: "[action]",
+    category: "session",
+    description: {
+      en: "List, create, delete, or switch chats",
+      zh: "列出、新建、删除或切换聊天",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/commit",
+    usage: "[message]",
+    category: "git",
+    description: {
+      en: "Stage workspace changes and create a commit",
+      zh: "暂存工作区修改并创建提交",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/exit",
+    usage: "",
+    category: "system",
+    description: { en: "Exit the interactive terminal", zh: "退出交互式终端" },
+    webSuggested: false,
+  },
+  {
+    command: "/quit",
+    usage: "",
+    category: "system",
+    description: { en: "Exit the interactive terminal", zh: "退出交互式终端" },
+    webSuggested: false,
+  },
+  {
+    command: "/rollback",
+    usage: "",
+    category: "session",
+    description: {
+      en: "Restore the latest file modification checkpoint",
+      zh: "恢复最近一次文件修改检查点",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/timeline",
+    usage: "",
+    category: "session",
+    description: {
+      en: "List persisted file checkpoints for this chat",
+      zh: "列出当前聊天持久化的文件检查点",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/rewind",
+    usage: "<id|number>",
+    category: "session",
+    description: {
+      en: "Rewind this chat to a selected file checkpoint",
+      zh: "将当前聊天回退到指定文件检查点",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/compact",
+    usage: "",
+    category: "context",
+    description: {
+      en: "Compact older dialogue against the active model window",
+      zh: "按当前模型上下文窗口压缩旧对话",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/clear",
+    usage: "",
+    category: "context",
+    description: {
+      en: "Reset dialogue history and clear the conversation view",
+      zh: "重置对话历史并清空会话视图",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/add",
+    usage: "<file>",
+    category: "context",
+    description: {
+      en: "Add a file or directory to active context",
+      zh: "将文件或目录加入活动上下文",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/drop",
+    usage: "<file>",
+    category: "context",
+    description: {
+      en: "Remove a file or pattern from active context",
+      zh: "从活动上下文移除文件或通配符",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/mode",
+    usage: "[mode]",
+    category: "settings",
+    description: {
+      en: "Switch permission mode: strict, normal, auto, or plan",
+      zh: "切换权限模式：strict、normal、auto 或 plan",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/copy",
+    usage: "",
+    category: "session",
+    description: {
+      en: "Copy the latest Orbit reply",
+      zh: "复制 Orbit 的最新回复",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/run",
+    usage: "<command>",
+    category: "system",
+    description: {
+      en: "Run a native shell command after permission checks",
+      zh: "经过权限检查后运行本地 Shell 命令",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/update",
+    usage: "",
+    category: "settings",
+    description: {
+      en: "Check and update Orbit from npm",
+      zh: "从 npm 检查并更新 Orbit",
+    },
+    webSuggested: true,
+  },
+  {
+    command: "/webui",
+    usage: "[port]",
+    category: "settings",
+    description: {
+      en: "Open the Orbit graphical console",
+      zh: "打开 Orbit 图形控制台",
+    },
+    webSuggested: false,
+  },
+] as const satisfies readonly SlashCommandDefinition[];
+
 /** Slash commands reserved by Orbit and unavailable to custom commands. */
-export const BUILTIN_SLASH_COMMANDS = [
-  "/help",
-  "/status",
-  "/goal",
-  "/rename",
-  "/memory",
-  "/plan",
-  "/metrics",
-  "/doctor",
-  "/config",
-  "/model",
-  "/chat",
-  "/commit",
-  "/exit",
-  "/quit",
-  "/rollback",
-  "/compact",
-  "/clear",
-  "/add",
-  "/drop",
-  "/mode",
-  "/copy",
-  "/run",
-  "/update",
-  "/webui",
-] as const;
+export const BUILTIN_SLASH_COMMANDS = SLASH_COMMAND_DEFINITIONS.map(
+  ({ command }) => command,
+);
 
-/** Builds the localized help screen for Orbit's built-in slash commands. */
+const CATEGORY_LABELS: Record<
+  SlashCommandCategory,
+  { en: string; zh: string }
+> = {
+  context: { en: "Context Management", zh: "上下文管理" },
+  session: { en: "Session & History", zh: "会话与历史" },
+  settings: { en: "Configuration & Status", zh: "配置与状态" },
+  git: { en: "Git Version Control", zh: "Git 提交" },
+  system: { en: "System Control", zh: "系统控制" },
+};
+
+/** Builds the localized help screen from the canonical command catalog. */
 export function buildSlashCommandHelp(isZh: boolean): string {
-  if (isZh) {
-    return [
-      picocolors.bold(picocolors.yellow("[ 上下文管理 (Context) ]")),
-      `  ${picocolors.green("/add")}   ${picocolors.cyan("<file>")}     - 添加文件/目录至上下文 (使用 -r 设为只读)`,
-      `  ${picocolors.green("/drop")}  ${picocolors.cyan("<file>")}     - 从活动上下文中移除指定文件或通配符`,
-      `  ${picocolors.green("/compact")}          - 立即压缩旧对话；运行中会按当前模型窗口自动压缩`,
-      `  ${picocolors.green("/clear")}            - 重置对话历史与屏幕缓存`,
+  const locale = isZh ? "zh" : "en";
+  const sections: string[] = [];
+  for (const category of Object.keys(
+    CATEGORY_LABELS,
+  ) as SlashCommandCategory[]) {
+    const commands = SLASH_COMMAND_DEFINITIONS.filter(
+      (definition) => definition.category === category,
+    );
+    sections.push(
+      picocolors.bold(
+        picocolors.yellow(`[ ${CATEGORY_LABELS[category][locale]} ]`),
+      ),
+      ...commands.map(({ command, usage, description }) => {
+        const invocation = usage ? `${command} ${usage}` : command;
+        return `  ${picocolors.green(invocation.padEnd(25))} - ${description[locale]}`;
+      }),
       "",
-      picocolors.bold(picocolors.yellow("[ 会话与历史 (Session) ]")),
-      `  ${picocolors.green("/chat")}   ${picocolors.cyan("[action]")}   - 管理对话会话 (list/ls, new, delete/rm, switch)`,
-      `  ${picocolors.green("/goal")}   ${picocolors.cyan("[目标]")}     - 查看或设置当前聊天的持续目标（clear 清除）`,
-      `  ${picocolors.green("/rename")} ${picocolors.cyan("<名称>")}     - 重命名当前聊天`,
-      `  ${picocolors.green("/plan")}   ${picocolors.cyan("[操作]")}     - 管理当前聊天的可恢复任务计划`,
-      `  ${picocolors.green("/memory")} ${picocolors.cyan("[操作]")}     - 审查和管理项目级显式记忆`,
-      `  ${picocolors.green("/rollback")}         - 回滚最近的文件修改检查点`,
-      `  ${picocolors.green("/copy")}             - 拷贝 AI 的最新回复至系统剪贴板`,
-      "",
-      picocolors.bold(picocolors.yellow("[ 配置与状态 (Settings) ]")),
-      `  ${picocolors.green("/status")}           - 诊断并展示当前会话、模型与消耗`,
-      `  ${picocolors.green("/metrics")}          - 展示本地会话运行与可靠性指标`,
-      `  ${picocolors.green("/doctor")}           - 全面诊断运行环境、模型、联网、skills 与安全配置`,
-      `  ${picocolors.green("/config")}   ${picocolors.cyan("[k=v]")}    - 查看或直接修改配置参数`,
-      `  ${picocolors.green("/model")}    ${picocolors.cyan("[name]")}   - 动态查询或切换正在使用的语言大模型`,
-      `  ${picocolors.green("/mode")}     ${picocolors.cyan("[mode]")}   - 切换安全确认模式 (strict, normal, auto, plan)`,
-      `  ${picocolors.green("/update")}           - 检查并更新 Orbit 到最新 npm 版本`,
-      `  ${picocolors.green("/webui")}    ${picocolors.cyan("[port]")}   - 启动并打开 Orbit 图形控制台`,
-      "",
-      picocolors.bold(picocolors.yellow("[ Git 提交 (Git) ]")),
-      `  ${picocolors.green("/commit")}   ${picocolors.cyan("[msg]")}    - 暂存工作区修改并生成提交`,
-      "",
-      picocolors.bold(picocolors.yellow("[ 系统控制 (System) ]")),
-      `  ${picocolors.green("/help")}             - 显示此帮助信息`,
-      `  ${picocolors.green("/exit")} / ${picocolors.green("/quit")}     - 安全退出交互式终端`,
-      `  ${picocolors.green("!<cmd>")} / ${picocolors.green("/run")} ${picocolors.cyan("<cmd>")} - 直接执行系统原生 Shell 命令`,
-    ].join("\n");
+    );
   }
-
-  return [
-    picocolors.bold(picocolors.yellow("[ Context Management ]")),
-    `  ${picocolors.green("/add")}   ${picocolors.cyan("<file>")}     - Add file/directory to context (use -r for read-only)`,
-    `  ${picocolors.green("/drop")}  ${picocolors.cyan("<file>")}     - Drop file/pattern from active context`,
-    `  ${picocolors.green("/compact")}          - Compact older dialogue now; auto-compacts against the active model window`,
-    `  ${picocolors.green("/clear")}            - Reset dialogue history and clear TUI screen`,
-    "",
-    picocolors.bold(picocolors.yellow("[ Session & History ]")),
-    `  ${picocolors.green("/chat")}   ${picocolors.cyan("[action]")}   - Manage sessions (list/ls, new, delete/rm, switch)`,
-    `  ${picocolors.green("/goal")}   ${picocolors.cyan("[objective]")} - Show or set this chat's durable goal (clear to remove)`,
-    `  ${picocolors.green("/rename")} ${picocolors.cyan("<title>")}     - Rename the current chat`,
-    `  ${picocolors.green("/plan")}   ${picocolors.cyan("[action]")}    - Manage this chat's recoverable task plan`,
-    `  ${picocolors.green("/memory")} ${picocolors.cyan("[action]")}    - Review and manage explicit project memory`,
-    `  ${picocolors.green("/rollback")}         - Rollback to last file modification checkpoint`,
-    `  ${picocolors.green("/copy")}             - Copy last AI message to clipboard`,
-    "",
-    picocolors.bold(picocolors.yellow("[ Configuration & Status ]")),
-    `  ${picocolors.green("/status")}           - Show current session, model, and cost`,
-    `  ${picocolors.green("/metrics")}          - Show local runtime and reliability metrics`,
-    `  ${picocolors.green("/doctor")}           - Diagnose runtime, models, web, skills, and safety config`,
-    `  ${picocolors.green("/config")}   ${picocolors.cyan("[k=v]")}    - View or modify configurations`,
-    `  ${picocolors.green("/model")}    ${picocolors.cyan("[name]")}   - Show or switch active model`,
-    `  ${picocolors.green("/mode")}     ${picocolors.cyan("[mode]")}   - Switch permission mode (strict, normal, auto, plan)`,
-    `  ${picocolors.green("/update")}           - Check and update Orbit from npm`,
-    `  ${picocolors.green("/webui")}    ${picocolors.cyan("[port]")}   - Start and open the Orbit graphical console`,
-    "",
-    picocolors.bold(picocolors.yellow("[ Git Version Control ]")),
-    `  ${picocolors.green("/commit")}   ${picocolors.cyan("[msg]")}    - Stage files and commit with auto-generated message`,
-    "",
-    picocolors.bold(picocolors.yellow("[ System Control ]")),
-    `  ${picocolors.green("/help")}             - Show this help screen`,
-    `  ${picocolors.green("/exit")} / ${picocolors.green("/quit")}     - Exit interactive shell`,
-    `  ${picocolors.green("!<cmd>")} / ${picocolors.green("/run")} ${picocolors.cyan("<cmd>")} - Execute native shell command`,
-  ].join("\n");
+  sections.push(
+    `  ${picocolors.green("!<cmd>")} - ${isZh ? "直接运行本地 Shell 命令（等同 /run）" : "Run a native shell command (same as /run)"}`,
+  );
+  return sections.join("\n").trimEnd();
 }

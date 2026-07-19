@@ -1,4 +1,8 @@
-import { toolRegistry, type ToolResult } from "@orbit-build/tools";
+import {
+  toolRegistry,
+  type ToolResult,
+  type ToolRuntimeServices,
+} from "@orbit-build/tools";
 import { OrbitToolCall } from "@orbit-build/model-providers";
 import type { OrbitConfig } from "@orbit-build/config";
 
@@ -7,12 +11,19 @@ export class StepRunner {
     private cwd: string,
     private sessionId: string,
     private config?: OrbitConfig,
+    private services?: ToolRuntimeServices,
   ) {}
 
   public async run(
     toolCall: OrbitToolCall,
     abortSignal?: AbortSignal,
   ): Promise<ToolResult<unknown>> {
+    if (abortSignal?.aborted) {
+      return {
+        ok: false,
+        error: "Tool execution was cancelled before it started.",
+      };
+    }
     const tool = toolRegistry.get(toolCall.name);
     if (!tool) {
       return {
@@ -67,6 +78,7 @@ export class StepRunner {
         sessionId: this.sessionId,
         config: this.config,
         abortSignal: timeoutController.signal,
+        services: this.services,
       });
 
       return result;
@@ -78,6 +90,12 @@ export class StepRunner {
         return {
           ok: false,
           error: `Tool execution timed out after ${timeoutMs}ms. Command tree was terminated.`,
+        };
+      }
+      if (abortSignal?.aborted) {
+        return {
+          ok: false,
+          error: "Tool execution was cancelled by the user.",
         };
       }
       return {

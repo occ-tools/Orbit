@@ -11,6 +11,15 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
     autoSizePrompt();
     writeLocalStorage('orbit.webui.draft', elements.prompt.value);
     updateSendButtonState();
+    slashCommandSelection = 0;
+    renderSlashCommands();
+  });
+
+  elements.prompt.addEventListener('focus', renderSlashCommands);
+  elements.prompt.addEventListener('blur', () => {
+    window.setTimeout(() => {
+      if (!elements.slashCommandMenu.contains(document.activeElement)) closeSlashCommands();
+    }, 0);
   });
 
   elements.prompt.addEventListener('keydown', (event) => {
@@ -478,7 +487,7 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
     }
     try {
       await bootstrapSession();
-      await Promise.all([renderMessages(), loadStatus()]);
+      await Promise.all([renderMessages(), loadStatus(), loadSlashCommands()]);
       connectEvents();
       if (draft) showToast(copy.draftRestored);
       elements.prompt.focus();

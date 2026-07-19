@@ -69,6 +69,7 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
 
       let matchedIndex: number | null = null;
       let occurrences = 0;
+      const matchedIndices: number[] = [];
 
       if (M > 0 && N >= M) {
         for (let i = 0; i <= N - M; i++) {
@@ -82,6 +83,7 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
           if (match) {
             occurrences++;
             matchedIndex = i;
+            matchedIndices.push(i);
           }
         }
       }
@@ -117,6 +119,29 @@ export class EditFileTool implements OrbitTool<EditFileInput, void> {
         return {
           ok: false,
           error: `Found multiple whitespace-insensitive occurrences of oldText in "${input.path}". Please provide more surrounding lines.`,
+        };
+      }
+
+      if (occurrences > 1 && input.replaceAll) {
+        for (const index of matchedIndices.reverse()) {
+          const matchedFileLines = fileLines.slice(index, index + M);
+          const adjustedNewLines = adjustIndentation(
+            newLines,
+            matchedFileLines,
+            oldLines,
+          );
+          fileLines.splice(index, M, ...adjustedNewLines);
+        }
+        const writeError = await this.checkAndWrite(
+          input.path,
+          safePath,
+          fileLines.join("\n"),
+          originalContent,
+        );
+        if (writeError) return writeError;
+        return {
+          ok: true,
+          display: `Successfully replaced ${occurrences} whitespace-insensitive matches in ${input.path}`,
         };
       }
 

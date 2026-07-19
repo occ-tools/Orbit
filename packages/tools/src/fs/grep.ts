@@ -6,10 +6,10 @@ import { resolveSafePath } from "@orbit-build/shared";
 import { OrbitTool, ToolContext, ToolResult } from "../types.js";
 
 export const GrepInputSchema = z.object({
-  pattern: z.string(),
-  path: z.string().optional(),
-  include: z.string().optional(),
-  maxResults: z.number().optional(),
+  pattern: z.string().min(1).max(4096),
+  path: z.string().max(4096).optional(),
+  include: z.string().max(4096).optional(),
+  maxResults: z.number().int().min(1).max(1000).optional(),
 });
 
 export type GrepInput = z.infer<typeof GrepInputSchema>;
@@ -31,7 +31,7 @@ export class GrepTool implements OrbitTool<GrepInput, GrepMatch[]> {
     input: GrepInput,
     ctx: ToolContext,
   ): Promise<ToolResult<GrepMatch[]>> {
-    const max = input.maxResults || 100;
+    const max = input.maxResults ?? 100;
     const searchDir = input.path
       ? resolveSafePath(ctx.cwd, input.path)
       : ctx.cwd;
@@ -48,7 +48,15 @@ export class GrepTool implements OrbitTool<GrepInput, GrepMatch[]> {
       }
       args.push(searchDir);
 
-      const { stdout } = await execa("rg", args);
+      const result = await execa("rg", args, {
+        reject: false,
+        signal: ctx.abortSignal,
+        maxBuffer: 2 * 1024 * 1024,
+      });
+      if (result.exitCode !== 0 && result.exitCode !== 1) {
+        throw new Error(result.stderr || `ripgrep exited ${result.exitCode}`);
+      }
+      const stdout = result.stdout;
       const matches: GrepMatch[] = [];
       const lines = stdout.split("\n");
 
@@ -80,7 +88,10 @@ export class GrepTool implements OrbitTool<GrepInput, GrepMatch[]> {
         display: `Grep for "${input.pattern}" using ripgrep: found ${matches.length} matches`,
       };
     } catch {
-      return this.jsFallback(input, searchDir, ctx.cwd, max);
+      if (ctx.abortSignal?.aborted) {
+        return { ok: false, error: "Grep was cancelled by the user." };
+      }
+      return this.jsFallback(input, searchDir, ctx.cwd, max, ctx.abortSignal);
     }
   }
 
@@ -89,6 +100,7 @@ export class GrepTool implements OrbitTool<GrepInput, GrepMatch[]> {
     searchDir: string,
     cwd: string,
     max: number,
+    abortSignal?: AbortSignal,
   ): Promise<ToolResult<GrepMatch[]>> {
     try {
       const globPattern = input.include || "**/*";
@@ -108,6 +120,9 @@ export class GrepTool implements OrbitTool<GrepInput, GrepMatch[]> {
       const matches: GrepMatch[] = [];
 
       for (const file of files) {
+        if (abortSignal?.aborted) {
+          return { ok: false, error: "Grep was cancelled by the user." };
+        }
         if (matches.length >= max) break;
         const content = readFileSync(file, "utf8");
 
@@ -134,10 +149,10 @@ export class GrepTool implements OrbitTool<GrepInput, GrepMatch[]> {
         data: matches,
         display: `Grep for "${input.pattern}" using JS fallback: found ${matches.length} matches`,
       };
-    } catch (e: any) {
+    } catch (error: unknown) {
       return {
         ok: false,
-        error: `Grep failed: Ripgrep was unavailable and fallback search failed: ${e.message}`,
+        error: `Grep failed: Ripgrep was unavailable and fallback search failed: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }

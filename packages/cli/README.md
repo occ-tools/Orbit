@@ -85,10 +85,18 @@ Enter `/webui` inside the TUI to open Orbit's authenticated local browser UI.
 Projects map to codebase folders and contain independent persisted chats that
 can be resumed, archived, or deleted.
 
+Type `/` in the browser composer for keyboard-navigable built-in and custom
+command suggestions. `Ctrl+K` opens the broader action palette.
+
 Use `/goal`, `/plan`, opt-in `/memory`, `/compact`, `/metrics`, `/model`,
 `/timeline`, `/rewind`, and `/rollback` to manage durable work. Switching models
 preserves the chat and recalculates context against the selected model window;
 automatic compaction protects continuity when the new window is smaller.
+
+Orbit exposes validated file, search, symbol, shell, test, Git, live-web,
+source-fetch, and durable-plan tools to the active model. Tool arguments are
+validated before approval or execution, results are bounded and redacted, and
+connected MCP tools retain their server-declared JSON Schemas.
 
 ## Providers
 

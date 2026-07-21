@@ -1,23 +1,21 @@
 # @orbit-build/cli
 
 Orbit is a local-first AI coding agent for the terminal, browser, and editor. It
-is optimized for DeepSeek V4, supports compatible hosted providers and local
-Ollama models, and keeps project chats, active model state, approvals, and
-context synchronized between its TUI and Web UI.
+is optimized for DeepSeek V4, supports OpenAI-compatible providers and local
+Ollama models, and keeps project chats, model state, approvals, and context
+synchronized between its TUI and authenticated local Web UI.
 
-## Install
+## Install and start
 
-Requires Node.js 20 or newer.
+Requires Node.js 20 or newer. If `node` or `npm` is missing, install a current
+Node.js LTS release from [nodejs.org](https://nodejs.org/); npm is included with
+the standard Windows, macOS, and Linux installers.
 
 ```bash
+node --version
+npm --version
 npm install --global @orbit-build/cli
-orbit --version
 orbit login
-```
-
-Run `orbit` from a project folder:
-
-```bash
 cd path/to/project
 orbit
 ```
@@ -25,124 +23,63 @@ orbit
 The global command works in PowerShell, Command Prompt, and POSIX shells. Open a
 new terminal if an existing shell has not refreshed npm's global binary path.
 
-## Main workflows
+```bash
+orbit "Fix the failing tests"              # direct interactive task
+orbit exec "Review src" --jsonl            # automation-friendly JSONL
+orbit doctor --probe --deepseek             # configuration + live probe
+orbit update --check                        # check without installing
+```
+
+Inside the TUI, use `/webui` for the synchronized browser workspace. One project
+maps to one codebase folder and can contain multiple persisted chats. Type `/`
+in either interface for the shared command catalog; use `/goal`, `/plan`,
+`/model`, `/compact`, `/timeline`, `/rewind`, and `/rollback` for durable work.
+
+## Providers and continuity
+
+`orbit login` adds, lists, and deletes saved provider profiles. Enter the exact
+base URL required by an OpenAI-compatible provider, including `/v1` when
+applicable; Orbit does not guess suffixes. Authenticated catalogs and the local
+Ollama API populate the model selector with models that are actually available.
+
+The official DeepSeek profile uses `https://api.deepseek.com` with
+`deepseek-v4-flash` for fast work and `deepseek-v4-pro` for planning, coding,
+and review. Model changes preserve the chat and recalculate context against the
+new window; automatic compaction protects continuity when the window is smaller.
+
+Orbit exposes validated file, search, symbol, shell, test, Git, web, fetch, and
+plan tools. Arguments are checked before approval or execution, results are
+bounded and redacted, and connected MCP tools retain their declared schemas.
+
+## Update, cleanup, and uninstall
 
 ```bash
-orbit                         # interactive full-screen TUI
-orbit "Fix the failing tests" # one-shot task
-orbit exec "Review src" --jsonl
-orbit doctor --deepseek
-orbit config
-orbit extension .orbit/extensions/example.yaml
 orbit update --check
-orbit lsp
+orbit update                 # confirm interactively
+orbit update --yes           # explicit non-interactive install
+orbit clean --project        # preview project-owned runtime data
+orbit clean --user           # preview user-owned runtime data
+npm uninstall --global @orbit-build/cli
 ```
 
-`orbit extension <manifest> [--json]` validates the versioned, workspace-bound
-extension contract without installing or executing third-party code. Automatic
-extension installation and lifecycle loading are intentionally not implied by
-this validation command.
+Orbit never installs an update during startup. Cleanup never removes project
+source, `ORBIT.md`, or `orbit.config.yaml`; deletion requires `DELETE`
+interactively or `--yes` in automation.
 
-Inspect or remove Orbit-owned runtime data with `orbit clean`. It never removes
-project source, `ORBIT.md`, or `orbit.config.yaml`:
+After an update is installed and verified, restart `orbit` and reopen `/webui`.
+The active TUI and browser server intentionally retain their true running
+version until that restart instead of pretending to hot-update.
 
-```bash
-orbit clean --project
-orbit clean --user
-orbit clean --all
-orbit clean --all --yes --json
-```
+## Documentation
 
-Interactive cleanup requires the exact confirmation `DELETE`. Non-interactive
-cleanup requires `--yes`; `--json` without `--yes` only returns the cleanup
-preview. Uninstall the executable separately with
-`npm uninstall --global @orbit-build/cli`.
-
-Updates are explicit and use the installed npm runtime:
-
-```bash
-orbit update --check       # network check only
-orbit update               # check, then confirm interactively
-orbit update --yes         # explicit non-interactive install
-orbit update --check --json
-orbit update --channel beta --check
-```
-
-The TUI performs one bounded background version check per process: the cat heart
-blinks when a newer release exists and stays steady otherwise. This check never
-installs anything or blocks input, and Orbit never silently replaces itself.
-The interactive `/update` command invokes this same Orbit CLI updater; it no
-longer runs a package-manager install inside the active project. From the Web
-UI it remains check-only to avoid interrupting the local server; the TUI can
-confirm and install an available release.
-
-Stable uses npm's `latest` dist-tag and beta uses `next`. After installation,
-Orbit verifies the globally installed version. A failed install or mismatched
-version triggers a best-effort rollback to the previous exact version and an
-actionable manual recovery command.
-
-Enter `/webui` inside the TUI to open Orbit's authenticated local browser UI.
-Projects map to codebase folders and contain independent persisted chats that
-can be resumed, archived, or deleted.
-
-Type `/` in the browser composer for keyboard-navigable built-in and custom
-command suggestions. `Ctrl+K` opens the broader action palette.
-
-Use `/goal`, `/plan`, opt-in `/memory`, `/compact`, `/metrics`, `/model`,
-`/timeline`, `/rewind`, and `/rollback` to manage durable work. Switching models
-preserves the chat and recalculates context against the selected model window;
-automatic compaction protects continuity when the new window is smaller.
-
-Orbit exposes validated file, search, symbol, shell, test, Git, live-web,
-source-fetch, and durable-plan tools to the active model. Tool arguments are
-validated before approval or execution, results are bounded and redacted, and
-connected MCP tools retain their server-declared JSON Schemas.
-
-## Providers
-
-`orbit login` creates and deletes saved provider profiles. For an
-OpenAI-compatible provider, supply its exact base URL, including `/v1` when the
-service requires it; Orbit does not guess URL suffixes. Authenticated provider
-catalogs and the local Ollama API populate the model selector with models that
-are actually available.
-
-The default official provider is DeepSeek's OpenAI-compatible endpoint at
-`https://api.deepseek.com`:
-
-| Model               | Default roles             | Thinking |   Context | Orbit output default |
-| ------------------- | ------------------------- | -------- | --------: | -------------------: |
-| `deepseek-v4-flash` | default, fast, summarizer | disabled | 1,000,000 |                8,192 |
-| `deepseek-v4-pro`   | planner, coder, reviewer  | high     | 1,000,000 |               16,384 |
-
-Orbit keeps reusable prefixes stable and reports measured DeepSeek cache
-hit/miss usage. It does not send synthetic cache primers or promise a fixed hit
-rate.
-
-```bash
-orbit doctor --probe --deepseek
-orbit doctor --json --strict
-orbit bench --model deepseek-v4-flash --thinking disabled --repeat 3 --max-tokens 256
-orbit bench --model deepseek-v4-pro --thinking high --repeat 3 --max-tokens 4096
-```
-
-## Automation contract
-
-`orbit exec "task" --jsonl` never opens interactive approval menus. Approved
-operations continue; operations that require user approval are denied safely.
-The final event contains the structured outcome. Exit codes are `0` for
-completion, `2` for task or verification failure, `4` for provider startup
-failure, and `130` for abort.
-
-## Documentation and development
-
-- [Repository overview](https://github.com/Hephaestus-DevKit/Orbit#readme)
-- [Maintainer guide](https://github.com/Hephaestus-DevKit/Orbit/blob/main/docs/MAINTAINER_GUIDE.md)
+- [Product overview](https://github.com/Hephaestus-DevKit/Orbit#readme)
+- [Task-oriented user guide](https://github.com/Hephaestus-DevKit/Orbit/blob/main/docs/USER_GUIDE.md)
 - [Security policy](https://github.com/Hephaestus-DevKit/Orbit/blob/main/SECURITY.md)
 - [Changelog](https://github.com/Hephaestus-DevKit/Orbit/blob/main/CHANGELOG.md)
 
-From a source checkout, run `pnpm install`, `pnpm build`, and
-`pnpm install-global`. Use `pnpm verify:cli` for focused CLI verification or
-`pnpm verify:release` before publishing.
+Use `orbit --help` or `orbit <command> --help` for the exact options installed
+on your machine. Automation exits with `0` for completion, `2` for task or
+verification failure, `4` for provider startup failure, and `130` for abort.
 
 License terms have not yet been finalized; repository visibility alone does not
 grant permission to use, modify, or redistribute the source.

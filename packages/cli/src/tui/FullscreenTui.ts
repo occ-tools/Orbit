@@ -109,6 +109,7 @@ export class FullscreenTui {
   private hasCheckedOrbitUpdate = false;
   private isCheckingOrbitUpdate = false;
   private orbitUpdateAvailable = false;
+  private orbitRestartRequired = false;
   private budgetLimit = 0;
 
   private resolveInput: ((val: string | null) => void) | null = null;
@@ -592,7 +593,16 @@ export class FullscreenTui {
 
   public setOrbitUpdateAvailable(updateAvailable: boolean): void {
     this.hasCheckedOrbitUpdate = true;
-    this.orbitUpdateAvailable = updateAvailable;
+    this.orbitUpdateAvailable = this.orbitRestartRequired
+      ? false
+      : updateAvailable;
+    if (this.isActive) this.render();
+  }
+
+  /** Mark that npm has updated the package while this process remains on the old runtime. */
+  public setOrbitRestartRequired(restartRequired: boolean): void {
+    this.orbitRestartRequired = restartRequired;
+    if (restartRequired) this.orbitUpdateAvailable = false;
     if (this.isActive) this.render();
   }
 
@@ -1860,7 +1870,7 @@ export class FullscreenTui {
               "/mode": "动态切换系统安全确认模式 (strict, normal, auto, plan)",
               "/copy": "拷贝 AI 的上一条回复到系统剪贴板",
               "/run": "执行一条本机 Shell 命令，会先走权限检查",
-              "/update": "检查并更新 Orbit 到最新 npm 版本",
+              "/update": "检查 npm，并在终端中安装和验证 Orbit 更新",
               "/webui": "启动并打开 Orbit 图形控制台页面",
             }
           : {
@@ -1889,7 +1899,7 @@ export class FullscreenTui {
               "/mode": "Switch permission mode (strict, normal, auto, plan)",
               "/copy": "Copy last assistant response to clipboard",
               "/run": "Run one local shell command after permission checks",
-              "/update": "Check and update Orbit from npm",
+              "/update": "Check npm, then install and verify Orbit updates",
               "/webui": "Start and open the Orbit graphical console",
             };
 
@@ -2169,9 +2179,12 @@ export class FullscreenTui {
     const gitBranch = gitSummary.branch;
 
     // 2. 渲染左上角像素小猫 Logo 及其右侧信息
-    const heartColor = this.getOrbitUpdateAvailable()
-      ? `\x1b[5m\x1b[38;2;230;190;80m`
-      : `\x1b[38;2;230;110;110m`;
+    const updateAvailable = this.getOrbitUpdateAvailable();
+    const heartColor = this.orbitRestartRequired
+      ? `\x1b[5m\x1b[38;2;120;190;150m`
+      : updateAvailable
+        ? `\x1b[5m\x1b[38;2;230;190;80m`
+        : `\x1b[38;2;230;110;110m`;
 
     const logoLines = [
       `\x1b[38;2;158;184;196m  /\\___/\\  \x1b[0m`,

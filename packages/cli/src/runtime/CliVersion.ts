@@ -11,8 +11,7 @@ const CliPackageManifestSchema = z.object({
     ),
 });
 
-/** Read the version embedded in the installed CLI package. */
-export function readCliVersion(): string {
+function loadCliVersion(): string {
   const candidates = [
     new URL("../package.json", import.meta.url),
     new URL("../../package.json", import.meta.url),
@@ -33,4 +32,13 @@ export function readCliVersion(): string {
   throw new Error(`Unable to read the Orbit CLI package version: ${detail}`, {
     cause: lastError,
   });
+}
+
+// Capture this once. npm can replace package.json during /update, but a live
+// process must continue reporting the version of the code it actually loaded.
+export const RUNNING_CLI_VERSION = loadCliVersion();
+
+/** Return the immutable version of the currently running Orbit process. */
+export function readCliVersion(): string {
+  return RUNNING_CLI_VERSION;
 }

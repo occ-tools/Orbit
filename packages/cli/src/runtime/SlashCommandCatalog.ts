@@ -259,8 +259,8 @@ export const SLASH_COMMAND_DEFINITIONS = [
     usage: "",
     category: "settings",
     description: {
-      en: "Check and update Orbit from npm",
-      zh: "从 npm 检查并更新 Orbit",
+      en: "Check npm; terminal sessions can install and verify updates",
+      zh: "检查 npm；终端会话可安装并验证更新",
     },
     webSuggested: true,
   },

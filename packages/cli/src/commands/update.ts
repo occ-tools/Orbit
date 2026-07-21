@@ -37,6 +37,8 @@ export interface UpdateCommandDependencies {
 export interface UpdateCommandResult {
   check: UpdateCheck;
   installed: boolean;
+  /** The package on disk is newer than this still-running process. */
+  restartRequired: boolean;
   channel: UpdateChannel;
   rollback?: "not-needed" | "succeeded" | "failed";
 }
@@ -53,7 +55,12 @@ export async function runUpdate(
   const check = manager.check(currentVersion, options.channel);
 
   if (!check.updateAvailable) {
-    const result = { check, installed: false, channel: options.channel };
+    const result = {
+      check,
+      installed: false,
+      restartRequired: false,
+      channel: options.channel,
+    };
     write(
       options.json
         ? JSON.stringify({ schemaVersion: 1, ...result })
@@ -64,12 +71,45 @@ export async function runUpdate(
     return result;
   }
 
-  if (options.check || (options.json && !options.yes)) {
-    const result = { check, installed: false, channel: options.channel };
+  // A previous /update may already have replaced the global package while this
+  // process is still executing its old in-memory code. Do not reinstall it or
+  // claim that the live TUI/Web UI has hot-updated.
+  let latestAlreadyInstalled = false;
+  try {
+    latestAlreadyInstalled =
+      manager.readInstalledVersion() === check.latestVersion;
+  } catch {
+    // npx and project-local invocations might not have a global package yet.
+    // In that case the normal install flow remains the safe recovery path.
+  }
+  if (latestAlreadyInstalled) {
+    const result = {
+      check,
+      installed: false,
+      restartRequired: true,
+      channel: options.channel,
+    };
     write(
       options.json
         ? JSON.stringify({ schemaVersion: 1, ...result })
-        : `${picocolors.yellow("● Update available:")} ${check.currentVersion} → ${check.latestVersion}\n  Run ${picocolors.cyan("orbit update --yes")} to install it.`,
+        : picocolors.yellow(
+            `● Orbit ${check.latestVersion} is installed, but this process is still ${check.currentVersion}. Exit and relaunch Orbit, then reopen /webui.`,
+          ),
+    );
+    return result;
+  }
+
+  if (options.check || (options.json && !options.yes)) {
+    const result = {
+      check,
+      installed: false,
+      restartRequired: false,
+      channel: options.channel,
+    };
+    write(
+      options.json
+        ? JSON.stringify({ schemaVersion: 1, ...result })
+        : `${picocolors.yellow("● Update available:")} ${check.currentVersion} → ${check.latestVersion}\n  Run ${picocolors.cyan("orbit update --yes")} in a terminal, then restart Orbit and reopen ${picocolors.cyan("/webui")}.`,
     );
     return result;
   }
@@ -91,7 +131,12 @@ export async function runUpdate(
 
   if (!confirmed) {
     write(picocolors.yellow("⚠ Update cancelled."));
-    return { check, installed: false, channel: options.channel };
+    return {
+      check,
+      installed: false,
+      restartRequired: false,
+      channel: options.channel,
+    };
   }
 
   dependencies.beforeInstall?.();
@@ -134,6 +179,7 @@ export async function runUpdate(
   const result = {
     check,
     installed: true,
+    restartRequired: true,
     channel: options.channel,
     rollback: "not-needed" as const,
   };
@@ -141,7 +187,7 @@ export async function runUpdate(
     options.json
       ? JSON.stringify({ schemaVersion: 1, ...result })
       : picocolors.green(
-          `✔ Orbit ${check.latestVersion} installed. Restart Orbit to use the new version.`,
+          `✔ Orbit ${check.latestVersion} was installed and verified. This process is still ${check.currentVersion}; exit and relaunch Orbit, then reopen /webui.`,
         ),
   );
   return result;

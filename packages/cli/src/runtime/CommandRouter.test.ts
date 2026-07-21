@@ -67,6 +67,8 @@ describe("CommandRouter Unit Tests", () => {
             updateAvailable: true,
           },
           installed: true,
+          restartRequired: true,
+          channel: "stable",
         };
       },
     );
@@ -75,6 +77,7 @@ describe("CommandRouter Unit Tests", () => {
       stop: vi.fn(),
       start: vi.fn(),
       setOrbitUpdateAvailable: vi.fn(),
+      setOrbitRestartRequired: vi.fn(),
     };
     const router = new CommandRouter(
       process.cwd(),
@@ -101,6 +104,7 @@ describe("CommandRouter Unit Tests", () => {
     expect(tui.stop).toHaveBeenCalledOnce();
     expect(tui.start).toHaveBeenCalledOnce();
     expect(tui.setOrbitUpdateAvailable).toHaveBeenCalledWith(false);
+    expect(tui.setOrbitRestartRequired).toHaveBeenCalledWith(true);
   });
 
   it("keeps Web UI /update non-blocking and check-only", async () => {
@@ -114,6 +118,8 @@ describe("CommandRouter Unit Tests", () => {
           updateAvailable: true,
         },
         installed: false,
+        restartRequired: false,
+        channel: "stable",
       }),
     );
     const router = new CommandRouter(

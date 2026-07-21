@@ -1,23 +1,41 @@
 # Orbit documentation
 
-- [Maintainer guide](MAINTAINER_GUIDE.md): code ownership, change locations,
-  safety invariants, verification commands, and troubleshooting.
-- [CLI competitive roadmap](CLI_COMPETITIVE_ROADMAP.md): longer-term product
-  and architecture direction.
+Orbit keeps the product overview short and reveals detail by audience and task.
+
+## Use Orbit
+
+- [Repository overview](../README.md): product positioning, three-minute start,
+  capabilities, and the shortest route to each document.
+- [User guide](USER_GUIDE.md): projects and chats, providers, models, Web UI,
+  slash commands, context, safety, automation, cleanup, and troubleshooting.
+- [Security policy](../SECURITY.md): supported versions and private
+  vulnerability reporting.
+- [Changelog](../CHANGELOG.md): user-visible changes by release.
+- [Extension manifest v1](EXTENSIONS.md): validated metadata, permissions,
+  compatibility, contributions, and current loading limits.
+
+For the authoritative command surface, run `orbit --help` or
+`orbit <command> --help`; this prevents static reference pages from drifting
+from the installed version.
+
+## Maintain Orbit
+
+- [Maintainer guide](MAINTAINER_GUIDE.md): ownership, change locations, safety
+  invariants, verification, release flow, and troubleshooting.
 - [Commercial release checklist](COMMERCIAL_RELEASE_CHECKLIST.md): automated
-  gates, provider/platform smoke tests, and owner decisions required before sale.
+  gates, platform/provider smoke tests, and decisions required before sale.
 - [Commercial decisions](COMMERCIAL_DECISIONS.md): legal, privacy, distribution,
-  support, incident-response, and branding choices that require an owner.
-- [Extension manifest v1](EXTENSIONS.md): validated extension metadata,
-  permission declarations, compatibility rules, and current loading limits.
+  support, incident-response, and branding owner decisions.
+- [CLI competitive roadmap](CLI_COMPETITIVE_ROADMAP.md): longer-term product and
+  architecture direction, not a promise of implemented behavior.
 - [Third-party notices](../THIRD_PARTY_NOTICES.md): generated production
   dependency license inventory.
-- [Repository README](../README.md): installation, usage, DeepSeek profile, and
-  user-facing features.
 - [Agent guidelines](../AGENTS.md): required code, UX, security, and test
   standards for automated changes.
 
-Feature-specific implementation notes live next to the code they describe:
+## Implementation maps
+
+These notes live beside the code they describe:
 
 - [Runtime command handlers](../packages/cli/src/runtime/commands/README.md)
 - [Full-screen TUI](../packages/cli/src/tui/README.md)

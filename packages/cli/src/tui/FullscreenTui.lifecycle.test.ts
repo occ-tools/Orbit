@@ -207,4 +207,34 @@ describe("FullscreenTui lifecycle", () => {
     expect(output.join("")).toContain("\u001b[5m");
     expect(stripAnsiCodes(output.join(""))).toContain("♥");
   });
+
+  it("keeps a distinct blinking heart until an updated process is restarted", () => {
+    const output: string[] = [];
+    process.stdout.write = vi.fn((chunk: string | Uint8Array) => {
+      output.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    const tui = new FullscreenTui("C:/repo", "model", "v0.1.6");
+    const internals = tui as unknown as {
+      getGitSummary: () => {
+        branch: string;
+        added: number;
+        modified: number;
+        deleted: number;
+      };
+    };
+    vi.spyOn(internals, "getGitSummary").mockReturnValue({
+      branch: "main",
+      added: 0,
+      modified: 0,
+      deleted: 0,
+    });
+
+    tui.setOrbitRestartRequired(true);
+    tui.setOrbitUpdateAvailable(true);
+    tui.render(true);
+
+    expect(output.join("")).toContain("\u001b[5m\u001b[38;2;120;190;150m");
+    expect(stripAnsiCodes(output.join(""))).toContain("♥");
+  });
 });

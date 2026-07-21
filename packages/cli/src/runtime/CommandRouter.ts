@@ -285,8 +285,13 @@ export class CommandRouter {
             },
           );
           tui.setOrbitUpdateAvailable?.(
-            updateResult.installed ? false : updateResult.check.updateAvailable,
+            updateResult.restartRequired
+              ? false
+              : updateResult.check.updateAvailable,
           );
+          if (updateResult.restartRequired) {
+            tui.setOrbitRestartRequired?.(true);
+          }
         } catch (error: unknown) {
           const message =
             error instanceof Error ? error.message : String(error);

@@ -13,6 +13,7 @@ describe("runUpdate", () => {
     );
 
     expect(result.installed).toBe(false);
+    expect(result.restartRequired).toBe(false);
     expect(manager.install).not.toHaveBeenCalled();
     expect(output.join("\n")).toContain("0.1.6");
     expect(output.join("\n")).toContain("0.2.0");
@@ -54,15 +55,52 @@ describe("runUpdate", () => {
     );
 
     expect(result.installed).toBe(true);
+    expect(result.restartRequired).toBe(true);
     expect(manager.install).toHaveBeenCalledWith("0.2.0", true);
-    expect(manager.readInstalledVersion).toHaveBeenCalledOnce();
+    expect(manager.readInstalledVersion).toHaveBeenCalledTimes(2);
     expect(beforeInstall).toHaveBeenCalledOnce();
     expect(afterInstall).toHaveBeenCalledOnce();
+  });
+
+  it("does not reinstall a package that only needs the old process restarted", async () => {
+    const manager = createManager(true);
+    manager.readInstalledVersion.mockReturnValue("0.2.0");
+    const output: string[] = [];
+
+    const result = await runUpdate(
+      "0.1.6",
+      { yes: true },
+      { manager, write: (text) => output.push(text) },
+    );
+
+    expect(result).toMatchObject({
+      installed: false,
+      restartRequired: true,
+    });
+    expect(manager.install).not.toHaveBeenCalled();
+    expect(output.join("\n")).toContain("this process is still 0.1.6");
+  });
+
+  it("states that the verified package needs a process and Web UI restart", async () => {
+    const manager = createManager(true);
+    const output: string[] = [];
+
+    await runUpdate(
+      "0.1.6",
+      { yes: true },
+      { manager, write: (text) => output.push(text) },
+    );
+
+    expect(output.join("\n")).toContain("installed and verified");
+    expect(output.join("\n")).toContain("This process is still 0.1.6");
+    expect(output.join("\n")).toContain("reopen /webui");
   });
 
   it("rolls back when the installed version cannot be verified", async () => {
     const manager = createManager(true);
     manager.readInstalledVersion
+      .mockReset()
+      .mockReturnValueOnce("0.1.9")
       .mockReturnValueOnce("0.1.9")
       .mockReturnValueOnce("0.1.6");
 
@@ -80,7 +118,7 @@ describe("runUpdate", () => {
         throw new Error("Authorization: Bearer private-npm-token");
       })
       .mockImplementationOnce(() => undefined);
-    manager.readInstalledVersion.mockReturnValue("0.1.6");
+    manager.readInstalledVersion.mockReset().mockReturnValue("0.1.6");
 
     const error = await runUpdate(
       "0.1.6",
@@ -106,13 +144,16 @@ describe("runUpdate", () => {
 });
 
 function createManager(updateAvailable: boolean) {
+  let installedVersion = "0.1.6";
   return {
     check: vi.fn(() => ({
       currentVersion: "0.1.6",
       latestVersion: updateAvailable ? "0.2.0" : "0.1.6",
       updateAvailable,
     })),
-    install: vi.fn(),
-    readInstalledVersion: vi.fn(() => (updateAvailable ? "0.2.0" : "0.1.6")),
+    install: vi.fn((version: string) => {
+      installedVersion = version;
+    }),
+    readInstalledVersion: vi.fn(() => installedVersion),
   };
 }

@@ -160,6 +160,17 @@ export class MCPClient {
         .trim()
         .slice(-MCP_STDERR_LIMIT_CHARS);
     });
+    // Windows may report a late EPIPE on the writable stream when an MCP
+    // process exits immediately after cancellation. Writable stream errors are
+    // otherwise uncaught even when write callbacks are present.
+    child.stdin?.on("error", (error) => {
+      if (this.child !== child) return;
+      this.cleanup(
+        new Error(
+          `MCP server "${this.serverName}" stdin failed: ${safeMessage(error)}`,
+        ),
+      );
+    });
 
     if (!child.stdin || !child.stdout) {
       await this.stop();

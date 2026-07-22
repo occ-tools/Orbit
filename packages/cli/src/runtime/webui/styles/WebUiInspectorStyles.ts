@@ -520,4 +520,133 @@ export const WEB_UI_INSPECTOR_STYLES = String.raw`
   opacity: 0.48;
 }
 
+.changes-list,
+.checkpoint-list,
+.tool-history-list,
+.verification-list {
+  display: grid;
+  gap: 7px;
+}
+
+.tool-history-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-raised);
+}
+
+.tool-history-row > span:nth-child(2) { min-width: 0; }
+.tool-history-row strong,
+.tool-history-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-history-row small,
+.tool-history-row time { color: var(--muted); font-size: 11px; }
+.tool-history-mark { color: var(--accent); font-weight: 700; }
+.tool-history-row.is-failed .tool-history-mark { color: var(--danger); }
+.tool-history-row.is-denied .tool-history-mark { color: var(--warning); }
+
+.change-card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-raised);
+}
+
+.change-card summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.change-card summary::-webkit-details-marker { display: none; }
+.change-card summary::after { content: "›"; color: var(--muted); }
+.change-card[open] summary::after { transform: rotate(90deg); }
+
+.change-card summary strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 11px/1.3 var(--font-mono);
+}
+
+.change-card summary span {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.change-diff {
+  max-height: 320px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  color: var(--ink);
+  background: var(--code-bg, var(--surface-subtle));
+  border-block: 1px solid var(--border);
+  font: 10px/1.55 var(--font-mono);
+  white-space: pre;
+}
+
+.change-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 7px;
+}
+
+.change-restore,
+.checkpoint-rewind {
+  height: 29px;
+  font-size: 10px;
+}
+
+.checkpoint-row,
+.verification-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-raised);
+}
+
+.checkpoint-row > span,
+.verification-row > span:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.checkpoint-row strong,
+.verification-row strong,
+.checkpoint-row small,
+.verification-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.checkpoint-row strong,
+.verification-row strong { font-size: 10px; }
+.checkpoint-row small,
+.verification-row small { color: var(--muted); font-size: 9px; }
+.checkpoint-row button { margin-left: auto; flex: 0 0 auto; }
+.verification-row > span:first-child { color: var(--danger); font-weight: 700; }
+.verification-row.is-success > span:first-child { color: var(--success); }
+
+.export-trace-button {
+  width: 100%;
+  margin-top: 2px;
+}
+
 `;

@@ -62,11 +62,36 @@ describe("ConfigLoader tests", () => {
       ".agents/skills",
       ".claude/skills",
       "~/.claude/skills",
+      "~/.orbit/skills",
     ]);
     expect(config.session).toEqual({
       store: "jsonl",
       path: ".orbit/sessions",
     });
+  });
+
+  it("applies managed policy after CLI overrides", () => {
+    mkdirSync(join(homeDir, ".orbit"), { recursive: true });
+    writeFileSync(
+      join(homeDir, ".orbit", "policy.yaml"),
+      [
+        "schemaVersion: 1",
+        "minimumPermissionMode: strict",
+        "disableWebSearch: true",
+        "maxBudgetUsd: 1",
+      ].join("\n"),
+    );
+
+    const config = loadConfig({
+      permissions: { mode: "auto" },
+      tools: { webSearch: { enabled: true } },
+      budgetLimit: 100,
+    });
+
+    expect(config.permissions.mode).toBe("strict");
+    expect(config.tools.webSearch.enabled).toBe(false);
+    expect(config.budgetLimit).toBe(1);
+    expect(config.managedPolicy?.minimumPermissionMode).toBe("strict");
   });
 
   it("migrates the legacy unimplemented SQLite session setting", () => {

@@ -105,6 +105,49 @@ describe("DeepSeekOpenAIProvider messages mapping", () => {
     expect(messages[2].tool_call_id).toBe("call-1");
   });
 
+  it("maps image blocks for vision-capable OpenAI-compatible gateways", async () => {
+    const provider = new DeepSeekOpenAIProvider(
+      "test-key",
+      "https://gateway.example.com/v1",
+      { disablePreheat: true, maxRetries: 0 },
+    );
+
+    for await (const event of provider.chat({
+      model: "vision-model",
+      messages: [
+        {
+          id: "msg-image",
+          role: "user",
+          createdAt: "2026-07-22T00:00:00.000Z",
+          content: [
+            { type: "text", text: "Describe this" },
+            {
+              type: "image",
+              mediaType: "image/png",
+              name: "screen.png",
+              data: "aW1hZ2U=",
+            },
+          ],
+        },
+      ],
+      stream: false,
+    })) {
+      void event;
+    }
+
+    const postCall = (global.fetch as any).mock.calls.find(
+      (call: any) => call[1]?.method === "POST",
+    );
+    const body = JSON.parse(postCall[1].body);
+    expect(body.messages[0].content).toEqual([
+      { type: "text", text: "Describe this" },
+      {
+        type: "image_url",
+        image_url: { url: "data:image/png;base64,aW1hZ2U=" },
+      },
+    ]);
+  });
+
   it("preserves a dynamic tool's provider-facing JSON Schema", async () => {
     const provider = new DeepSeekOpenAIProvider("test-key");
     const inputJsonSchema = {

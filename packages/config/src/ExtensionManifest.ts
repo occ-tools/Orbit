@@ -3,13 +3,16 @@ import { extname } from "path";
 import { resolveSafePath } from "@orbit-build/shared";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { McpServerConfigSchema } from "./schema.js";
+import { McpServerConfigBaseSchema } from "./schema.js";
 
 export const ORBIT_EXTENSION_MANIFEST_VERSION = 1 as const;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 
 const SemverSchema = z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
 const ContributionNameSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/);
+const CredentialEnvironmentNameSchema = z
+  .string()
+  .regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/);
 const RelativeContributionPathSchema = z
   .string()
   .min(1)
@@ -52,7 +55,7 @@ export const ExtensionPermissionSchema = z.object({
     .max(128)
     .default([]),
   process: z.boolean().default(false),
-  credentials: z.array(ContributionNameSchema).max(64).default([]),
+  credentials: z.array(CredentialEnvironmentNameSchema).max(64).default([]),
 });
 
 export const OrbitExtensionManifestSchema = z.object({
@@ -101,7 +104,7 @@ export const OrbitExtensionManifestSchema = z.object({
         .max(100)
         .default([]),
       mcpServers: z
-        .record(McpServerConfigSchema.omit({ env: true }))
+        .record(McpServerConfigBaseSchema.omit({ env: true }))
         .default({}),
       templates: z.array(NamedContributionSchema).max(200).default([]),
     })

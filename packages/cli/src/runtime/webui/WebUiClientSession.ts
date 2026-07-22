@@ -72,6 +72,39 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  const controlCommands =
     elements.contextMeter.title = meterDetail;
     elements.contextMeter.setAttribute('aria-label', copy.contextWindow + ': ' + meterDetail);
     renderWorkspaceState(data);
+    renderChangeReview(data.review || {});
+    renderToolHistory(data.review || {});
+  }
+
+  function renderToolHistory(review) {
+    const tools = Array.isArray(review.toolCalls) ? review.toolCalls : [];
+    elements.toolHistoryCount.textContent = String(tools.length);
+    elements.toolHistory.replaceChildren();
+    if (!tools.length) {
+      const empty = document.createElement('p');
+      empty.className = 'review-empty';
+      empty.textContent = copy.noActivity;
+      elements.toolHistory.append(empty);
+      return;
+    }
+    for (const tool of tools) {
+      const row = document.createElement('div');
+      row.className = 'tool-history-row is-' + tool.status;
+      const stateMark = document.createElement('span');
+      stateMark.className = 'tool-history-mark';
+      stateMark.textContent = tool.status === 'success' ? '✓' : tool.status === 'denied' ? '−' : tool.status === 'pending' ? '●' : '×';
+      const content = document.createElement('span');
+      const title = document.createElement('strong');
+      title.textContent = tool.name || 'tool';
+      const meta = document.createElement('small');
+      const timing = Number.isFinite(tool.durationMs) ? (tool.durationMs < 1000 ? tool.durationMs + ' ms' : (tool.durationMs / 1000).toFixed(1) + ' s') : '—';
+      meta.textContent = [tool.status, tool.risk, tool.decision, timing].filter(Boolean).join(' · ');
+      content.append(title, meta);
+      const time = document.createElement('time');
+      time.textContent = relativeSessionTime(tool.startedAt);
+      row.append(stateMark, content, time);
+      elements.toolHistory.append(row);
+    }
   }
 
   function renderWorkspaceState(data) {
@@ -116,6 +149,157 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  const controlCommands =
     elements.memoryCount.textContent = String(memoryItems.length) + (memory.enabled === false ? (language === 'zh' ? ' · 已暂停' : ' · paused') : '');
     render(elements.planReview, planItems, language === 'zh' ? '当前对话暂无计划步骤。' : 'No plan steps for this chat.', 'plan');
     render(elements.memoryReview, memoryItems, language === 'zh' ? '暂无显式项目记忆。' : 'No explicit project memory.', 'memory');
+  }
+
+  function renderChangeReview(review) {
+    const rawChanges = Array.isArray(review.fileChanges) ? review.fileChanges : [];
+    const latestByPath = new Map();
+    for (const change of rawChanges) {
+      if (change && change.path && !latestByPath.has(change.path)) latestByPath.set(change.path, change);
+    }
+    const changes = Array.from(latestByPath.values());
+    elements.changeCount.textContent = String(changes.length);
+    elements.changesList.replaceChildren();
+    if (!changes.length) {
+      const empty = document.createElement('p');
+      empty.className = 'review-empty';
+      empty.textContent = copy.noChanges;
+      elements.changesList.append(empty);
+    } else {
+      for (const change of changes) {
+        const card = document.createElement('details');
+        card.className = 'change-card';
+        const summary = document.createElement('summary');
+        const path = document.createElement('strong');
+        path.textContent = change.path;
+        path.title = change.path;
+        const time = document.createElement('span');
+        time.textContent = relativeSessionTime(change.createdAt);
+        summary.append(path, time);
+        const diff = document.createElement('pre');
+        diff.className = 'change-diff';
+        diff.textContent = change.diff || '';
+        const actions = document.createElement('div');
+        actions.className = 'change-actions';
+        const restore = document.createElement('button');
+        restore.type = 'button';
+        restore.className = 'secondary-button change-restore';
+        restore.dataset.rollbackFile = change.path;
+        restore.textContent = copy.restoreFile;
+        actions.append(restore);
+        card.append(summary, diff, actions);
+        elements.changesList.append(card);
+      }
+    }
+
+    const checkpoints = Array.isArray(review.checkpoints) ? review.checkpoints : [];
+    elements.checkpointCount.textContent = String(checkpoints.length);
+    elements.checkpointList.replaceChildren();
+    if (!checkpoints.length) {
+      const empty = document.createElement('p');
+      empty.className = 'review-empty';
+      empty.textContent = copy.noCheckpoints;
+      elements.checkpointList.append(empty);
+    } else {
+      for (const checkpoint of checkpoints) {
+        const row = document.createElement('div');
+        row.className = 'checkpoint-row';
+        const content = document.createElement('span');
+        const title = document.createElement('strong');
+        title.textContent = checkpoint.files && checkpoint.files.length
+          ? checkpoint.files.slice(0, 2).join(', ')
+          : checkpoint.id.slice(0, 12);
+        title.title = (checkpoint.files || []).join(', ');
+        const meta = document.createElement('small');
+        meta.textContent = relativeSessionTime(checkpoint.timestamp) + ' · ' + checkpoint.id.slice(0, 12);
+        content.append(title, meta);
+        const rewind = document.createElement('button');
+        rewind.type = 'button';
+        rewind.className = 'secondary-button checkpoint-rewind';
+        rewind.dataset.rewindCheckpoint = checkpoint.id;
+        rewind.textContent = copy.rewindCheckpoint;
+        row.append(content, rewind);
+        elements.checkpointList.append(row);
+      }
+    }
+
+    const verification = Array.isArray(review.verification) ? review.verification : [];
+    elements.verificationCount.textContent = String(verification.length);
+    elements.verificationList.replaceChildren();
+    if (!verification.length) {
+      const empty = document.createElement('p');
+      empty.className = 'review-empty';
+      empty.textContent = copy.noVerification;
+      elements.verificationList.append(empty);
+    } else {
+      for (const result of verification) {
+        const row = document.createElement('div');
+        row.className = 'verification-row ' + (result.success ? 'is-success' : 'is-error');
+        const marker = document.createElement('span');
+        marker.textContent = result.success ? '✓' : '×';
+        const content = document.createElement('span');
+        const title = document.createElement('strong');
+        title.textContent = result.success
+          ? (language === 'zh' ? '验证通过' : 'Verification passed')
+          : (language === 'zh' ? '验证失败' : 'Verification failed');
+        const detail = document.createElement('small');
+        detail.textContent = result.detail || relativeSessionTime(result.timestamp);
+        content.append(title, detail);
+        row.append(marker, content);
+        elements.verificationList.append(row);
+      }
+    }
+  }
+
+  async function applyReviewAction(action, button) {
+    if (state.busy || button.disabled) return;
+    if (button.dataset.confirmReview !== 'true') {
+      button.dataset.confirmReview = 'true';
+      button.textContent = copy.restoreConfirm;
+      window.setTimeout(() => {
+        if (button.isConnected) {
+          delete button.dataset.confirmReview;
+          button.textContent = action.action === 'rewind' ? copy.rewindCheckpoint : copy.restoreFile;
+        }
+      }, 3500);
+      return;
+    }
+    button.disabled = true;
+    try {
+      const result = await api('/api/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action),
+      });
+      showToast(result.message || copy.restored, 'success');
+      await Promise.all([renderMessages(), loadStatus()]);
+    } catch (error) {
+      showToast(error.message || String(error), 'error');
+    } finally {
+      button.disabled = false;
+      delete button.dataset.confirmReview;
+    }
+  }
+
+  async function exportDiagnostics() {
+    elements.exportTraceButton.disabled = true;
+    try {
+      const trace = await api('/api/trace?history=1');
+      const blob = new Blob([JSON.stringify(trace, null, 2) + '\n'], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'orbit-diagnostics-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast(copy.traceExported, 'success');
+    } catch (error) {
+      showToast(error.message || String(error), 'error');
+    } finally {
+      elements.exportTraceButton.disabled = false;
+    }
   }
 
   function workspaceName(path) {
@@ -351,6 +535,17 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  const controlCommands =
   async function loadStatus() {
     const data = await api('/api/status');
     state.status = data;
+    const recovery = data.session && data.session.recovery;
+    if (recovery) {
+      const recoveryKey = recovery.sessionId + ':' + recovery.recoveryCount;
+      if (state.lastRecoveryKey !== recoveryKey) {
+        state.lastRecoveryKey = recoveryKey;
+        const details = [];
+        if (recovery.repairedToolCalls) details.push(String(recovery.repairedToolCalls) + (language === 'zh' ? ' 个工具调用已封口' : ' tool call(s) sealed'));
+        if (recovery.resetPlanItems) details.push(String(recovery.resetPlanItems) + (language === 'zh' ? ' 个计划项已退回待办' : ' plan item(s) returned to pending'));
+        showToast(copy.sessionRecovered + (details.length ? ' · ' + details.join(' · ') : ''), 'warning');
+      }
+    }
     const name = workspaceName(data.workspace);
     byId('workspaceName').textContent = name;
     byId('workspacePath').textContent = data.workspace || '';
@@ -499,6 +694,95 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  const controlCommands =
     return controlCommands.includes(name);
   }
 
+  function persistPromptQueue() {
+    writeLocalStorage('orbit.webui.queue', state.promptQueue.length ? JSON.stringify(state.promptQueue) : '');
+  }
+
+  function renderPromptQueue() {
+    elements.promptQueueList.replaceChildren();
+    elements.promptQueue.hidden = state.promptQueue.length === 0;
+    for (let index = 0; index < state.promptQueue.length; index += 1) {
+      const row = document.createElement('div');
+      row.className = 'prompt-queue-row';
+      const number = document.createElement('span');
+      number.textContent = String(index + 1);
+      const text = document.createElement('span');
+      const item = state.promptQueue[index];
+      text.textContent = item.prompt + (item.attachmentIds && item.attachmentIds.length ? ' · 📎 ' + item.attachmentIds.length : '');
+      text.title = item.prompt;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.dataset.queueRemove = String(index);
+      remove.textContent = '×';
+      remove.setAttribute('aria-label', copy.removeQueued);
+      row.append(number, text, remove);
+      elements.promptQueueList.append(row);
+    }
+  }
+
+  function restorePromptQueue() {
+    try {
+      const parsed = JSON.parse(readLocalStorage('orbit.webui.queue', '[]'));
+      state.promptQueue = Array.isArray(parsed)
+        ? parsed.map((item) => typeof item === 'string' ? { prompt: item, attachmentIds: [] } : item)
+          .filter((item) => item && typeof item.prompt === 'string' && item.prompt.trim())
+          .map((item) => ({
+            prompt: item.prompt.trim(),
+            attachmentIds: Array.isArray(item.attachmentIds) ? item.attachmentIds.filter((id) => typeof id === 'string').slice(0, 4) : [],
+          }))
+          .slice(0, 12)
+        : [];
+    } catch {
+      state.promptQueue = [];
+    }
+    renderPromptQueue();
+  }
+
+  function queuePrompt(prompt) {
+    const value = String(prompt || '').trim();
+    if (!value || state.promptQueue.length >= 12) return;
+    const attachmentIds = state.attachments.map((attachment) => attachment.id);
+    state.promptQueue.push({ prompt: value, attachmentIds });
+    consumeAttachments(attachmentIds);
+    persistPromptQueue();
+    renderPromptQueue();
+    elements.prompt.value = '';
+    writeLocalStorage('orbit.webui.draft', '');
+    autoSizePrompt();
+    updateSendButtonState();
+    showToast(copy.queued, 'success');
+    elements.prompt.focus();
+  }
+
+  function removeQueuedPrompt(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= state.promptQueue.length) return;
+    const removed = state.promptQueue.splice(index, 1)[0];
+    for (const id of removed.attachmentIds || []) {
+      void api('/api/attachment?id=' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {});
+    }
+    persistPromptQueue();
+    renderPromptQueue();
+  }
+
+  function clearPromptQueue() {
+    for (const item of state.promptQueue) {
+      for (const id of item.attachmentIds || []) {
+        void api('/api/attachment?id=' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {});
+      }
+    }
+    state.promptQueue = [];
+    persistPromptQueue();
+    renderPromptQueue();
+  }
+
+  function runNextQueuedPrompt() {
+    if (state.busy || !state.ready || !state.promptQueue.length) return;
+    const next = state.promptQueue.shift();
+    persistPromptQueue();
+    renderPromptQueue();
+    void submitTurn(next.prompt, { attachmentIds: next.attachmentIds });
+  }
+
   async function submitTurn(prompt, options) {
     const value = String(prompt || '').trim();
     if (!value || state.busy) return;
@@ -523,6 +807,9 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  const controlCommands =
     const turnId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
     const previousDraft = elements.prompt.value;
     const restoreDraft = String(options && options.restoreDraft || '');
+    const attachmentIds = Array.isArray(options && options.attachmentIds)
+      ? options.attachmentIds.slice(0, 4)
+      : state.attachments.map((attachment) => attachment.id);
     const controlCommand = isControlCommand(value);
     state.submitting = true;
     state.activeTurnId = turnId;
@@ -544,9 +831,10 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  const controlCommands =
       const result = await api('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: value, turnId }),
+        body: JSON.stringify({ prompt: value, turnId, attachmentIds }),
       });
       if (result.turnId) state.activeTurnId = result.turnId;
+      consumeAttachments(attachmentIds);
       if (restoreDraft) {
         elements.prompt.value = restoreDraft;
         writeLocalStorage('orbit.webui.draft', restoreDraft);
@@ -712,6 +1000,7 @@ export const WEB_UI_CLIENT_SESSION_SCRIPT = String.raw`  const controlCommands =
       showToast(error.message || String(error), 'error');
     });
     elements.prompt.focus();
+    if (!failed && !aborted) runNextQueuedPrompt();
   }
 
   function connectEvents() {

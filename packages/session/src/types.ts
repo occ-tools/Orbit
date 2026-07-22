@@ -133,6 +133,19 @@ export const RunJournalSchema = z.object({
 
 export type RunJournal = z.infer<typeof RunJournalSchema>;
 
+export const SessionRecoveryReportSchema = z.object({
+  sessionId: SessionIdSchema,
+  previousState: RunJournalSchema.shape.state,
+  previousPhase: z.string().trim().min(1).max(200),
+  attempt: z.number().int().nonnegative(),
+  recoveryCount: z.number().int().positive(),
+  repairedToolCalls: z.number().int().nonnegative(),
+  resetPlanItems: z.number().int().nonnegative(),
+  recoveredAt: z.string().datetime(),
+});
+
+export type SessionRecoveryReport = z.infer<typeof SessionRecoveryReportSchema>;
+
 const StoredToolCallSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -148,6 +161,12 @@ const StoredToolResultSchema = z.object({
 
 export const StoredContentBlockSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: z.string() }),
+  z.object({
+    type: z.literal("image"),
+    mediaType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
+    data: z.string().max(8_000_000),
+    name: z.string().max(255).optional(),
+  }),
   z.object({ type: z.literal("tool_call"), toolCall: StoredToolCallSchema }),
   z.object({
     type: z.literal("tool_result"),

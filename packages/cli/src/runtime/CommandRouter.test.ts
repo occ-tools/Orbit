@@ -640,6 +640,64 @@ describe("CommandRouter Unit Tests", () => {
     expect(loop.setModelOverride).not.toHaveBeenCalled();
   });
 
+  it("rejects Web UI settings that weaken managed policy", async () => {
+    const config = ConfigSchema.parse({
+      permissions: { mode: "strict" },
+      tools: { webSearch: { enabled: false } },
+      managedPolicy: {
+        allowedModels: ["deepseek-v4-pro"],
+        minimumPermissionMode: "strict",
+        disableWebSearch: true,
+      },
+    });
+    const loop = { ...mockLoop, getConfig: () => config };
+    const router = new CommandRouter(
+      process.cwd(),
+      config,
+      mockProvider,
+      vi.fn(),
+      loop as any,
+      mockTui as any,
+      false,
+      () => ({ commands: [], files: [], symbols: [], sessions: [] }),
+      vi.fn(),
+      () => localState,
+      vi.fn(),
+      mockInteraction as any,
+      false,
+    );
+    const updateSettings = (
+      router as unknown as {
+        updateWebUiSettings(patch: {
+          model?: string;
+          permissionMode?: "auto";
+          webSearchEnabled?: boolean;
+        }): Promise<{ ok: boolean; message?: string }>;
+      }
+    ).updateWebUiSettings.bind(router);
+
+    await expect(
+      updateSettings({ permissionMode: "auto" }),
+    ).resolves.toMatchObject({
+      ok: false,
+      message: expect.stringContaining("strict"),
+    });
+    await expect(
+      updateSettings({ model: "unapproved-model" }),
+    ).resolves.toMatchObject({
+      ok: false,
+      message: expect.stringContaining("model"),
+    });
+    await expect(
+      updateSettings({ webSearchEnabled: true }),
+    ).resolves.toMatchObject({
+      ok: false,
+      message: expect.stringContaining("web search"),
+    });
+    expect(config.permissions.mode).toBe("strict");
+    expect(config.tools.webSearch.enabled).toBe(false);
+  });
+
   it("should output help message when /help is executed", async () => {
     const router = new CommandRouter(
       "/dummy/cwd",

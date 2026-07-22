@@ -70,6 +70,54 @@ describe("DeepSeekAnthropicProvider compatibility options", () => {
     }
   });
 
+  it("maps image blocks to Anthropic base64 sources", async () => {
+    const provider = new DeepSeekAnthropicProvider(
+      "test-key",
+      "https://anthropic.example.com",
+      { disablePreheat: true, maxRetries: 0 },
+    );
+
+    for await (const event of provider.chat({
+      model: "claude-vision",
+      messages: [
+        {
+          id: "msg-image",
+          role: "user",
+          createdAt: "2026-07-22T00:00:00.000Z",
+          content: [
+            { type: "text", text: "Describe this" },
+            {
+              type: "image",
+              mediaType: "image/webp",
+              name: "screen.webp",
+              data: "aW1hZ2U=",
+            },
+          ],
+        },
+      ],
+      stream: false,
+    })) {
+      void event;
+    }
+
+    const postCall = (global.fetch as any).mock.calls.find(
+      (call: any) => call[1]?.method === "POST",
+    );
+    const body = JSON.parse(postCall[1].body);
+    expect(body.messages[0].content).toEqual([
+      { type: "text", text: "Describe this" },
+      {
+        type: "image",
+        cache_control: { type: "ephemeral" },
+        source: {
+          type: "base64",
+          media_type: "image/webp",
+          data: "aW1hZ2U=",
+        },
+      },
+    ]);
+  });
+
   it("uses adaptive thinking for newer Claude models without legacy temperature", async () => {
     const provider = new DeepSeekAnthropicProvider(
       "test-key",

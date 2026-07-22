@@ -1,4 +1,7 @@
-import { OrbitConfig } from "@orbit-build/config";
+import {
+  type OrbitConfig,
+  validateManagedRuntimeChange,
+} from "@orbit-build/config";
 import {
   getDeepSeekV4ModelProfile,
   resolveModelCapabilities,
@@ -19,6 +22,7 @@ import {
   SessionManager,
   Session,
   type SessionMetrics,
+  type SessionTraceBundle,
   type TaskPlan,
   type TaskPlanItem,
 } from "@orbit-build/session";
@@ -189,6 +193,17 @@ export interface UserInteraction {
   ): void | Promise<void>;
 }
 
+interface SessionReviewSnapshot {
+  fileChanges: SessionTraceBundle["fileChanges"];
+  toolCalls: SessionTraceBundle["toolCalls"];
+  checkpoints: ReturnType<AgentLoop["getCheckpoints"]>;
+  verification: Array<{
+    timestamp: string;
+    success?: boolean;
+    detail?: string;
+  }>;
+}
+
 export class AgentLoop {
   private state: AgentState;
   public sessionManager: SessionManager;
@@ -219,6 +234,9 @@ export class AgentLoop {
     message: string;
   } | null = null;
   private verificationStatus: "not_run" | "passed" | "failed" = "not_run";
+  private sessionReviewCache:
+    | { expiresAt: number; value: SessionReviewSnapshot }
+    | undefined;
   private userId: string;
   private readonly projectMemoryStore: ProjectMemoryStore;
 
@@ -1353,6 +1371,7 @@ ${errLog}`;
           toolCall: OrbitToolCall,
           message: string,
           risk = "read",
+          startedAt = new Date().toISOString(),
         ): void => {
           const error = safeAgentLoopErrorMessage(message);
           this.interaction.showText(`  ${picocolors.red("✖")} ${error}`);
@@ -1377,9 +1396,11 @@ ${errLog}`;
             risk,
             "invalid",
             "failed",
+            { startedAt },
           );
         };
         for (const tc of toolCallsToExecute) {
+          const toolStartedAt = new Date().toISOString();
           let argSummary = "";
           try {
             const parsed = JSON.parse(tc.arguments);
@@ -1427,13 +1448,20 @@ ${errLog}`;
             rejectInvalidToolCall(
               tc,
               `Tool "${tc.name}" was not found in the registry.`,
+              "read",
+              toolStartedAt,
             );
             continue;
           }
           const declaredRisk = registeredTool?.risk;
           const protocolError = toolCallProtocolErrors.get(tc.id);
           if (protocolError) {
-            rejectInvalidToolCall(tc, protocolError, declaredRisk);
+            rejectInvalidToolCall(
+              tc,
+              protocolError,
+              declaredRisk,
+              toolStartedAt,
+            );
             continue;
           }
           let preflightArgs: unknown;
@@ -1444,6 +1472,7 @@ ${errLog}`;
               tc,
               `Tool input JSON parse failed: ${safeAgentLoopErrorMessage(error)}`,
               declaredRisk,
+              toolStartedAt,
             );
             continue;
           }
@@ -1454,6 +1483,7 @@ ${errLog}`;
               tc,
               `Tool input validation failed: ${validation.error.message}`,
               declaredRisk,
+              toolStartedAt,
             );
             continue;
           }
@@ -1545,6 +1575,7 @@ ${errLog}`;
               decision.risk || "read",
               decision.action,
               "denied",
+              { startedAt: toolStartedAt },
             );
             continue;
           }
@@ -1696,6 +1727,7 @@ ${errLog}`;
                 decision.risk || "read",
                 decision.action,
                 "denied",
+                { startedAt: toolStartedAt },
               );
               continue;
             } else {
@@ -2625,6 +2657,7 @@ ${errLog}`;
             decision.risk || "read",
             decision.action,
             status,
+            { startedAt: toolStartedAt },
           );
 
           if (finalResult.ok) {
@@ -3123,6 +3156,14 @@ ${errLog}`;
     return this.sessionManager.getMetrics();
   }
 
+  public getToolTimeline() {
+    return this.sessionManager.getToolCalls();
+  }
+
+  public getRecoveryReport() {
+    return this.sessionManager.getRecoveryReport();
+  }
+
   public setSessionTitle(title: string): void {
     this.sessionManager.setTitle(title);
   }
@@ -3135,7 +3176,10 @@ ${errLog}`;
     return this.state.relevantFiles;
   }
 
-  public prepareUserTurn(task: string): void {
+  public prepareUserTurn(
+    task: string,
+    attachments: Extract<OrbitContentBlock, { type: "image" }>[] = [],
+  ): void {
     this.state.task = task;
     this.state.done = false;
     this.state.attemptCount = 0;
@@ -3143,8 +3187,11 @@ ${errLog}`;
       id: `msg_user_${Date.now()}`,
       role: "user",
       createdAt: new Date().toISOString(),
-      content: [{ type: "text", text: task }],
+      content: [{ type: "text", text: task }, ...attachments],
     });
+    // Persist the accepted user turn before any provider or tool work starts.
+    // A crash in the narrow gap before run() can then resume the exact prompt.
+    this.sessionManager.saveHistory(this.state.history);
   }
 
   public addRelevantFilePublic(path: string, reason: string) {
@@ -3272,6 +3319,10 @@ ${errLog}`;
 
   /** Replace the provider used by subsequent turns while preserving history. */
   public setProvider(provider: ModelProvider): void {
+    const violation = validateManagedRuntimeChange(this.config, {
+      provider: provider.id,
+    });
+    if (violation) throw new Error(violation);
     this.provider = provider;
     this.activeModelForRun = null;
     this.fallbackModelForRun = null;
@@ -3283,6 +3334,8 @@ ${errLog}`;
   }
 
   public setModelOverride(model: string): void {
+    const violation = validateManagedRuntimeChange(this.config, { model });
+    if (violation) throw new Error(violation);
     if (!this.options) {
       this.options = {};
     }
@@ -3344,7 +3397,55 @@ ${errLog}`;
     }));
   }
 
+  /** Return a browser-safe review snapshot backed by the persisted audit log. */
+  public getSessionReview(): SessionReviewSnapshot {
+    if (
+      this.sessionReviewCache &&
+      this.sessionReviewCache.expiresAt > Date.now()
+    ) {
+      return this.sessionReviewCache.value;
+    }
+    const trace = this.sessionManager
+      .getSessionStore()
+      .exportTrace(this.getSessionId());
+    const value: SessionReviewSnapshot = {
+      fileChanges: trace.fileChanges,
+      toolCalls: trace.toolCalls,
+      checkpoints: this.getCheckpoints(),
+      verification: trace.events
+        .filter((event) => event.type === "verification_ended")
+        .slice(-20)
+        .map((event) => {
+          const payload =
+            typeof event.payload === "object" && event.payload !== null
+              ? (event.payload as Record<string, unknown>)
+              : {};
+          return {
+            timestamp: event.createdAt,
+            success:
+              typeof payload.success === "boolean"
+                ? payload.success
+                : undefined,
+            detail:
+              typeof payload.summary === "string"
+                ? payload.summary.slice(0, 2_000)
+                : undefined,
+          };
+        }),
+    };
+    this.sessionReviewCache = { expiresAt: Date.now() + 2_000, value };
+    return value;
+  }
+
+  /** Export the current session's stable, secret-redacted support trace. */
+  public exportSessionTrace(includeHistory = true): SessionTraceBundle {
+    return this.sessionManager
+      .getSessionStore()
+      .exportTrace(this.getSessionId(), { includeHistory });
+  }
+
   public async rewindToCheckpoint(checkpointId: string): Promise<boolean> {
+    this.sessionReviewCache = undefined;
     const checkpoints = this.checkpointManager.getCheckpoints();
     const targetIndex = checkpoints.findIndex(
       (checkpoint) => checkpoint.id === checkpointId,
@@ -3374,6 +3475,7 @@ ${errLog}`;
   }
 
   public rollbackFileToCheckpoint(filePath: string): boolean {
+    this.sessionReviewCache = undefined;
     let targetAbs: string;
     try {
       targetAbs = resolveSafePath(this.cwd, filePath);

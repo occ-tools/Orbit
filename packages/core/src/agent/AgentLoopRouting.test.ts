@@ -194,6 +194,10 @@ describe("AgentLoop Fin Heuristic Routing", () => {
 
     await loop.run();
     loop.prepareUserTurn("list files");
+    expect(loop.sessionManager.getHistory().at(-1)).toMatchObject({
+      role: "user",
+      content: [{ type: "text", text: "list files" }],
+    });
     await loop.run();
 
     expect(chatMock.mock.calls[0][0].model).toBe("deepseek-v4-pro");

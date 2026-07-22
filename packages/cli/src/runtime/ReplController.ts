@@ -307,6 +307,24 @@ export class ReplController {
       },
     );
 
+    const recovery = loop.getRecoveryReport();
+    if (recovery) {
+      const isZh = this.config.language === "zh";
+      const repaired = [
+        recovery.repairedToolCalls > 0
+          ? `${recovery.repairedToolCalls} ${isZh ? "个未完成工具调用已安全封口" : "unfinished tool call(s) safely sealed"}`
+          : "",
+        recovery.resetPlanItems > 0
+          ? `${recovery.resetPlanItems} ${isZh ? "个进行中计划项已退回待办" : "in-progress plan item(s) returned to pending"}`
+          : "",
+      ].filter(Boolean);
+      tuiInteraction.showText(
+        picocolors.yellow(
+          `⚠️ ${isZh ? "已恢复上次异常中断的会话" : "Recovered the previously interrupted session"}${repaired.length ? `：${repaired.join(isZh ? "；" : "; ")}` : "。"}`,
+        ),
+      );
+    }
+
     this.saveLocalState({
       lastSessionId: loop.getSessionId(),
       lastModel: loop.getModelOverride() || this.config.models.default,

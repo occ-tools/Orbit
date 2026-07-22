@@ -2,6 +2,7 @@ import type { OrbitConfig } from "@orbit-build/config";
 import {
   DynamicMCPTool,
   MCPClient,
+  StreamableHttpMCPClient,
   type MCPToolClient,
   type MCPToolDefinition,
 } from "@orbit-build/mcp";
@@ -36,14 +37,32 @@ export class McpRuntimeManager {
     private readonly createClient: McpRuntimeClientFactory = (
       serverName,
       serverConfig,
-    ) =>
-      new MCPClient(
+    ) => {
+      if (serverConfig.transport === "streamable-http") {
+        if (!serverConfig.url) {
+          throw new Error(
+            `MCP server "${serverName}" requires a URL for streamable-http transport.`,
+          );
+        }
+        return new StreamableHttpMCPClient(serverName, serverConfig.url, {
+          headers: serverConfig.headers,
+          bearerTokenEnv: serverConfig.bearerTokenEnv,
+          oauth: serverConfig.oauth,
+        });
+      }
+      if (!serverConfig.command) {
+        throw new Error(
+          `MCP server "${serverName}" requires a command for stdio transport.`,
+        );
+      }
+      return new MCPClient(
         serverName,
         serverConfig.command,
         serverConfig.args ?? [],
         serverConfig.env ?? {},
         serverConfig.inheritEnv ?? [],
-      ),
+      );
+    },
   ) {}
 
   public async start(

@@ -39,4 +39,28 @@ describe("WebUiEventStream", () => {
     stream.broadcast({ kind: "regression", message: "must not arrive" });
     expect(response.write).toHaveBeenCalledTimes(2);
   });
+
+  it("replays bounded events after an EventSource reconnect", () => {
+    stream = new WebUiEventStream(() => undefined);
+    stream.start();
+    stream.broadcast({ kind: "turn_done", turnId: "turn-1" });
+
+    const request = new EventEmitter() as unknown as IncomingMessage;
+    Object.assign(request, { headers: { "last-event-id": "0" } });
+    const response = new EventEmitter() as unknown as ServerResponse;
+    Object.assign(response, {
+      destroyed: false,
+      writeHead: vi.fn(),
+      write: vi.fn(() => true),
+      end: vi.fn(),
+      destroy: vi.fn(),
+    });
+
+    stream.attach(request, response);
+
+    expect(response.write).toHaveBeenCalledTimes(2);
+    expect(response.write).toHaveBeenLastCalledWith(
+      expect.stringMatching(/id: 1\ndata: .*turn-1/),
+    );
+  });
 });

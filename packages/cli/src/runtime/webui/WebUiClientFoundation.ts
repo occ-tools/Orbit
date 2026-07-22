@@ -74,7 +74,24 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
         deleteSession: '删除',
         focusComposer: '聚焦输入框',
         openActivity: '打开任务活动',
+        openChanges: '打开改动审阅',
         openSettings: '打开设置',
+        restoreFile: '恢复文件',
+        rewindCheckpoint: '回退到此检查点',
+        restoreConfirm: '再次点击确认恢复',
+        restored: '已恢复工作区',
+        traceExported: '诊断包已导出',
+        noChanges: '当前对话还没有文件改动。',
+        noCheckpoints: '暂无可恢复检查点。',
+        noVerification: '暂无验证结果。',
+        queued: '已加入待发送队列',
+        queueMessage: '加入队列',
+        removeQueued: '移除待发送消息',
+        attachmentAdded: '图片已添加',
+        attachmentRemoved: '图片已移除',
+        removeAttachment: '移除图片',
+        attachmentLimit: '每次最多添加 4 张图片，每张不超过 5 MB。',
+        sessionRecovered: '已安全恢复上次异常中断的会话',
         compactContext: '压缩当前上下文',
         recentSession: '最近会话',
         switchModel: '切换模型',
@@ -160,7 +177,24 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
         deleteSession: 'Delete',
         focusComposer: 'Focus message composer',
         openActivity: 'Open task activity',
+        openChanges: 'Open change review',
         openSettings: 'Open settings',
+        restoreFile: 'Restore file',
+        rewindCheckpoint: 'Rewind to this checkpoint',
+        restoreConfirm: 'Click again to confirm restore',
+        restored: 'Workspace restored',
+        traceExported: 'Diagnostics exported',
+        noChanges: 'No file changes in this chat.',
+        noCheckpoints: 'No restorable checkpoints.',
+        noVerification: 'No verification results.',
+        queued: 'Added to follow-up queue',
+        queueMessage: 'Queue message',
+        removeQueued: 'Remove queued message',
+        attachmentAdded: 'Image attached',
+        attachmentRemoved: 'Image removed',
+        removeAttachment: 'Remove image',
+        attachmentLimit: 'Attach up to 4 images, 5 MB each.',
+        sessionRecovered: 'Safely recovered the previously interrupted session',
         compactContext: 'Compact current context',
         recentSession: 'Recent session',
         switchModel: 'Switch model',
@@ -200,9 +234,12 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
     inspectorBackdrop: byId('inspectorBackdrop'),
     inspectorButton: byId('inspectorButton'),
     inspectorClose: byId('inspectorClose'),
+    changesButton: byId('changesButton'),
     activityTab: byId('activityTab'),
+    changesTab: byId('changesTab'),
     settingsTab: byId('settingsTab'),
     activityPanel: byId('activityPanel'),
+    changesPanel: byId('changesPanel'),
     settingsPanel: byId('settingsPanel'),
     conversation: byId('conversation'),
     messageScroll: byId('messageScroll'),
@@ -260,6 +297,15 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
     contextShelf: byId('contextShelf'),
     contextFileList: byId('contextFileList'),
     clearContextButton: byId('clearContextButton'),
+    attachmentButton: byId('attachmentButton'),
+    attachmentInput: byId('attachmentInput'),
+    attachmentShelf: byId('attachmentShelf'),
+    attachmentList: byId('attachmentList'),
+    attachmentCount: byId('attachmentCount'),
+    promptQueue: byId('promptQueue'),
+    promptQueueList: byId('promptQueueList'),
+    clearQueueButton: byId('clearQueueButton'),
+    queueButton: byId('queueButton'),
     contextPicker: byId('contextPicker'),
     contextPickerClose: byId('contextPickerClose'),
     contextSearch: byId('contextSearch'),
@@ -293,9 +339,18 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
     planCount: byId('planCount'),
     memoryReview: byId('memoryReview'),
     memoryCount: byId('memoryCount'),
+    toolHistory: byId('toolHistory'),
+    toolHistoryCount: byId('toolHistoryCount'),
     cache: byId('cache'),
     cacheSummary: byId('cacheSummary'),
     runtimeUpdated: byId('runtimeUpdated'),
+    changeCount: byId('changeCount'),
+    changesList: byId('changesList'),
+    checkpointCount: byId('checkpointCount'),
+    checkpointList: byId('checkpointList'),
+    verificationCount: byId('verificationCount'),
+    verificationList: byId('verificationList'),
+    exportTraceButton: byId('exportTraceButton'),
     toasts: byId('toasts'),
   };
 
@@ -337,6 +392,9 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
     sessionLimit: 24,
     sessionDeleteReturnFocus: null,
     projectDialogReturnFocus: null,
+    promptQueue: [],
+    attachments: [],
+    lastRecoveryKey: '',
   };
 
   const mobileSidebarQuery = window.matchMedia('(max-width: 900px)');
@@ -610,14 +668,20 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
   }
 
   function selectInspectorTab(tab) {
+    const changes = tab === 'changes';
     const settings = tab === 'settings';
-    elements.activityTab.classList.toggle('is-active', !settings);
-    elements.activityTab.setAttribute('aria-selected', settings ? 'false' : 'true');
-    elements.activityTab.tabIndex = settings ? -1 : 0;
+    const activity = !changes && !settings;
+    elements.activityTab.classList.toggle('is-active', activity);
+    elements.activityTab.setAttribute('aria-selected', activity ? 'true' : 'false');
+    elements.activityTab.tabIndex = activity ? 0 : -1;
+    elements.changesTab.classList.toggle('is-active', changes);
+    elements.changesTab.setAttribute('aria-selected', changes ? 'true' : 'false');
+    elements.changesTab.tabIndex = changes ? 0 : -1;
     elements.settingsTab.classList.toggle('is-active', settings);
     elements.settingsTab.setAttribute('aria-selected', settings ? 'true' : 'false');
     elements.settingsTab.tabIndex = settings ? 0 : -1;
-    elements.activityPanel.hidden = settings;
+    elements.activityPanel.hidden = !activity;
+    elements.changesPanel.hidden = !changes;
     elements.settingsPanel.hidden = !settings;
   }
 
@@ -625,13 +689,13 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
     const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
     if (!keys.includes(event.key)) return;
     event.preventDefault();
-    const tabs = [elements.activityTab, elements.settingsTab];
+    const tabs = [elements.activityTab, elements.changesTab, elements.settingsTab];
     const current = Math.max(0, tabs.indexOf(event.currentTarget));
     let next = current;
     if (event.key === 'Home') next = 0;
     else if (event.key === 'End') next = tabs.length - 1;
     else next = (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
-    selectInspectorTab(next === 1 ? 'settings' : 'activity');
+    selectInspectorTab(next === 1 ? 'changes' : next === 2 ? 'settings' : 'activity');
     tabs[next].focus();
   }
 
@@ -668,6 +732,8 @@ export const WEB_UI_CLIENT_FOUNDATION_SCRIPT = String.raw`  const byId = (id) =>
 
   function updateSendButtonState() {
     const hasPrompt = Boolean(elements.prompt.value.trim());
+    elements.queueButton.hidden = !state.busy;
+    elements.queueButton.disabled = !hasPrompt || state.stopping;
     elements.sendButton.disabled = state.busy
       ? state.stopping
       : !state.ready || !hasPrompt;

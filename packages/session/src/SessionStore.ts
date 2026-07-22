@@ -1,12 +1,15 @@
 import { createHash, randomUUID } from "crypto";
-import { isAbsolute, join, relative, resolve, sep } from "path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import {
   appendFileSync,
   chmodSync,
+  closeSync,
   copyFileSync,
   existsSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -58,19 +61,48 @@ function writeJsonAtomically(filePath: string, value: unknown): void {
   }
 
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  let temporaryFd: number | undefined;
   try {
-    writeFileSync(temporaryPath, serialized, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: PRIVATE_FILE_MODE,
-    });
+    temporaryFd = openSync(temporaryPath, "wx", PRIVATE_FILE_MODE);
+    writeFileSync(temporaryFd, serialized, { encoding: "utf8" });
+    fsyncSync(temporaryFd);
+    closeSync(temporaryFd);
+    temporaryFd = undefined;
     preserveLastKnownGoodFile(filePath);
     replaceFileAtomically(temporaryPath, filePath);
+    syncParentDirectory(filePath);
   } finally {
+    if (temporaryFd !== undefined) {
+      try {
+        closeSync(temporaryFd);
+      } catch {
+        // The descriptor may already have been closed by a failed write.
+      }
+    }
     try {
       rmSync(temporaryPath, { force: true });
     } catch {
       // A cleanup failure must not hide the original write/rename failure.
+    }
+  }
+}
+
+function syncParentDirectory(filePath: string): void {
+  if (process.platform === "win32") return;
+  let directoryFd: number | undefined;
+  try {
+    directoryFd = openSync(dirname(filePath), "r");
+    fsyncSync(directoryFd);
+  } catch {
+    // Some filesystems do not support directory fsync. The file itself was
+    // already flushed, so keep the portable fallback functional.
+  } finally {
+    if (directoryFd !== undefined) {
+      try {
+        closeSync(directoryFd);
+      } catch {
+        // Cleanup must not hide an otherwise successful durable write.
+      }
     }
   }
 }
@@ -484,7 +516,10 @@ export class SessionStore {
     }));
     const history = options.includeHistory
       ? this.getHistory(sessionId).map((message) =>
-          stripWorkspacePaths(sanitizeAuditValue(message), this.cwd),
+          stripWorkspacePaths(
+            sanitizeAuditValue(omitTraceImagePayloads(message)),
+            this.cwd,
+          ),
         )
       : undefined;
 
@@ -561,7 +596,8 @@ export class SessionStore {
   }
 
   public recordToolCall(
-    record: Omit<ToolCallRecord, "startedAt">,
+    record: Omit<ToolCallRecord, "startedAt" | "endedAt"> &
+      Partial<Pick<ToolCallRecord, "startedAt" | "endedAt">>,
   ): ToolCallRecord {
     const fullRecord = ToolCallRecordSchema.parse({
       ...record,
@@ -570,7 +606,7 @@ export class SessionStore {
         record.outputJson === undefined
           ? undefined
           : redactAuditJson(record.outputJson),
-      startedAt: new Date().toISOString(),
+      startedAt: record.startedAt || new Date().toISOString(),
     });
 
     const file = join(
@@ -579,6 +615,10 @@ export class SessionStore {
     );
     appendJsonLine(file, fullRecord);
     return fullRecord;
+  }
+
+  public getToolCalls(sessionId: string): ToolCallRecord[] {
+    return this.readToolCalls(sessionId);
   }
 
   public recordFileChange(
@@ -732,4 +772,20 @@ export class SessionStore {
     }
     return resolved;
   }
+}
+
+function omitTraceImagePayloads(
+  message: StoredHistoryMessage,
+): StoredHistoryMessage {
+  return {
+    ...message,
+    content: message.content.map((block) =>
+      block.type === "image"
+        ? {
+            ...block,
+            data: `[IMAGE OMITTED${block.name ? `: ${block.name}` : ""}]`,
+          }
+        : block,
+    ),
+  };
 }

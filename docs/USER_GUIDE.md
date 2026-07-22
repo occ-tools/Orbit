@@ -43,13 +43,28 @@ plan, metrics, and checkpoints.
 - `/chat` lists, creates, switches, and deletes chats from the terminal.
 - `/webui` opens the authenticated browser workspace for the current process.
 - The Web UI sidebar creates, resumes, archives, restores, and deletes chats.
+- The composer accepts up to four PNG, JPEG, GIF, or WebP images for models
+  whose catalog capability declares vision support. Paste or drag an image, or
+  use the attachment button. Text-only DeepSeek models reject images clearly.
+- While a turn runs, add follow-ups to the local browser queue; Orbit submits
+  them in order after successful completion.
+- The Changes view shows bounded redacted diffs, verification results, and
+  checkpoints, with explicit per-file rollback and rewind actions.
+- The Activity view keeps a bounded tool timeline with risk, approval decision,
+  completion state, start time, and duration; tool inputs and raw output stay
+  out of this browser summary.
+- Accepted prompts are persisted before provider work starts. If Orbit or the
+  machine stops unexpectedly, resuming the chat seals any unfinished tool
+  protocol without replaying side effects, returns in-progress plan items to
+  pending, and reports the repair once in both the terminal and Web UI.
 - Project selection uses a native folder picker when the platform supports it,
   with a validated path field as the fallback.
 
 The terminal owns the local agent and Web UI server. Keep it open while using
 the browser. Both interfaces share turns, streamed output, model changes,
-approvals, cancellation, and context telemetry; do not open a stale saved Web UI
-URL after the owning process exits.
+approvals, cancellation, and context telemetry. A bounded event replay window
+recovers missed events after a short browser disconnect; do not open a stale
+saved Web UI URL after the owning process exits.
 
 Type `/` in the Web UI composer for command suggestions. Use arrow keys and
 Enter to select, or `Ctrl+K` for the broader action palette.
@@ -132,6 +147,28 @@ Permission modes balance interruption and control:
 Path verification still confines file operations to the workspace. A mode
 change does not grant permission outside configured boundaries.
 
+MCP supports local stdio servers and Streamable HTTP servers. HTTP responses,
+SSE messages, tool schemas, and results are bounded and validated. Bearer tokens
+come from environment variables; OAuth client-credentials profiles name their
+client ID and secret environment variables rather than storing secret values:
+
+```yaml
+tools:
+  mcp:
+    enabled: true
+mcpServers:
+  docs:
+    transport: streamable-http
+    url: https://docs.example.com/mcp
+    bearerTokenEnv: DOCS_MCP_TOKEN
+```
+
+Teams can set `ORBIT_MANAGED_POLICY` to an administrator-owned YAML/JSON policy,
+or place it at `~/.orbit/policy.yaml`. Policy is applied after user, project,
+environment, and CLI settings, so lower-precedence configuration cannot weaken
+allowed provider/model lists, minimum permission mode, approvals, network-tool
+disablement, budgets, iteration caps, or protected paths.
+
 ## Reusable project instructions
 
 Use `ORBIT.md` for durable, human-reviewed project guidance. Keep it specific:
@@ -159,9 +196,10 @@ and `$1` through `$9`. Project commands override user commands; built-ins cannot
 be shadowed.
 
 `orbit extension <manifest> [--json]` validates a versioned, workspace-bound
-extension contract. It does not install or execute third-party code. See the
-[extension manifest reference](EXTENSIONS.md) for supported contributions and
-permission declarations.
+extension contract. `orbit extension-install`, `extension-list`, and
+`extension-remove` manage local installations; privileged contributions require
+`--trust`. See the [extension manifest reference](EXTENSIONS.md) for activation
+and integrity rules.
 
 ## Automation
 
@@ -185,7 +223,7 @@ contains the structured outcome.
 
 Use `orbit exec --help` for the complete automation contract.
 
-## Updates, cleanup, and uninstall
+## Updates, backup, cleanup, and uninstall
 
 Orbit checks for a newer npm release once per interactive process without
 blocking startup or installing anything. A blinking cat heart indicates an
@@ -204,6 +242,21 @@ server never replaces itself. After a successful installation, the current TUI
 and Web UI deliberately keep showing their immutable running version; exit and
 relaunch `orbit`, then run `/webui` again. A green blinking heart means the
 package is installed but this process still needs that restart.
+
+Back up durable project state before moving a codebase or clearing Orbit data:
+
+```bash
+orbit backup create
+orbit backup create --output ../my-project.orbit-backup.json
+orbit backup inspect ../my-project.orbit-backup.json
+orbit backup restore ../my-project.orbit-backup.json
+```
+
+The bundle contains project chats, explicit memory, custom commands and skills,
+task plans, and verification configuration. It excludes credentials,
+regenerable search indexes, caches, temporary runtime state, evaluations, and
+old exports. Every file is size-bounded and SHA-256 verified before restore.
+Restore refuses existing files by default; use `--force` only after inspection.
 
 Preview Orbit-owned data before deletion:
 

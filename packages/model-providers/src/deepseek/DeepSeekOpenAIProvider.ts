@@ -156,8 +156,15 @@ interface OpenAIFunctionToolCall {
   };
 }
 
+type OpenAIContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 type OpenAIRequestMessage =
-  | { role: "system" | "user"; content: string }
+  | {
+      role: "system" | "user";
+      content: string | OpenAIContentPart[];
+    }
   | {
       role: "assistant";
       content: string | null;
@@ -295,6 +302,13 @@ function buildOpenAIRequestMessages(
       .filter((block) => block.type === "text")
       .map((block) => block.text)
       .join("\n");
+    const images = message.content.filter((block) => block.type === "image");
+
+    if (images.length > 0 && isOfficialDeepSeek) {
+      throw new Error(
+        "The selected DeepSeek model does not accept image input. Switch to a vision-capable model or remove the attachment.",
+      );
+    }
 
     if (message.role === "tool") {
       const toolResults = message.content.filter(
@@ -363,7 +377,22 @@ function buildOpenAIRequestMessages(
       continue;
     }
 
-    messages.push({ role: message.role, content: text });
+    if (message.role === "user" && images.length > 0) {
+      messages.push({
+        role: "user",
+        content: [
+          ...(text ? [{ type: "text" as const, text }] : []),
+          ...images.map((image) => ({
+            type: "image_url" as const,
+            image_url: {
+              url: `data:${image.mediaType};base64,${image.data}`,
+            },
+          })),
+        ],
+      });
+    } else {
+      messages.push({ role: message.role, content: text });
+    }
   }
 
   if (input.system) {

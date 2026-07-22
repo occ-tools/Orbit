@@ -1008,4 +1008,100 @@ describe("WebUiServer", () => {
       await eventCollector.close();
     }
   });
+
+  it("supports bounded image attachments, review actions, and trace export", async () => {
+    const submitted: Array<{
+      prompt: string;
+      attachments?: Array<{ name: string; data: string }>;
+    }> = [];
+    const reviewActions: unknown[] = [];
+    const handle = await startOrbitWebUi({
+      cwd: "D:/repo",
+      port: 0,
+      open: false,
+      config: ConfigSchema.parse({}),
+      loop: {
+        getSessionId: () => "session-review",
+        getSessionReview: () => ({
+          fileChanges: [
+            {
+              id: "change-1",
+              path: "src/index.ts",
+              diff: "+ changed",
+              createdAt: "2026-07-22T00:00:00.000Z",
+            },
+          ],
+          checkpoints: [],
+          verification: [],
+        }),
+      },
+      submitPrompt: async (prompt, attachments) => {
+        submitted.push({ prompt, attachments });
+        return { ok: true };
+      },
+      updateReview: async (action) => {
+        reviewActions.push(action);
+        return { ok: true };
+      },
+      exportTrace: (includeHistory) => ({
+        schemaVersion: 1,
+        includeHistory,
+      }),
+    });
+    const url = new URL(handle.url);
+    const token = new URLSearchParams(url.hash.slice(1)).get("token");
+    const authorization = { Authorization: `Bearer ${token}` };
+
+    const status = await fetch(`${url.origin}/api/status`, {
+      headers: authorization,
+    }).then((response) => response.json());
+    expect(status.review.fileChanges[0]).toMatchObject({
+      id: "change-1",
+      path: "src/index.ts",
+    });
+
+    const upload = await fetch(`${url.origin}/api/attachment?name=error.png`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "image/png" },
+      body: new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+    });
+    expect(upload.status).toBe(201);
+    const attachment = (await upload.json()).attachment as { id: string };
+    const chat = await fetch(`${url.origin}/api/chat`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: "Explain this image",
+        attachmentIds: [attachment.id],
+      }),
+    });
+    expect(chat.status).toBe(202);
+    await vi.waitFor(() => expect(submitted).toHaveLength(1));
+    expect(submitted[0]).toMatchObject({
+      prompt: "Explain this image",
+      attachments: [
+        {
+          name: "error.png",
+          data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString(
+            "base64",
+          ),
+        },
+      ],
+    });
+
+    const review = await fetch(`${url.origin}/api/review`, {
+      method: "POST",
+      headers: { ...authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "rollback-file", path: "src/index.ts" }),
+    });
+    expect(review.status).toBe(200);
+    expect(reviewActions).toEqual([
+      { action: "rollback-file", path: "src/index.ts" },
+    ]);
+
+    const trace = await fetch(`${url.origin}/api/trace?history=0`, {
+      headers: authorization,
+    }).then((response) => response.json());
+    expect(trace).toEqual({ schemaVersion: 1, includeHistory: false });
+  });
 });

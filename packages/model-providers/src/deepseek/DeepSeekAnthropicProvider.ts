@@ -79,6 +79,14 @@ type AnthropicRequestContentBlock = AnthropicCacheControl &
   (
     | { type: "text"; text: string }
     | {
+        type: "image";
+        source: {
+          type: "base64";
+          media_type: string;
+          data: string;
+        };
+      }
+    | {
         type: "tool_use";
         id: string;
         name: string;
@@ -249,6 +257,15 @@ function toAnthropicContentBlock(
   switch (block.type) {
     case "text":
       return { type: "text", text: block.text };
+    case "image":
+      return {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: block.mediaType,
+          data: block.data,
+        },
+      };
     case "tool_call":
       return {
         type: "tool_use",

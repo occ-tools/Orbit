@@ -302,6 +302,125 @@ export const WEB_UI_COMPOSER_STYLES = String.raw`
   flex: 0 0 auto;
 }
 
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.queue-button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: 10px;
+  font-size: 18px;
+}
+
+.queue-button:hover { background: var(--surface-hover); }
+.queue-button:disabled { opacity: 0.42; cursor: not-allowed; }
+
+.prompt-queue {
+  display: grid;
+  gap: 6px;
+  margin: 0 13px 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+}
+
+.prompt-queue[hidden] { display: none; }
+
+.prompt-queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.prompt-queue-header button {
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  font-size: 9px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.prompt-queue-list { display: grid; gap: 4px; }
+
+.prompt-queue-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 3px 4px;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border-radius: 7px;
+  font-size: 10px;
+}
+
+.prompt-queue-row > span:first-child { color: var(--faint); text-align: center; }
+.prompt-queue-row > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prompt-queue-row button { padding: 0; color: var(--muted); background: transparent; border: 0; }
+
+.attachment-shelf {
+  margin: 0 13px 8px;
+}
+
+.attachment-shelf[hidden] { display: none; }
+
+.attachment-list {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.attachment-card {
+  position: relative;
+  width: 126px;
+  min-width: 126px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: 6px;
+  padding: 5px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.attachment-card img {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border-radius: 6px;
+}
+
+.attachment-card > span { display: grid; min-width: 0; gap: 2px; }
+.attachment-card strong,
+.attachment-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-card strong { color: var(--ink); font-size: 9px; }
+.attachment-card small { color: var(--muted); font-size: 8px; }
+.attachment-card button { padding: 0; color: var(--muted); background: transparent; border: 0; }
+
+.composer.is-dragging {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface-raised));
+}
+
 .send-button {
   width: 36px;
   height: 36px;

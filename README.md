@@ -49,6 +49,16 @@ orbit "Review the authentication flow"
 orbit exec "Run the verification contract and fix failures" --jsonl
 ```
 
+Choose the surface that fits the work; all of them use the same runtime:
+
+| Surface    | Start with               | Best for                                                 |
+| ---------- | ------------------------ | -------------------------------------------------------- |
+| TUI        | `orbit`                  | focused interactive coding in the terminal               |
+| Web UI     | `/webui`                 | long conversations, images, changes, and activity review |
+| One task   | `orbit "…"`              | entering Orbit with an immediate objective               |
+| Automation | `orbit exec "…" --jsonl` | CI, scripts, and deterministic exit codes                |
+| Editor     | VS Code extension        | diagnostics and editor-adjacent workflows                |
+
 ## One project, many conversations
 
 A project maps to one codebase folder and owns independent persisted chats.
@@ -60,6 +70,9 @@ Model changes preserve the conversation. Orbit recalculates context against the
 selected model's window and automatically compacts older turns when necessary,
 instead of silently discarding the chat. Goals, plans, metrics, checkpoints,
 and explicit project memory remain scoped to that conversation or project.
+Accepted prompts use durable atomic snapshots. After an unexpected shutdown,
+Orbit resumes conservatively: incomplete tool calls are never replayed
+silently, active plan steps return to pending, and the UI summarizes the repair.
 
 ## Why Orbit
 
@@ -71,13 +84,17 @@ and explicit project memory remain scoped to that conversation or project.
   maps, retrieval, selected files, project instructions, and opt-in memory feed
   a bounded context pack.
 - **Safe, observable changes.** Workspace path validation, approval policies,
-  reviewable diffs, checkpoints, rollback, verification contracts, and concise
+  a Web UI Changes review, checkpoints, per-file rollback, trace export,
+  tool timing and permission history, verification contracts, and concise
   failure summaries protect the working tree.
 - **Validated tools.** File, search, symbol, shell, test, Git, web, fetch, plan,
   and connected MCP tools use typed schemas, bounded redacted results,
   cancellation, and permission checks.
 - **Consistent interfaces.** Terminal completion, `/help`, and the Web UI `/`
   picker share the same built-in and custom command catalog.
+- **Long-task ergonomics.** Browser image attachments, clipboard paste,
+  queued follow-ups, reconnect replay, and model-aware context compaction keep
+  work moving without splitting the conversation.
 - **Local diagnostics.** Provider probes, cache metrics, benchmarks, traces, and
   credential-safe JSON support snapshots make failures diagnosable.
 
@@ -121,6 +138,7 @@ while the user guide is organized by task rather than by implementation detail.
 | see release changes                     | [Changelog](CHANGELOG.md)                                                              |
 | contribute or change internals          | [Documentation index](docs/README.md) and [maintainer guide](docs/MAINTAINER_GUIDE.md) |
 | understand extension manifests          | [Extension manifest v1](docs/EXTENSIONS.md)                                            |
+| connect MCP or apply team policy        | [User guide: tools and safety](docs/USER_GUIDE.md#context-tools-and-safety)            |
 
 The [user guide](docs/USER_GUIDE.md) covers projects and chats, providers,
 models, Web UI synchronization, slash commands, context and safety modes,
@@ -133,6 +151,7 @@ the implementation reference.
 orbit doctor                 # local configuration and runtime checks
 orbit update --check         # check npm without installing
 orbit update                 # confirm before installing an update
+orbit backup create          # portable project chats, memory, commands, and skills
 orbit clean --project        # preview project-owned Orbit data cleanup
 orbit clean --user           # preview user-owned Orbit data cleanup
 npm uninstall -g @orbit-build/cli
@@ -144,6 +163,27 @@ the terminal, embedded server, and browser assets all come from one runtime.
 Cleanup never removes project source, `ORBIT.md`, or `orbit.config.yaml`.
 Interactive deletion requires the exact confirmation `DELETE`; automation must
 pass `--yes`. Orbit never silently replaces itself during startup.
+
+Project backups are versioned JSON bundles with per-file SHA-256 integrity.
+They exclude credentials, indexes, caches, temporary state, and prior exports;
+inspect one with `orbit backup inspect <file>` before restoring it.
+
+## How the repository fits together
+
+Orbit keeps protocol, policy, storage, and interface concerns separate:
+
+| Layer           | Packages                                      | Owns                                                             |
+| --------------- | --------------------------------------------- | ---------------------------------------------------------------- |
+| Interfaces      | `cli`, `tui`, `editors/vscode`                | commands, TUI, Web UI, LSP, editor integration                   |
+| Agent runtime   | `core`, `context-engine`                      | planning, execution, memory, compaction, retrieval, verification |
+| Model and tools | `model-providers`, `tools`, `mcp`             | DeepSeek/provider protocols, built-in tools, connected tools     |
+| Trust and state | `permissions`, `sandbox`, `session`, `config` | approvals, isolation, checkpoints, recovery, credentials, policy |
+| Foundations     | `shared`                                      | paths, redaction, IDs, tokens, and bounded utilities             |
+
+The detailed ownership map, dependency direction, change locations, and minimum
+verification commands live in the [maintainer guide](docs/MAINTAINER_GUIDE.md).
+Generated `dist`, `node_modules`, and runtime `.orbit` data are never source
+ownership boundaries.
 
 ## Develop from source
 

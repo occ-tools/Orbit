@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { WEB_UI_CLIENT_SCRIPT } from "./WebUiClient.js";
 import { WEB_UI_CLIENT_BINDINGS_SCRIPT } from "./WebUiClientBindings.js";
 import { WEB_UI_CLIENT_APPROVAL_SCRIPT } from "./WebUiClientApproval.js";
+import { WEB_UI_CLIENT_ATTACHMENTS_SCRIPT } from "./WebUiClientAttachments.js";
 import { WEB_UI_CLIENT_CONTEXT_SCRIPT } from "./WebUiClientContext.js";
 import { WEB_UI_CLIENT_FOUNDATION_SCRIPT } from "./WebUiClientFoundation.js";
 import { WEB_UI_CLIENT_MESSAGES_SCRIPT } from "./WebUiClientMessages.js";
@@ -18,6 +19,7 @@ describe("WEB_UI_CLIENT_SCRIPT", () => {
       WEB_UI_CLIENT_FOUNDATION_SCRIPT,
       WEB_UI_CLIENT_SELECT_SCRIPT,
       WEB_UI_CLIENT_APPROVAL_SCRIPT,
+      WEB_UI_CLIENT_ATTACHMENTS_SCRIPT,
       WEB_UI_CLIENT_CONTEXT_SCRIPT,
       WEB_UI_CLIENT_MESSAGES_SCRIPT,
       WEB_UI_CLIENT_SESSION_SCRIPT,
@@ -181,6 +183,11 @@ describe("WEB_UI_CLIENT_SCRIPT", () => {
     expect(WEB_UI_CLIENT_SCRIPT).toContain("submitTurn('/drop ' + path");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("submitTurn('/drop all'");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("copy.contextAdded");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("async function uploadAttachment(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function queuePrompt(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("orbit.webui.queue");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("function renderChangeReview(");
+    expect(WEB_UI_CLIENT_SCRIPT).toContain("api('/api/review'");
     expect(WEB_UI_CLIENT_SCRIPT).toContain("{ restoreDraft: draft }");
     expect(WEB_UI_CLIENT_SCRIPT).toContain(
       "button.setAttribute('aria-pressed', active ? 'true' : 'false')",

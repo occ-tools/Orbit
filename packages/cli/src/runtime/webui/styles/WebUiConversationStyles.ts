@@ -126,6 +126,22 @@ export const WEB_UI_CONVERSATION_STYLES = String.raw`
   white-space: nowrap;
 }
 
+.message-attachment {
+  display: inline-flex;
+  align-items: center;
+  max-width: 220px;
+  margin: 5px 5px 0 0;
+  padding: 5px 8px;
+  overflow: hidden;
+  color: var(--muted);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: 9px/1.3 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .message.user .message-content {
   grid-column: 1;
   justify-self: end;

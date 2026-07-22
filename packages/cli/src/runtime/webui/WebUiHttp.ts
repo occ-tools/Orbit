@@ -87,3 +87,19 @@ export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const body = Buffer.concat(chunks).toString("utf8").trim();
   return body ? JSON.parse(body) : {};
 }
+
+/** Read a bounded binary body for local image attachments. */
+export async function readBinaryBody(
+  req: IncomingMessage,
+  limitBytes: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > limitBytes) throw new Error("Attachment is too large.");
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}

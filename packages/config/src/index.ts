@@ -6,3 +6,5 @@ export * from "./CredentialKeyStore.js";
 export * from "./ProviderProfiles.js";
 export * from "./redactConfig.js";
 export * from "./ExtensionManifest.js";
+export * from "./ManagedPolicy.js";
+export * from "./InstalledExtensions.js";

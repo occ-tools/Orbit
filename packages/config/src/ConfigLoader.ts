@@ -11,6 +11,9 @@ import {
 import { DEFAULT_CONFIG } from "./defaults.js";
 import { CredentialsManager } from "./Credentials.js";
 import { ProviderProfileStore } from "./ProviderProfiles.js";
+import { applyManagedPolicy, loadManagedPolicy } from "./ManagedPolicy.js";
+import { applyInstalledExtensionContributions } from "./InstalledExtensions.js";
+import { resolve } from "path";
 
 export interface ConfigLoadOptions {
   homeDir?: string;
@@ -302,7 +305,31 @@ export class ConfigLoader {
       config = this.merge(config, cliOverrides);
     }
 
-    // 5. Validate with Zod
+    // 5. Load integrity-checked contributions installed with explicit trust.
+    config = applyInstalledExtensionContributions(
+      ConfigSchema.parse(config),
+      homeDirectory,
+    );
+
+    // 6. Apply administrator policy last so lower-precedence sources cannot
+    // weaken provider, model, permission, network, or budget restrictions.
+    const managedPolicyPath = env.ORBIT_MANAGED_POLICY
+      ? resolve(env.ORBIT_MANAGED_POLICY)
+      : join(homeDirectory, ".orbit", "policy.yaml");
+    if (existsSync(managedPolicyPath)) {
+      try {
+        config = applyManagedPolicy(
+          ConfigSchema.parse(config),
+          loadManagedPolicy(managedPolicyPath),
+        );
+      } catch {
+        throw new Error(
+          `Managed policy validation failed at ${managedPolicyPath}.`,
+        );
+      }
+    }
+
+    // 7. Validate with Zod
     const validated = ConfigSchema.safeParse(config);
     if (!validated.success) {
       throw new Error(
@@ -310,7 +337,7 @@ export class ConfigLoader {
       );
     }
 
-    // 6. Dynamically resolve apiKey using apiKeyEnv if apiKey not directly set
+    // 8. Dynamically resolve apiKey using apiKeyEnv if apiKey not directly set
     const finalConfig = validated.data;
     // Orbit historically advertised SQLite without implementing it; storage
     // has always been directory-based JSON/JSONL. Transparently migrate old

@@ -23,10 +23,45 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
   });
 
   elements.prompt.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !state.busy) {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
-      elements.composer.requestSubmit();
+      if (state.busy) queuePrompt(elements.prompt.value);
+      else elements.composer.requestSubmit();
     }
+  });
+  elements.attachmentButton.addEventListener('click', () => elements.attachmentInput.click());
+  elements.attachmentInput.addEventListener('change', () => void addAttachmentFiles(elements.attachmentInput.files));
+  elements.attachmentList.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-attachment-remove]');
+    if (button) void removeAttachment(button.dataset.attachmentRemove, true);
+  });
+  elements.prompt.addEventListener('paste', (event) => {
+    const files = Array.from(event.clipboardData && event.clipboardData.files || [])
+      .filter((file) => file.type.startsWith('image/'));
+    if (!files.length) return;
+    event.preventDefault();
+    void addAttachmentFiles(files);
+  });
+  elements.composer.addEventListener('dragover', (event) => {
+    if (!Array.from(event.dataTransfer && event.dataTransfer.items || []).some((item) => item.type.startsWith('image/'))) return;
+    event.preventDefault();
+    elements.composer.classList.add('is-dragging');
+  });
+  elements.composer.addEventListener('dragleave', () => elements.composer.classList.remove('is-dragging'));
+  elements.composer.addEventListener('drop', (event) => {
+    elements.composer.classList.remove('is-dragging');
+    const files = Array.from(event.dataTransfer && event.dataTransfer.files || [])
+      .filter((file) => file.type.startsWith('image/'));
+    if (!files.length) return;
+    event.preventDefault();
+    void addAttachmentFiles(files);
+  });
+  elements.queueButton.addEventListener('click', () => queuePrompt(elements.prompt.value));
+  elements.clearQueueButton.addEventListener('click', clearPromptQueue);
+  elements.promptQueueList.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-queue-remove]');
+    if (!button) return;
+    removeQueuedPrompt(Number(button.dataset.queueRemove));
   });
 
   elements.messageScroll.addEventListener('scroll', () => {
@@ -63,6 +98,10 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
   elements.inspectorButton.addEventListener('click', () => {
     setInspector(!elements.inspector.classList.contains('is-open'));
   });
+  elements.changesButton.addEventListener('click', () => {
+    setInspector(true, 'changes');
+    closeSidebar();
+  });
   elements.contextMeter.addEventListener('click', () => setInspector(true, 'activity'));
   elements.inspectorClose.addEventListener('click', () => setInspector(false));
   elements.inspectorBackdrop.addEventListener('click', () => setInspector(false));
@@ -72,8 +111,10 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
   });
   byId('retryConnection').addEventListener('click', () => void initialize());
   elements.activityTab.addEventListener('click', () => selectInspectorTab('activity'));
+  elements.changesTab.addEventListener('click', () => selectInspectorTab('changes'));
   elements.settingsTab.addEventListener('click', () => selectInspectorTab('settings'));
   elements.activityTab.addEventListener('keydown', handleInspectorTabKeydown);
+  elements.changesTab.addEventListener('keydown', handleInspectorTabKeydown);
   elements.settingsTab.addEventListener('keydown', handleInspectorTabKeydown);
   byId('clearActivity').addEventListener('click', clearActivity);
   elements.memoryReview.addEventListener('click', (event) => {
@@ -81,6 +122,17 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
     if (!button || state.busy) return;
     void submitTurn('/memory remove ' + button.dataset.memoryRemove);
   });
+  elements.changesList.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-rollback-file]');
+    if (!button) return;
+    void applyReviewAction({ action: 'rollback-file', path: button.dataset.rollbackFile }, button);
+  });
+  elements.checkpointList.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-rewind-checkpoint]');
+    if (!button) return;
+    void applyReviewAction({ action: 'rewind', checkpointId: button.dataset.rewindCheckpoint }, button);
+  });
+  elements.exportTraceButton.addEventListener('click', () => void exportDiagnostics());
 
   document.querySelectorAll('[data-suggestion]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -463,6 +515,9 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
     if (state.eventRetryTimer) window.clearTimeout(state.eventRetryTimer);
     if (state.connectionNoticeTimer) window.clearTimeout(state.connectionNoticeTimer);
     if (state.eventSource) state.eventSource.close();
+    for (const attachment of state.attachments) {
+      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+    }
   });
 
   async function initialize() {
@@ -478,6 +533,7 @@ export const WEB_UI_CLIENT_BINDINGS_SCRIPT = String.raw`  elements.composer.addE
       readLocalStorage('orbit.webui.sidebar', 'expanded') === 'collapsed',
     );
     setProjectExpanded(readLocalStorage('orbit.webui.project', 'expanded') !== 'collapsed');
+    restorePromptQueue();
     syncSidebarInteractivity();
     const draft = readLocalStorage('orbit.webui.draft', '');
     if (draft) {

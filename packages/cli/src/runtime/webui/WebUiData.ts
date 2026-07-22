@@ -15,6 +15,7 @@ import { sanitizeBaseUrl, summarizeWebToolValue } from "./WebUiSecurity.js";
 type WebMessageBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
+  | { type: "image"; name: string; mediaType: string }
   | {
       type: "tool";
       id: string;
@@ -130,6 +131,10 @@ export function collectWebUiStatus(
   const projectMemory = safeCall(() => loop?.getProjectMemory?.());
   const taskPlan = safeCall(() => loop?.getTaskPlan?.());
   const sessionMetrics = safeCall(() => loop?.getSessionMetrics?.());
+  const recoveryReport = safeCall(() => loop?.getRecoveryReport?.());
+  const review = summarizeWebUiReview(
+    safeCall(() => loop?.getSessionReview?.()),
+  );
   const contextFiles = summarizeWebUiContextFiles(relevantFiles);
   const normalizedSessions = normalizeSessions(sessions, sessionId);
   const recentSessions = normalizedSessions.filter(
@@ -193,6 +198,27 @@ export function collectWebUiStatus(
       cacheReadTokens: safeCall(() => loop?.getTotalCacheReadTokens?.()) || 0,
       outputTokens: safeCall(() => loop?.getTotalOutputTokens?.()) || 0,
       metrics: sessionMetrics || null,
+      recovery: recoveryReport
+        ? {
+            sessionId: String(recoveryReport.sessionId).slice(0, 200),
+            previousState: String(recoveryReport.previousState).slice(0, 40),
+            previousPhase: String(recoveryReport.previousPhase).slice(0, 200),
+            attempt: Math.max(0, Number(recoveryReport.attempt) || 0),
+            recoveryCount: Math.max(
+              1,
+              Number(recoveryReport.recoveryCount) || 1,
+            ),
+            repairedToolCalls: Math.max(
+              0,
+              Number(recoveryReport.repairedToolCalls) || 0,
+            ),
+            resetPlanItems: Math.max(
+              0,
+              Number(recoveryReport.resetPlanItems) || 0,
+            ),
+            recoveredAt: String(recoveryReport.recoveredAt).slice(0, 64),
+          }
+        : null,
     },
     memory: {
       enabled: projectMemory?.enabled !== false,
@@ -216,6 +242,7 @@ export function collectWebUiStatus(
         status: item.status,
       })),
     },
+    review,
     context: {
       relevantFiles: contextFiles.total,
       files: contextFiles.files,
@@ -245,6 +272,124 @@ export function collectWebUiStatus(
     cacheDiagnostics: redactSecrets(stripAnsi(buildCacheDiagnostics(cwd))),
     updatedAt: new Date().toISOString(),
   };
+}
+
+/** Bound and redact persisted diffs before they cross the browser boundary. */
+export function summarizeWebUiReview(value: unknown) {
+  const record = isRecord(value) ? value : {};
+  const rawChanges = Array.isArray(record.fileChanges)
+    ? record.fileChanges
+    : [];
+  const rawToolCalls = Array.isArray(record.toolCalls) ? record.toolCalls : [];
+  const rawCheckpoints = Array.isArray(record.checkpoints)
+    ? record.checkpoints
+    : [];
+  const rawVerification = Array.isArray(record.verification)
+    ? record.verification
+    : [];
+
+  const fileChanges = rawChanges
+    .filter(isRecord)
+    .slice(-80)
+    .reverse()
+    .map((change) => ({
+      id: safeLabel(typeof change.id === "string" ? change.id : "", 200),
+      path: normalizeSafeWebUiPath(change.path) || "unknown",
+      diff: redactSecrets(stripAnsi(String(change.diff || ""))).slice(
+        0,
+        100_000,
+      ),
+      createdAt: safeLabel(
+        typeof change.createdAt === "string" ? change.createdAt : "",
+        100,
+      ),
+    }))
+    .filter((change) => change.id && change.path !== "unknown");
+
+  const checkpoints = rawCheckpoints
+    .filter(isRecord)
+    .slice(-40)
+    .reverse()
+    .map((checkpoint) => ({
+      id: safeLabel(
+        typeof checkpoint.id === "string" ? checkpoint.id : "",
+        200,
+      ),
+      timestamp: safeLabel(
+        typeof checkpoint.timestamp === "string" ? checkpoint.timestamp : "",
+        100,
+      ),
+      toolCallId: safeLabel(
+        typeof checkpoint.toolCallId === "string" ? checkpoint.toolCallId : "",
+        200,
+      ),
+      files: (Array.isArray(checkpoint.files) ? checkpoint.files : [])
+        .map((path) => normalizeSafeWebUiPath(path))
+        .filter((path): path is string => Boolean(path))
+        .slice(0, 50),
+    }))
+    .filter((checkpoint) => checkpoint.id);
+
+  const verification = rawVerification
+    .filter(isRecord)
+    .slice(-20)
+    .reverse()
+    .map((entry) => ({
+      timestamp: safeLabel(
+        typeof entry.timestamp === "string" ? entry.timestamp : "",
+        100,
+      ),
+      success: typeof entry.success === "boolean" ? entry.success : undefined,
+      detail:
+        typeof entry.detail === "string"
+          ? redactSecrets(stripAnsi(entry.detail)).slice(0, 2_000)
+          : undefined,
+    }));
+
+  const toolCalls = rawToolCalls
+    .filter(isRecord)
+    .slice(-100)
+    .reverse()
+    .map((tool) => {
+      const startedAt = safeLabel(
+        typeof tool.startedAt === "string" ? tool.startedAt : "",
+        100,
+      );
+      const endedAt = safeLabel(
+        typeof tool.endedAt === "string" ? tool.endedAt : "",
+        100,
+      );
+      const startMs = Date.parse(startedAt);
+      const endMs = Date.parse(endedAt);
+      return {
+        id: safeLabel(typeof tool.id === "string" ? tool.id : "", 200),
+        name: safeLabel(
+          typeof tool.toolName === "string" ? tool.toolName : "tool",
+          200,
+        ),
+        risk: safeLabel(typeof tool.risk === "string" ? tool.risk : "", 40),
+        decision: safeLabel(
+          typeof tool.permissionDecision === "string"
+            ? tool.permissionDecision
+            : "",
+          80,
+        ),
+        status: ["pending", "success", "failed", "denied"].includes(
+          String(tool.status),
+        )
+          ? String(tool.status)
+          : "failed",
+        startedAt,
+        endedAt,
+        durationMs:
+          Number.isFinite(startMs) && Number.isFinite(endMs)
+            ? Math.max(0, endMs - startMs)
+            : undefined,
+      };
+    })
+    .filter((tool) => tool.id);
+
+  return { fileChanges, toolCalls, checkpoints, verification };
 }
 
 /** Normalize a pending confirmation before exposing it to the browser. */
@@ -422,6 +567,17 @@ function normalizeMessageBlocks(content: unknown): WebMessageBlock[] {
     }
     if (candidate.type === "thinking" && typeof candidate.text === "string") {
       blocks.push({ type: "thinking", text: candidate.text });
+      continue;
+    }
+    if (candidate.type === "image" && typeof candidate.mediaType === "string") {
+      blocks.push({
+        type: "image",
+        name:
+          typeof candidate.name === "string"
+            ? safeLabel(candidate.name, 255)
+            : "image",
+        mediaType: safeLabel(candidate.mediaType, 100),
+      });
       continue;
     }
     if (candidate.type === "tool_call" && isRecord(candidate.toolCall)) {

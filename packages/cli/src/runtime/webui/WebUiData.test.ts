@@ -6,6 +6,7 @@ import {
   collectWebUiSettings,
   collectWebUiStatus,
   filterWebUiCompletionFiles,
+  summarizeWebUiReview,
   summarizeWebUiContextFiles,
 } from "./WebUiData.js";
 
@@ -119,6 +120,96 @@ describe("WebUiData", () => {
         ],
       },
     ]);
+  });
+
+  it("reports image metadata without exposing base64 payloads", () => {
+    const messages = collectWebUiMessages({
+      getHistory: () => [
+        {
+          id: "image-message",
+          role: "user",
+          content: [
+            { type: "text", text: "Explain this screenshot" },
+            {
+              type: "image",
+              name: "error.png",
+              mediaType: "image/png",
+              data: "private-base64-payload",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(messages).toEqual([
+      expect.objectContaining({
+        text: "Explain this screenshot",
+        blocks: [
+          { type: "text", text: "Explain this screenshot" },
+          { type: "image", name: "error.png", mediaType: "image/png" },
+        ],
+      }),
+    ]);
+    expect(JSON.stringify(messages)).not.toContain("private-base64-payload");
+  });
+
+  it("bounds and sanitizes change review data", () => {
+    const review = summarizeWebUiReview({
+      fileChanges: [
+        {
+          id: "change-1",
+          path: "src\\index.ts",
+          diff: "+ Authorization: Bearer private-token",
+          createdAt: "2026-07-22T00:00:00.000Z",
+        },
+        { id: "escape", path: "../secret.txt", diff: "private" },
+      ],
+      checkpoints: [
+        {
+          id: "checkpoint-1",
+          timestamp: "2026-07-22T00:00:00.000Z",
+          toolCallId: "tool-1",
+          files: ["src/index.ts", "../secret.txt"],
+        },
+      ],
+      toolCalls: [
+        {
+          id: "tool-1",
+          toolName: "bash",
+          inputJson: '{"authorization":"Bearer private-token"}',
+          outputJson: "private output",
+          risk: "execute",
+          permissionDecision: "ask",
+          status: "success",
+          startedAt: "2026-07-22T00:00:00.000Z",
+          endedAt: "2026-07-22T00:00:01.250Z",
+        },
+      ],
+      verification: [{ success: false, detail: "Bearer private-token" }],
+    });
+
+    expect(review.fileChanges).toEqual([
+      expect.objectContaining({
+        id: "change-1",
+        path: "src/index.ts",
+        diff: "+ Authorization: Bearer ***REDACTED***",
+      }),
+    ]);
+    expect(review.checkpoints[0]?.files).toEqual(["src/index.ts"]);
+    expect(review.toolCalls).toEqual([
+      {
+        id: "tool-1",
+        name: "bash",
+        risk: "execute",
+        decision: "ask",
+        status: "success",
+        startedAt: "2026-07-22T00:00:00.000Z",
+        endedAt: "2026-07-22T00:00:01.250Z",
+        durationMs: 1250,
+      },
+    ]);
+    expect(JSON.stringify(review)).not.toContain("private output");
+    expect(review.verification[0]?.detail).toBe("Bearer ***REDACTED***");
   });
 
   it("merges tool results into credential-safe invocation summaries", () => {
@@ -273,6 +364,40 @@ describe("WebUiData", () => {
       compactAtTokens: 96_000,
       estimatedHistoryTokens: 24_000,
       utilization: 0.1875,
+    });
+  });
+
+  it("reports a bounded crash-recovery summary", () => {
+    const config = ConfigSchema.parse({});
+    const status = collectWebUiStatus(
+      {
+        cwd: "D:/repo",
+        config,
+        loop: {
+          getRecoveryReport: () => ({
+            sessionId: "sess_recovered",
+            previousState: "awaiting_approval",
+            previousPhase: "tool:bash",
+            attempt: 4,
+            recoveryCount: 2,
+            repairedToolCalls: 1,
+            resetPlanItems: 3,
+            recoveredAt: "2026-07-22T06:00:00.000Z",
+          }),
+        },
+      },
+      undefined,
+    );
+
+    expect(status.session.recovery).toEqual({
+      sessionId: "sess_recovered",
+      previousState: "awaiting_approval",
+      previousPhase: "tool:bash",
+      attempt: 4,
+      recoveryCount: 2,
+      repairedToolCalls: 1,
+      resetPlanItems: 3,
+      recoveredAt: "2026-07-22T06:00:00.000Z",
     });
   });
 

@@ -48,6 +48,39 @@ describe("SessionManager audit persistence", () => {
   it("marks an unfinished run as interrupted when the session resumes", () => {
     const manager = new SessionManager(tempDir);
     const session = manager.startNewSession("deepseek", "deepseek-v4-pro");
+    const startedAt = new Date().toISOString();
+    manager.saveHistory([
+      {
+        id: "msg-user-recovery",
+        role: "user",
+        createdAt: startedAt,
+        content: [{ type: "text", text: "edit the project" }],
+      },
+      {
+        id: "msg-assistant-recovery",
+        role: "assistant",
+        createdAt: startedAt,
+        content: [
+          {
+            type: "tool_call",
+            toolCall: {
+              id: "tc-shell",
+              name: "bash",
+              arguments: '{"command":"build"}',
+            },
+          },
+        ],
+      },
+    ]);
+    manager.saveTaskPlan([
+      {
+        id: "step_running",
+        text: "Run the build",
+        status: "in_progress",
+        createdAt: startedAt,
+        updatedAt: startedAt,
+      },
+    ]);
     manager.setRunState("awaiting_approval", "tool:bash", {
       attempt: 3,
       activeToolCallId: "tc-shell",
@@ -60,9 +93,70 @@ describe("SessionManager audit persistence", () => {
       state: "interrupted",
       attempt: 3,
       recoveryCount: 1,
-      activeToolCallId: "tc-shell",
     });
+    expect(resumed.getRunJournal()?.activeToolCallId).toBeUndefined();
     expect(resumed.getRunJournal()?.phase).toContain("tool:bash");
+    expect(resumed.getRecoveryReport()).toMatchObject({
+      previousState: "awaiting_approval",
+      previousPhase: "tool:bash",
+      repairedToolCalls: 1,
+      resetPlanItems: 1,
+    });
+    expect(resumed.getTaskPlan()?.items[0]?.status).toBe("pending");
+    const recoveryMessage = resumed.getHistory().at(-1);
+    expect(recoveryMessage).toMatchObject({
+      role: "tool",
+      metadata: { kind: "crash_recovery" },
+    });
+    expect(recoveryMessage?.content[0]).toMatchObject({
+      type: "tool_result",
+      toolResult: {
+        toolCallId: "tc-shell",
+        name: "bash",
+        isError: true,
+      },
+    });
+  });
+
+  it("does not duplicate completed tool results during recovery", () => {
+    const manager = new SessionManager(tempDir);
+    const session = manager.startNewSession("deepseek", "deepseek-v4-pro");
+    const createdAt = new Date().toISOString();
+    manager.saveHistory([
+      {
+        id: "msg-assistant-complete",
+        role: "assistant",
+        createdAt,
+        content: [
+          {
+            type: "tool_call",
+            toolCall: { id: "tc-read", name: "read_file", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        id: "msg-tool-complete",
+        role: "tool",
+        createdAt,
+        content: [
+          {
+            type: "tool_result",
+            toolResult: {
+              toolCallId: "tc-read",
+              name: "read_file",
+              content: "done",
+            },
+          },
+        ],
+      },
+    ]);
+    manager.setRunState("running", "model_request", { attempt: 2 });
+
+    const resumed = new SessionManager(tempDir);
+    resumed.resumeSession(session.id);
+
+    expect(resumed.getRecoveryReport()?.repairedToolCalls).toBe(0);
+    expect(resumed.getHistory()).toHaveLength(2);
   });
 
   it("keeps each chat task plan isolated and recoverable", () => {
@@ -144,6 +238,10 @@ describe("SessionManager audit persistence", () => {
       "write",
       "allow",
       "success",
+      {
+        startedAt: "2026-07-22T00:00:00.000Z",
+        endedAt: "2026-07-22T00:00:01.250Z",
+      },
     );
     manager.recordFileModification(
       "src/config.ts",
@@ -166,6 +264,8 @@ describe("SessionManager audit persistence", () => {
       JSON.parse(toolLog.trim()) as unknown,
     );
     expect(record.id).toBe("tc_safe");
+    expect(record.startedAt).toBe("2026-07-22T00:00:00.000Z");
+    expect(record.endedAt).toBe("2026-07-22T00:00:01.250Z");
     const storedInput = StoredToolInputSchema.parse(
       JSON.parse(record.inputJson) as unknown,
     );

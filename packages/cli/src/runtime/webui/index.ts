@@ -8,6 +8,7 @@ export type {
   WebUiApprovalDecision,
   WebUiApprovalSnapshot,
   WebUiHandle,
+  WebUiImageAttachment,
   WebUiOptions,
   WebUiProjectAction,
   WebUiProjectActionResult,

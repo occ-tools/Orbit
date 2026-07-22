@@ -586,6 +586,12 @@ export const WEB_UI_CLIENT_MESSAGES_SCRIPT = String.raw`  function appendInline(
         const thinking = createThinkingBlock(block.text || '', false);
         content.append(thinking.root);
         thinkingBody = thinking.body;
+      } else if (block.type === 'image') {
+        const attachment = document.createElement('span');
+        attachment.className = 'message-attachment';
+        attachment.textContent = '▧ ' + (block.name || 'image');
+        attachment.title = block.mediaType || 'image';
+        content.append(attachment);
       } else if (block.type === 'tool') {
         content.append(createToolCard(block));
       }

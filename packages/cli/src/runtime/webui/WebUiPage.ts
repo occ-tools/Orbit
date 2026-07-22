@@ -7,6 +7,7 @@ interface WebUiCopy {
   documentTitle: string;
   newTask: string;
   diagnostics: string;
+  changes: string;
   addContext: string;
   commands: string;
   commandSearch: string;
@@ -66,13 +67,26 @@ interface WebUiCopy {
   contextPickerEmpty: string;
   contextPickerHint: string;
   activeContext: string;
+  attachments: string;
+  attachImage: string;
   clearContext: string;
   webSearch: string;
   sendHint: string;
+  queuedMessages: string;
+  clearQueue: string;
+  queueMessage: string;
   inspectorTitle: string;
   close: string;
   activity: string;
   settings: string;
+  noChanges: string;
+  changedFiles: string;
+  toolCalls: string;
+  checkpoints: string;
+  verification: string;
+  restoreFile: string;
+  rewind: string;
+  exportTrace: string;
   runtime: string;
   projectMemory: string;
   taskPlan: string;
@@ -108,6 +122,7 @@ const COPY: Record<WebUiLanguage, WebUiCopy> = {
     documentTitle: "Orbit · AI coding workspace",
     newTask: "New chat",
     diagnostics: "Diagnostics",
+    changes: "Changes",
     addContext: "Add context",
     commands: "Commands",
     commandSearch: "Search actions…",
@@ -170,13 +185,26 @@ const COPY: Record<WebUiLanguage, WebUiCopy> = {
     contextPickerEmpty: "No matching workspace files",
     contextPickerHint: "Enter to add · ↑↓ to navigate · Esc to close",
     activeContext: "Active context",
+    attachments: "Images",
+    attachImage: "Attach image",
     clearContext: "Clear all",
     webSearch: "Web",
     sendHint: "Enter to send · Shift+Enter for a new line",
+    queuedMessages: "Queued follow-ups",
+    clearQueue: "Clear queue",
+    queueMessage: "Queue message",
     inspectorTitle: "Task details",
     close: "Close",
     activity: "Activity",
     settings: "Settings",
+    noChanges: "No file changes have been recorded in this chat.",
+    changedFiles: "Changed files",
+    toolCalls: "Tool calls",
+    checkpoints: "Checkpoints",
+    verification: "Verification",
+    restoreFile: "Restore file",
+    rewind: "Rewind here",
+    exportTrace: "Export diagnostics",
     runtime: "Runtime",
     projectMemory: "Project memory",
     taskPlan: "Task plan",
@@ -210,6 +238,7 @@ const COPY: Record<WebUiLanguage, WebUiCopy> = {
     documentTitle: "Orbit · AI 编程工作区",
     newTask: "新建对话",
     diagnostics: "运行诊断",
+    changes: "改动审阅",
     addContext: "添加上下文",
     commands: "命令帮助",
     commandSearch: "搜索操作…",
@@ -271,13 +300,26 @@ const COPY: Record<WebUiLanguage, WebUiCopy> = {
     contextPickerEmpty: "没有匹配的工作区文件",
     contextPickerHint: "Enter 添加 · ↑↓ 选择 · Esc 关闭",
     activeContext: "活动上下文",
+    attachments: "图片",
+    attachImage: "添加图片",
     clearContext: "全部清空",
     webSearch: "联网",
     sendHint: "Enter 发送 · Shift+Enter 换行",
+    queuedMessages: "待发送消息",
+    clearQueue: "清空队列",
+    queueMessage: "加入队列",
     inspectorTitle: "任务详情",
     close: "关闭",
     activity: "活动",
     settings: "设置",
+    noChanges: "当前对话还没有记录文件改动。",
+    changedFiles: "文件改动",
+    toolCalls: "工具调用",
+    checkpoints: "检查点",
+    verification: "验证结果",
+    restoreFile: "恢复文件",
+    rewind: "回退到这里",
+    exportTrace: "导出诊断包",
     runtime: "运行状态",
     projectMemory: "项目记忆",
     taskPlan: "任务计划",
@@ -312,7 +354,9 @@ const COPY: Record<WebUiLanguage, WebUiCopy> = {
 type UiIcon =
   | "add"
   | "diagnostics"
+  | "changes"
   | "context"
+  | "image"
   | "commands"
   | "menu"
   | "panel"
@@ -331,8 +375,12 @@ function renderUiIcon(name: UiIcon): string {
     add: '<path d="M12 5v14M5 12h14" />',
     diagnostics:
       '<path d="M4.5 12h3l1.7-4 3.1 8 1.7-4h5.5" /><path d="M6 5.5h12v13H6z" />',
+    changes:
+      '<path d="M5 7h14M5 12h14M5 17h14" /><path d="M8 5v4M15 10v4M11 15v4" />',
     context:
       '<path d="M7 4.5h7l3 3v12H7z" /><path d="M14 4.5v3h3M9.5 12h5M12 9.5v5" />',
+    image:
+      '<rect x="4.5" y="5" width="15" height="14" rx="2" /><circle cx="9" cy="9.5" r="1.5" /><path d="m6.5 17 4-4 2.5 2 2.5-3 2.5 5" />',
     commands:
       '<rect x="4.5" y="5.5" width="15" height="13" rx="2" /><path d="m8 10 2 2-2 2M12.5 14h3.5" />',
     menu: '<path d="M5 7h14M5 12h14M5 17h14" />',
@@ -388,9 +436,18 @@ function renderComposer(copy: WebUiCopy): string {
         </div>
         <div class="context-file-list" id="contextFileList"></div>
       </section>
+      <section class="attachment-shelf" id="attachmentShelf" aria-label="${copy.attachments}" hidden>
+        <div class="attachment-list" id="attachmentList"></div>
+      </section>
+      <section class="prompt-queue" id="promptQueue" aria-label="${copy.queuedMessages}" hidden>
+        <div class="prompt-queue-header"><strong>${copy.queuedMessages}</strong><button id="clearQueueButton" type="button">${copy.clearQueue}</button></div>
+        <div class="prompt-queue-list" id="promptQueueList"></div>
+      </section>
       <div class="composer-toolbar">
         <div class="composer-tools">
           <button class="composer-chip" id="contextPickerButton" type="button" data-open-context aria-haspopup="dialog" aria-controls="contextPicker" aria-expanded="false">${renderUiIcon("context")}<span>${copy.context}</span><span class="context-chip-count" id="contextChipCount" aria-label="0" hidden>0</span></button>
+          <button class="composer-chip" id="attachmentButton" type="button" aria-label="${copy.attachImage}">${renderUiIcon("image")}<span>${copy.attachments}</span><span class="context-chip-count" id="attachmentCount" aria-label="0" hidden>0</span></button>
+          <input id="attachmentInput" data-testid="attachment-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
           <button class="composer-chip" id="searchToggle" type="button" aria-pressed="false"><span class="web-status-dot" aria-hidden="true"></span><span>${copy.webSearch}</span></button>
           <div class="select-control composer-select-control" data-select-control>
             <select class="native-select-proxy" id="permissionSelect" aria-label="${copy.permission}" tabindex="-1" aria-hidden="true" hidden>
@@ -405,7 +462,10 @@ function renderComposer(copy: WebUiCopy): string {
             <div class="select-menu" id="permissionSelectMenu" role="listbox" aria-label="${copy.permission}" hidden></div>
           </div>
         </div>
-        <button class="send-button" id="sendButton" data-testid="composer-send" type="submit" aria-label="${copy.inputLabel}"><span id="sendGlyph" aria-hidden="true">↑</span></button>
+        <div class="composer-actions">
+          <button class="queue-button" id="queueButton" type="button" aria-label="${copy.queueMessage}" title="${copy.queueMessage}" hidden>+</button>
+          <button class="send-button" id="sendButton" data-testid="composer-send" type="submit" aria-label="${copy.inputLabel}"><span id="sendGlyph" aria-hidden="true">↑</span></button>
+        </div>
       </div>
       <section class="context-picker" id="contextPicker" role="dialog" aria-label="${copy.contextPickerTitle}" aria-hidden="true" hidden>
         <div class="context-picker-header">
@@ -470,6 +530,10 @@ export function renderWebUiPage(language: WebUiLanguage): string {
 
       <div class="nav-section-heading"><span>${copy.navigation}</span><i></i></div>
       <nav class="primary-nav" aria-label="${copy.navigation}">
+        <button class="nav-button" id="changesButton" data-testid="changes" type="button">
+          ${renderUiIcon("changes")}
+          <span>${copy.changes}</span>
+        </button>
         <button class="nav-button" type="button" data-command="/doctor">
           ${renderUiIcon("diagnostics")}
           <span>${copy.diagnostics}</span>
@@ -627,6 +691,7 @@ export function renderWebUiPage(language: WebUiLanguage): string {
       </div>
       <div class="inspector-tabs" role="tablist">
         <button class="inspector-tab is-active" id="activityTab" type="button" role="tab" aria-selected="true" aria-controls="activityPanel">${copy.activity}</button>
+        <button class="inspector-tab" id="changesTab" type="button" role="tab" aria-selected="false" aria-controls="changesPanel" tabindex="-1">${copy.changes}</button>
         <button class="inspector-tab" id="settingsTab" type="button" role="tab" aria-selected="false" aria-controls="settingsPanel" tabindex="-1">${copy.settings}</button>
       </div>
 
@@ -644,6 +709,10 @@ export function renderWebUiPage(language: WebUiLanguage): string {
             <div class="section-heading"><h3>${copy.projectMemory}</h3><span id="memoryCount">0</span></div>
             <div class="review-list" id="memoryReview"><p class="review-empty">${copy.noMemory}</p></div>
           </section>
+          <section class="detail-section">
+            <div class="section-heading"><h3>${copy.toolCalls}</h3><span id="toolHistoryCount">0</span></div>
+            <div class="tool-history-list" id="toolHistory"><p class="review-empty">${copy.noActivity}</p></div>
+          </section>
           <section class="detail-section activity-section">
             <div class="section-heading"><h3>${copy.activity}</h3><button class="text-button" id="clearActivity" type="button">${copy.clearActivity}</button></div>
             <div class="activity-list" id="events">
@@ -654,6 +723,22 @@ export function renderWebUiPage(language: WebUiLanguage): string {
             <summary>${copy.promptCache}<span id="cacheSummary">—</span></summary>
             <pre id="cache">—</pre>
           </details>
+        </section>
+
+        <section class="tab-panel" id="changesPanel" role="tabpanel" aria-labelledby="changesTab" hidden>
+          <section class="detail-section changes-summary-section">
+            <div class="section-heading"><h3>${copy.changedFiles}</h3><span id="changeCount">0</span></div>
+            <div class="changes-list" id="changesList" data-testid="changes-list"><p class="review-empty">${copy.noChanges}</p></div>
+          </section>
+          <section class="detail-section">
+            <div class="section-heading"><h3>${copy.checkpoints}</h3><span id="checkpointCount">0</span></div>
+            <div class="checkpoint-list" id="checkpointList"><p class="review-empty">—</p></div>
+          </section>
+          <section class="detail-section">
+            <div class="section-heading"><h3>${copy.verification}</h3><span id="verificationCount">0</span></div>
+            <div class="verification-list" id="verificationList"><p class="review-empty">—</p></div>
+          </section>
+          <button class="secondary-button export-trace-button" id="exportTraceButton" type="button">${copy.exportTrace}</button>
         </section>
 
         <section class="tab-panel" id="settingsPanel" role="tabpanel" aria-labelledby="settingsTab" hidden>

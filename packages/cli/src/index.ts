@@ -13,7 +13,17 @@ import { runTraceExport } from "./commands/trace.js";
 import { runEval } from "./commands/eval.js";
 import { runClean } from "./commands/clean.js";
 import { runUpdate } from "./commands/update.js";
-import { validateExtension } from "./commands/extension.js";
+import {
+  runBackupCreate,
+  runBackupInspect,
+  runBackupRestore,
+} from "./commands/backup.js";
+import {
+  installExtension,
+  listExtensions,
+  removeExtension,
+  validateExtension,
+} from "./commands/extension.js";
 import { readCliVersion } from "./runtime/CliVersion.js";
 import { existsSync, realpathSync, statSync } from "fs";
 import { resolve } from "path";
@@ -81,6 +91,32 @@ program
   });
 
 program
+  .command("extension-install")
+  .description("install or update a validated local Orbit extension")
+  .argument("<manifest>", "YAML or JSON manifest inside the workspace")
+  .option(
+    "--trust",
+    "approve requested process, network, credential, or write access",
+  )
+  .action((manifest, options) => {
+    installExtension(process.cwd(), manifest, { trust: !!options.trust });
+  });
+
+program
+  .command("extension-list")
+  .description("list installed Orbit extensions")
+  .option("--json", "print the extension registry as JSON")
+  .action((options) => listExtensions({ json: !!options.json }));
+
+program
+  .command("extension-remove")
+  .description(
+    "remove an installed Orbit extension and its prompt contributions",
+  )
+  .argument("<id>", "extension ID")
+  .action((id) => removeExtension(id));
+
+program
   .command("clean")
   .description("preview and remove Orbit-owned user or project data")
   .option("--user", "include user data under ~/.orbit")
@@ -100,6 +136,44 @@ program
       json: !!options.json,
     });
   });
+
+const backupCommand = program
+  .command("backup")
+  .description("create, inspect, or safely restore portable project data");
+
+backupCommand
+  .command("create")
+  .description(
+    "back up durable .orbit project data without caches or credentials",
+  )
+  .option("-o, --output <file>", "backup output path")
+  .option("--json", "print a machine-readable summary")
+  .action((options) => {
+    runBackupCreate(process.cwd(), {
+      output: options.output,
+      json: !!options.json,
+    });
+  });
+
+backupCommand
+  .command("inspect")
+  .description("validate and summarize an Orbit project backup")
+  .argument("<file>", "backup file")
+  .option("--json", "print a machine-readable summary")
+  .action((file, options) => runBackupInspect(file, { json: !!options.json }));
+
+backupCommand
+  .command("restore")
+  .description("restore a validated backup into the current project")
+  .argument("<file>", "backup file")
+  .option("--force", "replace existing durable project data")
+  .option("--json", "print a machine-readable result")
+  .action((file, options) =>
+    runBackupRestore(process.cwd(), file, {
+      force: !!options.force,
+      json: !!options.json,
+    }),
+  );
 
 program
   .command("update")

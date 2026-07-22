@@ -36,6 +36,12 @@ export interface OrbitMessage {
 
 export type OrbitContentBlock =
   | { type: "text"; text: string }
+  | {
+      type: "image";
+      mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+      data: string;
+      name?: string;
+    }
   | { type: "tool_call"; toolCall: OrbitToolCall }
   | { type: "tool_result"; toolResult: OrbitToolResult }
   | { type: "thinking"; text: string; signature?: string };

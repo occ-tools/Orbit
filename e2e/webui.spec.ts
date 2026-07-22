@@ -32,6 +32,18 @@ test.beforeEach(async () => {
       getSessions: () => [],
       getRelevantFiles: () => [],
       getSessionId: () => "e2e-session",
+      getSessionReview: () => ({
+        fileChanges: [
+          {
+            id: "e2e-change",
+            path: "src/index.ts",
+            diff: "@@ -1 +1 @@\n-old\n+new",
+            createdAt: "2026-07-22T00:00:00.000Z",
+          },
+        ],
+        checkpoints: [],
+        verification: [],
+      }),
     },
     submitPrompt: async (prompt) => {
       submittedPrompts.push(prompt);
@@ -100,4 +112,27 @@ test("creates chats and remains responsive without horizontal overflow", async (
       )
       .toBe(true);
   }
+});
+
+test("reviews changes and stages image attachments without layout regressions", async ({
+  page,
+}) => {
+  await page.goto(handle.url);
+  await page.getByTestId("changes").click();
+  await expect(page.getByTestId("changes-list")).toContainText("src/index.ts");
+  await expect(page.getByTestId("changes-list")).toContainText("+new");
+
+  await page.getByTestId("attachment-input").setInputFiles({
+    name: "screen.png",
+    mimeType: "image/png",
+    buffer: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+  });
+  await expect(page.locator(".attachment-card")).toContainText("screen.png");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    )
+    .toBe(true);
 });

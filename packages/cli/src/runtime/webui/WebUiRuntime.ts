@@ -8,6 +8,7 @@ import {
 import {
   type ActiveWebTurn,
   type WebUiHandle,
+  type WebUiImageAttachment,
   type WebUiOptions,
 } from "./WebUiContracts.js";
 import { WEB_UI_CLIENT_SCRIPT } from "./WebUiClient.js";
@@ -21,6 +22,7 @@ import {
 import { WebUiEventStream } from "./WebUiEventStream.js";
 import {
   bootstrapWebSession,
+  readBinaryBody,
   readJsonBody,
   sendAsset,
   sendHtml,
@@ -49,6 +51,7 @@ const ChatRequestSchema = z
   .object({
     prompt: z.string().trim().min(1).max(100_000),
     turnId: WebTurnIdSchema.optional(),
+    attachmentIds: z.array(WebTurnIdSchema).max(4).optional(),
   })
   .strict();
 const CancelRequestSchema = z
@@ -108,7 +111,34 @@ const ProjectActionSchema = z.discriminatedUnion("action", [
     })
     .strict(),
 ]);
+const ReviewActionSchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("rollback-file"),
+      path: z.string().trim().min(1).max(4096),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("rewind"),
+      checkpointId: z
+        .string()
+        .trim()
+        .min(1)
+        .max(200)
+        .regex(/^[a-zA-Z0-9_-]+$/),
+    })
+    .strict(),
+]);
 const CompletionQuerySchema = z.string().trim().max(200);
+const IMAGE_ATTACHMENT_LIMIT_BYTES = 5 * 1024 * 1024;
+const IMAGE_ATTACHMENT_STORE_LIMIT = 16;
+const ALLOWED_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
 
 type RuntimeState = "idle" | "starting" | "running" | "stopping" | "stopped";
 
@@ -155,6 +185,7 @@ export class OrbitWebUiRuntime {
   private completionCandidatesPromise:
     | Promise<AutocompleteCandidates>
     | undefined;
+  private readonly attachments = new Map<string, WebUiImageAttachment>();
 
   public constructor(options: WebUiOptions) {
     this.options = options;
@@ -266,6 +297,7 @@ export class OrbitWebUiRuntime {
     this.state = "stopping";
     this.events.stop();
     this.activeTurn = undefined;
+    this.attachments.clear();
     this.token = undefined;
     this.handle = undefined;
     const server = this.server;
@@ -337,8 +369,11 @@ export class OrbitWebUiRuntime {
       sendJson(res, 401, { error: "Unauthorized." });
       return;
     }
+    const isAttachmentUpload =
+      req.method === "POST" && url.pathname === "/api/attachment";
     if (
       req.method === "POST" &&
+      !isAttachmentUpload &&
       !req.headers["content-type"]?.startsWith("application/json")
     ) {
       sendJson(res, 415, { error: "Content-Type must be application/json." });
@@ -354,6 +389,25 @@ export class OrbitWebUiRuntime {
     }
     if (req.method === "GET" && url.pathname === "/api/settings") {
       sendJson(res, 200, collectWebUiSettings(options));
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/trace") {
+      if (!options.exportTrace) {
+        sendJson(res, 409, {
+          ok: false,
+          message: "Trace export is not available.",
+        });
+        return;
+      }
+      try {
+        const includeHistory = url.searchParams.get("history") !== "0";
+        sendJson(res, 200, options.exportTrace(includeHistory));
+      } catch (error: unknown) {
+        sendJson(res, webRequestErrorStatus(error), {
+          ok: false,
+          message: safeWebMessage(error),
+        });
+      }
       return;
     }
     if (req.method === "GET" && url.pathname === "/api/completions") {
@@ -379,6 +433,20 @@ export class OrbitWebUiRuntime {
       });
       return;
     }
+    if (isAttachmentUpload) {
+      await this.handleAttachmentUpload(req, res, url);
+      return;
+    }
+    if (req.method === "DELETE" && url.pathname === "/api/attachment") {
+      const id = WebTurnIdSchema.safeParse(url.searchParams.get("id") || "");
+      if (!id.success) {
+        sendJson(res, 400, { ok: false, message: "Invalid attachment ID." });
+        return;
+      }
+      this.attachments.delete(id.data);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
     if (isEventStream) {
       this.events.attach(req, res);
       return;
@@ -399,6 +467,10 @@ export class OrbitWebUiRuntime {
       await this.handleProject(req, res, options);
       return;
     }
+    if (req.method === "POST" && url.pathname === "/api/review") {
+      await this.handleReview(req, res, options);
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/cancel") {
       await this.handleCancel(req, res, options);
       return;
@@ -408,6 +480,108 @@ export class OrbitWebUiRuntime {
       return;
     }
     sendJson(res, 404, { error: "Not found" });
+  }
+
+  private async handleAttachmentUpload(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+  ): Promise<void> {
+    try {
+      if (this.attachments.size >= 12) {
+        sendJson(res, 409, {
+          ok: false,
+          message: "Remove an attachment before adding another one.",
+        });
+        return;
+      }
+      const mediaType = String(req.headers["content-type"] || "")
+        .split(";", 1)[0]
+        .trim()
+        .toLowerCase();
+      if (!ALLOWED_IMAGE_TYPES.has(mediaType)) {
+        sendJson(res, 415, {
+          ok: false,
+          message: "Use a PNG, JPEG, GIF, or WebP image.",
+        });
+        return;
+      }
+      if (this.attachments.size >= IMAGE_ATTACHMENT_STORE_LIMIT) {
+        sendJson(res, 429, {
+          ok: false,
+          message:
+            "Too many pending attachments. Remove an image or retry later.",
+        });
+        return;
+      }
+      const body = await readBinaryBody(req, IMAGE_ATTACHMENT_LIMIT_BYTES);
+      if (body.length === 0) {
+        sendJson(res, 400, { ok: false, message: "Attachment is empty." });
+        return;
+      }
+      if (!matchesImageSignature(mediaType, body)) {
+        sendJson(res, 415, {
+          ok: false,
+          message: "The uploaded bytes do not match the declared image type.",
+        });
+        return;
+      }
+      const id = `att_${randomUUID().replace(/-/g, "")}`;
+      const rawName = url.searchParams.get("name") || "image";
+      const name =
+        rawName
+          .replace(/[\u0000-\u001f\u007f\\/]/g, "_")
+          .trim()
+          .slice(0, 255) || "image";
+      const attachment: WebUiImageAttachment = {
+        id,
+        name,
+        mediaType: mediaType as WebUiImageAttachment["mediaType"],
+        data: body.toString("base64"),
+        size: body.length,
+      };
+      this.attachments.set(id, attachment);
+      sendJson(res, 201, {
+        ok: true,
+        attachment: { id, name, mediaType, size: body.length },
+      });
+    } catch (error: unknown) {
+      sendJson(res, webRequestErrorStatus(error), {
+        ok: false,
+        message: safeWebMessage(error),
+      });
+    }
+  }
+
+  private async handleReview(
+    req: IncomingMessage,
+    res: ServerResponse,
+    options: WebUiOptions,
+  ): Promise<void> {
+    if (!options.updateReview) {
+      sendJson(res, 409, {
+        ok: false,
+        message: "Change review actions are not available.",
+      });
+      return;
+    }
+    if (this.activeTurn) {
+      sendJson(res, 409, {
+        ok: false,
+        message: "Wait for the active task to finish before restoring files.",
+      });
+      return;
+    }
+    try {
+      const action = ReviewActionSchema.parse(await readJsonBody(req));
+      const result = sanitizeActionResult(await options.updateReview(action));
+      sendJson(res, result.ok ? 200 : 409, result);
+    } catch (error: unknown) {
+      sendJson(res, webRequestErrorStatus(error), {
+        ok: false,
+        message: safeWebMessage(error),
+      });
+    }
   }
 
   private async handleApproval(
@@ -523,6 +697,12 @@ export class OrbitWebUiRuntime {
         startedAt: new Date().toISOString(),
         cancelRequested: false,
       };
+      const attachments = (body.attachmentIds || []).map((id) => {
+        const attachment = this.attachments.get(id);
+        if (!attachment)
+          throw new Error(`Attachment is no longer available: ${id}`);
+        return attachment;
+      });
       this.activeTurn = turn;
       this.events.broadcast({
         kind: "turn_started",
@@ -531,7 +711,7 @@ export class OrbitWebUiRuntime {
         startedAt: turn.startedAt,
       });
       sendJson(res, 202, { ok: true, turnId: turn.id });
-      void this.runWebTurn(options, turn, body.prompt);
+      void this.runWebTurn(options, turn, body.prompt, attachments);
     } catch (error) {
       sendJson(res, webRequestErrorStatus(error), {
         ok: false,
@@ -544,11 +724,12 @@ export class OrbitWebUiRuntime {
     options: WebUiOptions,
     turn: ActiveWebTurn,
     prompt: string,
+    attachments: WebUiImageAttachment[] = [],
   ): Promise<void> {
     let status: "completed" | "failed" | "aborted" = "completed";
     let message: string | undefined;
     try {
-      const result = await options.submitPrompt?.(prompt);
+      const result = await options.submitPrompt?.(prompt, attachments);
       if (turn.cancelRequested) {
         status = "aborted";
       } else if (!result?.ok) {
@@ -561,6 +742,8 @@ export class OrbitWebUiRuntime {
       status = turn.cancelRequested ? "aborted" : "failed";
       message = safeWebMessage(error);
     } finally {
+      for (const attachment of attachments)
+        this.attachments.delete(attachment.id);
       if (this.activeTurn === turn) this.activeTurn = undefined;
       this.events.broadcast({
         kind: "turn_done",
@@ -682,4 +865,33 @@ export class OrbitWebUiRuntime {
       });
     }
   }
+}
+
+function matchesImageSignature(mediaType: string, body: Buffer): boolean {
+  if (mediaType === "image/png") {
+    return (
+      body.length >= 8 &&
+      body.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    );
+  }
+  if (mediaType === "image/jpeg") {
+    return (
+      body.length >= 3 &&
+      body[0] === 0xff &&
+      body[1] === 0xd8 &&
+      body[2] === 0xff
+    );
+  }
+  if (mediaType === "image/gif") {
+    return (
+      body.length >= 6 &&
+      ["GIF87a", "GIF89a"].includes(body.subarray(0, 6).toString("ascii"))
+    );
+  }
+  return (
+    mediaType === "image/webp" &&
+    body.length >= 12 &&
+    body.subarray(0, 4).toString("ascii") === "RIFF" &&
+    body.subarray(8, 12).toString("ascii") === "WEBP"
+  );
 }

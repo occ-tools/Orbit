@@ -183,13 +183,29 @@ describe("SessionStore file logging", () => {
         id: "msg-user",
         role: "user" as const,
         createdAt: "2026-07-13T00:00:01.000Z",
-        content: [{ type: "text" as const, text: "hello" }],
+        content: [
+          { type: "text" as const, text: "hello" },
+          {
+            type: "image" as const,
+            mediaType: "image/png" as const,
+            name: "screen.png",
+            data: "aW1hZ2U=",
+          },
+        ],
       },
     ];
 
     store.saveHistory(session.id, history);
 
     expect(store.getHistory(session.id)).toEqual(history);
+    expect(
+      store.exportTrace(session.id, { includeHistory: true }).history?.[1]
+        ?.content[1],
+    ).toMatchObject({
+      type: "image",
+      name: "screen.png",
+      data: "[IMAGE OMITTED: screen.png]",
+    });
     const updatedHistory = [
       ...history,
       {

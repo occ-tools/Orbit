@@ -6,6 +6,7 @@ import { sanitizeWebEventPayload } from "./WebUiSecurity.js";
 
 const WEB_UI_SSE_HEARTBEAT_MS = 15_000;
 const WEB_UI_MAX_SSE_CLIENTS = 8;
+const WEB_UI_EVENT_REPLAY_LIMIT = 256;
 
 type WebUiTurnContext = Pick<ActiveWebTurn, "id" | "sessionId">;
 
@@ -20,6 +21,8 @@ export class WebUiEventStream {
     ReturnType<typeof setInterval>
   >();
   private readonly getActiveTurn: () => WebUiTurnContext | undefined;
+  private readonly replayBuffer: Array<{ id: number; event: unknown }> = [];
+  private nextEventId = 1;
   private state: "idle" | "started" | "stopped" = "idle";
   private readonly eventBridge = (event: OrbitEventEnvelope): void => {
     const payload = sanitizeWebEventPayload(event.type, event.payload);
@@ -92,6 +95,12 @@ export class WebUiEventStream {
     res.write(
       `data: ${JSON.stringify({ kind: "system", message: "connected" })}\n\n`,
     );
+    const lastEventId = parseLastEventId(req.headers?.["last-event-id"]);
+    if (lastEventId !== undefined) {
+      for (const entry of this.replayBuffer) {
+        if (entry.id > lastEventId) res.write(formatSseEvent(entry));
+      }
+    }
 
     const heartbeat = setInterval(() => {
       if (res.destroyed) {
@@ -123,7 +132,15 @@ export class WebUiEventStream {
   /** Publish an event only to clients owned by this running stream. */
   public broadcast(event: unknown): void {
     if (this.state !== "started") return;
-    const line = `data: ${JSON.stringify(event)}\n\n`;
+    const entry = { id: this.nextEventId++, event };
+    this.replayBuffer.push(entry);
+    if (this.replayBuffer.length > WEB_UI_EVENT_REPLAY_LIMIT) {
+      this.replayBuffer.splice(
+        0,
+        this.replayBuffer.length - WEB_UI_EVENT_REPLAY_LIMIT,
+      );
+    }
+    const line = formatSseEvent(entry);
     for (const client of [...this.clients.keys()]) {
       if (client.destroyed) {
         this.removeClient(client, false);
@@ -143,4 +160,17 @@ export class WebUiEventStream {
     this.clients.delete(client);
     if (destroy && !client.destroyed) client.destroy();
   }
+}
+
+function parseLastEventId(
+  value: string | string[] | undefined,
+): number | undefined {
+  const text = Array.isArray(value) ? value[0] : value;
+  if (!text || !/^\d+$/.test(text)) return undefined;
+  const parsed = Number(text);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function formatSseEvent(entry: { id: number; event: unknown }): string {
+  return `id: ${entry.id}\ndata: ${JSON.stringify(entry.event)}\n\n`;
 }

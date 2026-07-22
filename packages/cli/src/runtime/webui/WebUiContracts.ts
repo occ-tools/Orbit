@@ -1,5 +1,13 @@
 import type { OrbitConfig } from "@orbit-build/config";
 
+export interface WebUiImageAttachment {
+  id: string;
+  name: string;
+  mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  data: string;
+  size: number;
+}
+
 /** Read-only AgentLoop surface exposed to the local Web UI. */
 export interface WebUiLoopSnapshot {
   getSessionId?: () => string;
@@ -32,6 +40,18 @@ export interface WebUiLoopSnapshot {
         resumedCount: number;
       }
     | undefined;
+  getRecoveryReport?: () =>
+    | {
+        sessionId: string;
+        previousState: string;
+        previousPhase: string;
+        attempt: number;
+        recoveryCount: number;
+        repairedToolCalls: number;
+        resetPlanItems: number;
+        recoveredAt: string;
+      }
+    | undefined;
   getSessions?: () => unknown[];
   getRelevantFiles?: () => Array<{
     path: string;
@@ -51,6 +71,34 @@ export interface WebUiLoopSnapshot {
     compactAtTokens: number;
     estimatedHistoryTokens: number;
     utilization: number;
+  };
+  getSessionReview?: () => {
+    fileChanges: Array<{
+      id: string;
+      path: string;
+      diff: string;
+      createdAt: string;
+    }>;
+    toolCalls?: Array<{
+      id: string;
+      toolName: string;
+      risk: string;
+      permissionDecision: string;
+      status: "pending" | "success" | "failed" | "denied";
+      startedAt: string;
+      endedAt?: string;
+    }>;
+    checkpoints: Array<{
+      id: string;
+      timestamp: string;
+      toolCallId: string;
+      files: string[];
+    }>;
+    verification: Array<{
+      timestamp: string;
+      success?: boolean;
+      detail?: string;
+    }>;
   };
 }
 
@@ -77,6 +125,11 @@ export type WebUiProjectAction =
   | { action: "pick" }
   | { action: "open" | "create"; path: string }
   | { action: "remove"; projectId: string };
+
+/** A reversible review action initiated from the browser changes surface. */
+export type WebUiReviewAction =
+  | { action: "rollback-file"; path: string }
+  | { action: "rewind"; checkpointId: string };
 
 /** Result of a project action, including a path selected by the OS picker. */
 export interface WebUiProjectActionResult {
@@ -117,7 +170,10 @@ export interface WebUiOptions {
     lastOpenedAt: string;
     available: boolean;
   }>;
-  submitPrompt?: (prompt: string) => Promise<{ ok: boolean; message?: string }>;
+  submitPrompt?: (
+    prompt: string,
+    attachments?: WebUiImageAttachment[],
+  ) => Promise<{ ok: boolean; message?: string }>;
   cancelPrompt?: () =>
     | { ok: boolean; message?: string }
     | Promise<{ ok: boolean; message?: string }>;
@@ -130,6 +186,10 @@ export interface WebUiOptions {
   openProject?: (
     action: WebUiProjectAction,
   ) => Promise<WebUiProjectActionResult>;
+  updateReview?: (
+    action: WebUiReviewAction,
+  ) => Promise<{ ok: boolean; message?: string }>;
+  exportTrace?: (includeHistory: boolean) => unknown;
   getPendingApproval?: () => WebUiApprovalSnapshot | undefined;
   respondToApproval?: (
     decision: WebUiApprovalDecision,

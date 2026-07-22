@@ -6,6 +6,58 @@ called out explicitly.
 
 ## Unreleased
 
+## 0.1.11 - 2026-07-22
+
+### Added
+
+- Added authenticated Web UI image input, queued follow-ups, reconnect replay,
+  bounded activity history, and changes review with rollback, rewind, and
+  redacted trace export.
+- Added Streamable HTTP MCP with bounded JSON/SSE handling, session lifecycle,
+  bearer and OAuth client-credentials authentication, plus trusted extension
+  install/list/remove and administrator-managed policy enforcement.
+- Added `orbit backup create|inspect|restore` with a versioned, size-bounded,
+  credential-free project bundle and per-file SHA-256 integrity validation.
+
+### Changed
+
+- Hardened accepted-prompt durability and crash recovery. Resumed sessions seal
+  incomplete tool protocol without replaying side effects, reset interrupted
+  plan work safely, and expose one concise recovery report.
+- Persisted tool start/end timing, risk, approval decision, and result status;
+  the Web UI shows safe metadata while keeping raw tool inputs and output out of
+  its activity summary.
+- Extended provider capability overrides and DeepSeek V4 tool-stream handling
+  while preserving model-aware context limits and mid-chat continuity.
+
+### Fixed
+
+- Prevented stale Web UI tabs from losing bounded events during short reconnects
+  and tightened upload, extension, MCP, policy, and audit serialization limits.
+- Made session metadata and history writes more durable across interrupted
+  replacement, including parent-directory synchronization where supported.
+
+No configuration migration is required from 0.1.10. Existing project data stays
+compatible; project backups use schema version 1.
+
+## 0.1.10 - 2026-07-21
+
+### Added
+
+- Added a guarded cross-platform source installer that rebuilds and repairs the
+  global `orbit` command without replacing the npm executable with a wrapper.
+- Added explicit installed-versus-running version state so `/update`, the TUI
+  cat heart, and Web UI describe the same required restart.
+
+### Changed
+
+- Reorganized the repository and npm READMEs into a short product overview,
+  task-oriented user guide, and maintainer ownership guide.
+- Strengthened update verification and rollback while keeping startup checks
+  non-blocking and install-free.
+
+No configuration migration is required from 0.1.9.
+
 ## 0.1.9 - 2026-07-19
 
 ### Added

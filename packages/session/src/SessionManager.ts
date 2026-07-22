@@ -1,10 +1,11 @@
 import { SessionStore } from "./SessionStore.js";
 import { serializeAuditValue } from "./auditSerialization.js";
-import { TaskPlanSchema } from "./types.js";
+import { SessionRecoveryReportSchema, TaskPlanSchema } from "./types.js";
 import type {
   RunJournal,
   Session,
   SessionMetrics,
+  SessionRecoveryReport,
   StoredHistoryMessage,
   TaskPlan,
   TaskPlanItem,
@@ -32,12 +33,14 @@ function getToolCallId(input: unknown): string {
 export class SessionManager {
   private store: SessionStore;
   private currentSession?: Session;
+  private recoveryReport?: SessionRecoveryReport;
 
   constructor(cwd: string, sessionRootPath = ".orbit/sessions") {
     this.store = new SessionStore(cwd, sessionRootPath);
   }
 
   public startNewSession(provider: string, model: string): Session {
+    this.recoveryReport = undefined;
     this.currentSession = this.store.createSession(provider, model);
     this.logEvent("session_start", { provider, model });
     return this.currentSession;
@@ -45,6 +48,7 @@ export class SessionManager {
 
   public resumeSession(id: string): Session | undefined {
     const session = this.store.getSession(id);
+    this.recoveryReport = undefined;
     if (session) {
       this.currentSession = { ...session, status: "active" };
       this.store.updateSession(this.currentSession);
@@ -54,15 +58,34 @@ export class SessionManager {
         previousRun?.state === "awaiting_approval" ||
         previousRun?.state === "verifying";
       if (recoverable && previousRun) {
+        const recoveredAt = new Date().toISOString();
+        const repairedToolCalls = this.repairInterruptedToolCalls(recoveredAt);
+        const resetPlanItems = this.resetInterruptedPlanItems(recoveredAt);
+        const recoveryCount = previousRun.recoveryCount + 1;
         this.store.saveRunJournal(id, {
           ...previousRun,
           state: "interrupted",
           phase: `Recovered after interruption during ${previousRun.phase}`,
-          updatedAt: new Date().toISOString(),
-          recoveryCount: previousRun.recoveryCount + 1,
+          activeToolCallId: undefined,
+          updatedAt: recoveredAt,
+          recoveryCount,
+        });
+        this.recoveryReport = SessionRecoveryReportSchema.parse({
+          sessionId: id,
+          previousState: previousRun.state,
+          previousPhase: previousRun.phase,
+          attempt: previousRun.attempt,
+          recoveryCount,
+          repairedToolCalls,
+          resetPlanItems,
+          recoveredAt,
         });
       }
-      this.logEvent("session_resume", { id, recoverable });
+      this.logEvent("session_resume", {
+        id,
+        recoverable,
+        recovery: this.recoveryReport || null,
+      });
     }
     return this.currentSession;
   }
@@ -127,6 +150,7 @@ export class SessionManager {
     risk: string,
     decision: string,
     status: "success" | "failed" | "denied",
+    timing: { startedAt?: string; endedAt?: string } = {},
   ): void {
     if (!this.currentSession) return;
 
@@ -139,6 +163,8 @@ export class SessionManager {
       risk,
       permissionDecision: decision,
       status,
+      startedAt: timing.startedAt,
+      endedAt: timing.endedAt || new Date().toISOString(),
     });
 
     this.logEvent("tool_execution", { toolName, status });
@@ -207,6 +233,11 @@ export class SessionManager {
     return this.store.getMetrics(this.currentSession.id);
   }
 
+  public getToolCalls() {
+    if (!this.currentSession) return [];
+    return this.store.getToolCalls(this.currentSession.id);
+  }
+
   /** Update the durable execution journal used for crash recovery and trace export. */
   public setRunState(
     state: RunJournal["state"],
@@ -216,6 +247,13 @@ export class SessionManager {
     if (!this.currentSession) return undefined;
     const previous = this.store.getRunJournal(this.currentSession.id);
     const now = new Date().toISOString();
+    const startsNewRun =
+      state === "running" &&
+      phase === "initializing" &&
+      (!previous ||
+        ["completed", "failed", "aborted", "interrupted"].includes(
+          previous.state,
+        ));
     return this.store.saveRunJournal(this.currentSession.id, {
       schemaVersion: 1,
       sessionId: this.currentSession.id,
@@ -223,7 +261,7 @@ export class SessionManager {
       phase,
       attempt: options.attempt ?? previous?.attempt ?? 0,
       activeToolCallId: options.activeToolCallId,
-      startedAt: previous?.startedAt || now,
+      startedAt: startsNewRun ? now : previous?.startedAt || now,
       updatedAt: now,
       recoveryCount: previous?.recoveryCount || 0,
     });
@@ -232,5 +270,65 @@ export class SessionManager {
   public getRunJournal(): RunJournal | undefined {
     if (!this.currentSession) return undefined;
     return this.store.getRunJournal(this.currentSession.id);
+  }
+
+  /** Describe conservative repairs made while resuming an interrupted run. */
+  public getRecoveryReport(): SessionRecoveryReport | undefined {
+    return this.recoveryReport;
+  }
+
+  private repairInterruptedToolCalls(recoveredAt: string): number {
+    const history = this.getHistory();
+    const completedToolCallIds = new Set<string>();
+    const unresolved = new Map<string, string>();
+
+    for (const message of history) {
+      for (const block of message.content) {
+        if (block.type === "tool_result") {
+          completedToolCallIds.add(block.toolResult.toolCallId);
+          unresolved.delete(block.toolResult.toolCallId);
+        } else if (
+          block.type === "tool_call" &&
+          !completedToolCallIds.has(block.toolCall.id)
+        ) {
+          unresolved.set(block.toolCall.id, block.toolCall.name);
+        }
+      }
+    }
+
+    if (unresolved.size === 0) return 0;
+    history.push({
+      id: `msg_recovery_${Date.parse(recoveredAt)}`,
+      role: "tool",
+      createdAt: recoveredAt,
+      content: Array.from(unresolved, ([toolCallId, name]) => ({
+        type: "tool_result" as const,
+        toolResult: {
+          toolCallId,
+          name,
+          content:
+            "Orbit was interrupted before this tool result was durably recorded. The tool was not replayed because it may have had side effects. Inspect the workspace before retrying.",
+          isError: true,
+        },
+      })),
+      metadata: { kind: "crash_recovery" },
+    });
+    this.saveHistory(history);
+    return unresolved.size;
+  }
+
+  private resetInterruptedPlanItems(recoveredAt: string): number {
+    const plan = this.getTaskPlan();
+    if (!plan) return 0;
+    let resetPlanItems = 0;
+    const items = plan.items.map((item) => {
+      if (item.status !== "in_progress") return item;
+      resetPlanItems++;
+      return { ...item, status: "pending" as const, updatedAt: recoveredAt };
+    });
+    if (resetPlanItems > 0) {
+      this.store.saveTaskPlan(this.currentSession!.id, { ...plan, items });
+    }
+    return resetPlanItems;
   }
 }

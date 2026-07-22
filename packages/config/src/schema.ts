@@ -69,11 +69,24 @@ export const ProviderConfigSchema = z.object({
   modelCapabilities: z.record(ModelCapabilitiesConfigSchema).optional(),
 });
 
-export const McpServerConfigSchema = z.object({
-  command: z.string(),
+export const McpServerConfigBaseSchema = z.object({
+  transport: z.enum(["stdio", "streamable-http"]).default("stdio"),
+  command: z.string().min(1).optional(),
   args: z.array(z.string()).default([]),
   env: z.record(z.string()).optional(),
   inheritEnv: z.array(z.string()).default([]),
+  url: z.string().url().optional(),
+  headers: z.record(z.string()).default({}),
+  bearerTokenEnv: z.string().min(1).max(200).optional(),
+  oauth: z
+    .object({
+      tokenUrl: z.string().url(),
+      clientIdEnv: z.string().min(1).max(200),
+      clientSecretEnv: z.string().min(1).max(200),
+      scope: z.string().max(1000).optional(),
+      audience: z.string().max(1000).optional(),
+    })
+    .optional(),
   tools: z
     .record(
       z.object({
@@ -84,6 +97,25 @@ export const McpServerConfigSchema = z.object({
     )
     .default({}),
 });
+
+export const McpServerConfigSchema = McpServerConfigBaseSchema.superRefine(
+  (value, context) => {
+    if (value.transport === "stdio" && !value.command) {
+      context.addIssue({
+        code: "custom",
+        path: ["command"],
+        message: "stdio MCP servers require a command.",
+      });
+    }
+    if (value.transport === "streamable-http" && !value.url) {
+      context.addIssue({
+        code: "custom",
+        path: ["url"],
+        message: "streamable-http MCP servers require a URL.",
+      });
+    }
+  },
+);
 
 export const ModelPriceSchema = z.object({
   inputCostPer1M: z.number().finite().nonnegative().default(0),
@@ -245,6 +277,7 @@ export const ConfigSchema = z.object({
           ".agents/skills",
           ".claude/skills",
           "~/.claude/skills",
+          "~/.orbit/skills",
         ]),
       activation: z.enum(["explicit", "auto"]).default("auto"),
       maxActive: z.number().int().min(0).max(8).default(3),
@@ -253,6 +286,17 @@ export const ConfigSchema = z.object({
     })
     .default({}),
   mcpServers: z.record(McpServerConfigSchema).default({}),
+  managedPolicy: z
+    .object({
+      allowedProviders: z.array(z.string()).optional(),
+      allowedModels: z.array(z.string()).optional(),
+      minimumPermissionMode: z
+        .enum(["auto", "normal", "strict", "plan"])
+        .optional(),
+      disableWebSearch: z.boolean().default(false),
+      disableMcp: z.boolean().default(false),
+    })
+    .optional(),
   hooks: z
     .object({
       preEdit: z.string().optional(),

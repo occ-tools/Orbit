@@ -16,15 +16,15 @@ const MCP_REQUEST_TIMEOUT_MS = 30_000;
 const MCP_STDIO_LINE_LIMIT_BYTES = 8 * 1024 * 1024;
 const MCP_STDERR_LIMIT_CHARS = 4_000;
 
-const MCPToolDefinitionSchema = z.object({
+export const MCPToolDefinitionSchema = z.object({
   name: z.string().min(1).max(512),
   description: z.string().max(10_000).default(""),
   inputSchema: z.record(z.unknown()).default({}),
 });
-const MCPToolsListSchema = z.object({
+export const MCPToolsListSchema = z.object({
   tools: z.array(MCPToolDefinitionSchema).max(10_000).default([]),
 });
-const MCPToolCallResultSchema = z
+export const MCPToolCallResultSchema = z
   .object({
     content: z
       .array(

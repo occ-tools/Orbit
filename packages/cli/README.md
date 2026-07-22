@@ -35,6 +35,11 @@ maps to one codebase folder and can contain multiple persisted chats. Type `/`
 in either interface for the shared command catalog; use `/goal`, `/plan`,
 `/model`, `/compact`, `/timeline`, `/rewind`, and `/rollback` for durable work.
 
+Accepted prompts are persisted before provider work starts. After an unexpected
+shutdown, Orbit resumes conservatively without silently replaying unfinished
+side-effecting tools. The Web UI Activity view exposes bounded tool timing,
+risk, approval, and completion metadata without publishing raw inputs or output.
+
 ## Providers and continuity
 
 `orbit login` adds, lists, and deletes saved provider profiles. Enter the exact
@@ -51,12 +56,15 @@ Orbit exposes validated file, search, symbol, shell, test, Git, web, fetch, and
 plan tools. Arguments are checked before approval or execution, results are
 bounded and redacted, and connected MCP tools retain their declared schemas.
 
-## Update, cleanup, and uninstall
+## Update, backup, cleanup, and uninstall
 
 ```bash
 orbit update --check
 orbit update                 # confirm interactively
 orbit update --yes           # explicit non-interactive install
+orbit backup create          # chats, memory, commands, skills, and plans
+orbit backup inspect <file>  # validate version, paths, sizes, and SHA-256
+orbit backup restore <file>  # refuses existing files unless --force is used
 orbit clean --project        # preview project-owned runtime data
 orbit clean --user           # preview user-owned runtime data
 npm uninstall --global @orbit-build/cli
@@ -65,6 +73,10 @@ npm uninstall --global @orbit-build/cli
 Orbit never installs an update during startup. Cleanup never removes project
 source, `ORBIT.md`, or `orbit.config.yaml`; deletion requires `DELETE`
 interactively or `--yes` in automation.
+
+Backups are portable, versioned project-data bundles. Credentials, generated
+indexes, caches, evaluations, temporary state, and previous exports are always
+excluded. Restore validates the complete bundle before writing anything.
 
 After an update is installed and verified, restart `orbit` and reopen `/webui`.
 The active TUI and browser server intentionally retain their true running

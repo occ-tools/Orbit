@@ -140,6 +140,7 @@ export const DEFAULT_CONFIG: OrbitConfig = {
       ".agents/skills",
       ".claude/skills",
       "~/.claude/skills",
+      "~/.orbit/skills",
     ],
     activation: "auto",
     maxActive: 3,

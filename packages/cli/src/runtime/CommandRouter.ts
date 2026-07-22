@@ -6,7 +6,10 @@ import {
   UserInteraction,
 } from "@orbit-build/core";
 import { FullscreenTui } from "../tui/FullscreenTui.js";
-import { ConfigSchema } from "@orbit-build/config";
+import {
+  ConfigSchema,
+  validateManagedRuntimeChange,
+} from "@orbit-build/config";
 import { DiffView, Prompt } from "@orbit-build/tui";
 import picocolors from "picocolors";
 import {
@@ -24,6 +27,7 @@ import {
   startOrbitWebUi,
   type WebUiSessionAction,
   type WebUiSettingsPatch,
+  type WebUiImageAttachment,
 } from "./webui/index.js";
 import { WebUiApprovalBroker } from "./webui/WebUiApprovalBroker.js";
 import { ProjectRegistry } from "@orbit-build/session";
@@ -214,10 +218,33 @@ export class CommandRouter {
             port,
             open,
             getProjects: () => new ProjectRegistry().list().slice(0, 20),
-            submitPrompt: (prompt) => this.submitWebPrompt(prompt),
+            submitPrompt: (prompt, attachments) =>
+              this.submitWebPrompt(prompt, attachments),
             cancelPrompt: () => this.cancelWebPrompt(),
             updateSettings: (patch) => this.updateWebUiSettings(patch),
             updateSession: (action) => this.updateWebUiSession(action),
+            updateReview: async (action) => {
+              if (action.action === "rewind") {
+                const ok = await loop.rewindToCheckpoint(action.checkpointId);
+                this.tui.syncFromLoop(loop);
+                return {
+                  ok,
+                  message: ok
+                    ? "Workspace rewound to the selected checkpoint."
+                    : "Orbit could not rewind to that checkpoint.",
+                };
+              }
+              const ok = loop.rollbackFileToCheckpoint(action.path);
+              this.tui.syncFromLoop(loop);
+              return {
+                ok,
+                message: ok
+                  ? `Restored ${action.path}.`
+                  : `No restorable checkpoint was found for ${action.path}.`,
+              };
+            },
+            exportTrace: (includeHistory) =>
+              loop.exportSessionTrace(includeHistory),
             openProject: async (action) => {
               if (action.action === "pick") {
                 const path = await selectOrbitProjectFolder();
@@ -515,6 +542,13 @@ export class CommandRouter {
               return { shouldExit: false, processed: true };
             }
           } else {
+            const violation = validateManagedRuntimeChange(config, {
+              model: finalModel,
+            });
+            if (violation) {
+              this.printOutput(picocolors.red(`✖ ${violation}`));
+              return { shouldExit: false, processed: true };
+            }
             loop.setModelOverride(finalModel);
             this.tui.syncFromLoop(loop);
             this.saveLocalState({ lastModel: finalModel });
@@ -534,6 +568,13 @@ export class CommandRouter {
             ),
           );
           this.saveLocalState({ lastModel: "" });
+          return { shouldExit: false, processed: true };
+        }
+        const violation = validateManagedRuntimeChange(config, {
+          model: modelArg,
+        });
+        if (violation) {
+          this.printOutput(picocolors.red(`✖ ${violation}`));
           return { shouldExit: false, processed: true };
         }
         loop.setModelOverride(modelArg);
@@ -693,6 +734,13 @@ export class CommandRouter {
               { value: "plan", label: modeDescriptions.plan },
             ]);
             if (choice && choice !== currentMode) {
+              const violation = validateManagedRuntimeChange(loop.getConfig(), {
+                permissionMode: choice as "strict" | "normal" | "auto" | "plan",
+              });
+              if (violation) {
+                this.printOutput(picocolors.red(`✖ ${violation}`));
+                return { shouldExit: false, processed: true };
+              }
               loop.getConfig().permissions.mode = choice as any;
               tui.syncFromLoop(loop);
             }
@@ -720,6 +768,13 @@ export class CommandRouter {
           return { shouldExit: false, processed: true };
         }
 
+        const violation = validateManagedRuntimeChange(loop.getConfig(), {
+          permissionMode: targetMode as "strict" | "normal" | "auto" | "plan",
+        });
+        if (violation) {
+          this.printOutput(picocolors.red(`✖ ${violation}`));
+          return { shouldExit: false, processed: true };
+        }
         loop.getConfig().permissions.mode = targetMode as any;
         tui.syncFromLoop(loop);
         if (useFullscreenTui && tui.isActive) {
@@ -815,6 +870,7 @@ export class CommandRouter {
 
   private async submitWebPrompt(
     prompt: string,
+    attachments: WebUiImageAttachment[] = [],
   ): Promise<{ ok: boolean; message?: string }> {
     const trimmed = prompt.trim();
     if (!trimmed) {
@@ -825,6 +881,25 @@ export class CommandRouter {
         ok: false,
         message: "Orbit is already processing a Web UI request.",
       };
+    }
+    if (attachments.length > 0) {
+      if (this.multi) {
+        return {
+          ok: false,
+          message:
+            "Image attachments are not yet supported in multi-agent mode.",
+        };
+      }
+      const model = this.loop.getModelOverride() || this.config.models.default;
+      const capabilities =
+        this.providerInstance.getModelCapabilities?.(model) ||
+        this.providerInstance.capabilities;
+      if (!capabilities.vision) {
+        return {
+          ok: false,
+          message: `The selected model (${model}) does not support image input. Switch to a vision-capable model or remove the attachment.`,
+        };
+      }
     }
 
     const releaseRun = this.runCoordinator.acquire("web");
@@ -845,7 +920,15 @@ export class CommandRouter {
       } else {
         console.log(picocolors.cyan(`web › ${trimmed}`));
       }
-      this.loop.prepareUserTurn(trimmed);
+      this.loop.prepareUserTurn(
+        trimmed,
+        attachments.map((attachment) => ({
+          type: "image" as const,
+          mediaType: attachment.mediaType,
+          data: attachment.data,
+          name: attachment.name,
+        })),
+      );
       ensureSessionTitle(this.loop, trimmed);
       this.saveLocalState({
         lastSessionId: this.loop.getSessionId(),
@@ -948,6 +1031,8 @@ export class CommandRouter {
   private async updateWebUiSettings(
     patch: WebUiSettingsPatch,
   ): Promise<{ ok: boolean; message?: string }> {
+    const violation = validateManagedRuntimeChange(this.config, patch);
+    if (violation) return { ok: false, message: violation };
     const draft = JSON.parse(JSON.stringify(this.config));
     if (patch.provider) {
       draft.provider.default = patch.provider;
@@ -1033,6 +1118,14 @@ export class CommandRouter {
     preferredModel?: string,
     options: { allowUnlistedModel?: boolean } = {},
   ): Promise<{ ok: boolean; message?: string }> {
+    const policyViolation = validateManagedRuntimeChange(this.config, {
+      provider: providerId,
+      model:
+        preferredModel && preferredModel !== "__auto__"
+          ? preferredModel
+          : undefined,
+    });
+    if (policyViolation) return { ok: false, message: policyViolation };
     if (!this.config.providers[providerId]) {
       return { ok: false, message: `Provider not found: ${providerId}` };
     }
